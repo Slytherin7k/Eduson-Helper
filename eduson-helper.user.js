@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper: amoCRM → OmniDesk
 // @namespace    eduson-helper
-// @version      0.37.0
+// @version      0.38.0
 // @description  Кнопка в OmniDesk сама находит клиента в amoCRM и заполняет карточку: ФИО, email, телефон, курс, дату поддержки и ссылку на Super User в админке Эдюсона
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -110,6 +110,10 @@
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
   const IS_OMNI = location.hostname.endsWith('omnidesk.ru');
   const TAG = '[amohelper]';
+
+  // Палитра — как у Возврат-мастера: голубой + чёрный/серый/белый, округлый шрифт.
+  const HP_ACC = '#0284C7', HP_ACC_DK = '#075985', HP_ACC_LT = '#E0F2FE', HP_ACC_BD = '#BAE6FD';
+  const HP_FONT = "'Nunito','Varela Round','Segoe UI',system-ui,-apple-system,Roboto,Arial,sans-serif";
 
   // Переменные для перетаскивания
   let isDragging = false;
@@ -510,7 +514,7 @@
   function chooseDeal(deals) {
     return new Promise(function (resolve) {
       const box = document.createElement('div');
-      box.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:2147483647;background:#fff;border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.35);padding:18px;max-width:460px;width:92%;font-family:Segoe UI,Arial,sans-serif;';
+      box.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:2147483647;background:#fff;border-radius:16px;box-shadow:0 12px 40px rgba(15,23,42,.35);padding:18px;max-width:460px;width:92%;font-family:' + HP_FONT + ';';
       const title = document.createElement('div');
       title.style.cssText = 'font-size:14px;font-weight:700;color:#111827;margin-bottom:4px;';
       title.textContent = 'У студента несколько оплаченных сделок 📚';
@@ -529,7 +533,7 @@
         box.appendChild(btn);
       });
       const cancel = document.createElement('button');
-      cancel.style.cssText = 'background:none;border:none;color:#7C3AED;font-size:12px;cursor:pointer;padding:4px;';
+      cancel.style.cssText = 'background:none;border:none;color:#0284C7;font-size:12px;cursor:pointer;padding:4px;';
       cancel.textContent = 'Не брать курс и дату (только ФИО, почта, телефон)';
       cancel.onclick = function () { box.remove(); resolve(null); };
       box.appendChild(cancel);
@@ -888,7 +892,7 @@
   function chooseCandidate(candidates, seed) {
     return new Promise(function (resolve) {
       const box = document.createElement('div');
-      box.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:2147483647;background:#fff;border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.35);padding:18px;max-width:460px;width:92%;font-family:Segoe UI,Arial,sans-serif;';
+      box.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:2147483647;background:#fff;border-radius:16px;box-shadow:0 12px 40px rgba(15,23,42,.35);padding:18px;max-width:460px;width:92%;font-family:' + HP_FONT + ';';
       const title = document.createElement('div');
       title.style.cssText = 'font-size:14px;font-weight:700;color:#111827;margin-bottom:4px;';
       title.textContent = 'В амо нашлось несколько человек 👥';
@@ -911,7 +915,7 @@
         box.appendChild(btn);
       });
       const cancel = document.createElement('button');
-      cancel.style.cssText = 'background:none;border:none;color:#7C3AED;font-size:12px;cursor:pointer;padding:4px;';
+      cancel.style.cssText = 'background:none;border:none;color:#0284C7;font-size:12px;cursor:pointer;padding:4px;';
       cancel.textContent = 'Отмена — никого не выбирать';
       cancel.onclick = function () { box.remove(); resolve(null); };
       box.appendChild(cancel);
@@ -969,13 +973,13 @@
       return;
     }
     if (!data || (!data.name && !data.emails.length && !data.phones.length && !data.course && !data.support)) {
-      GM_setValue(DEBUG_KEY, { version: '0.37', url: location.href, amoId: amoId, seed: seed, result: 'ничего не нашлось', ts: Date.now() });
+      GM_setValue(DEBUG_KEY, { version: '0.38', url: location.href, amoId: amoId, seed: seed, result: 'ничего не нашлось', ts: Date.now() });
       toast('В амо ничего не нашлось 😕', 'warn');
       return;
     }
     data.cardAmoId = amoId || '';
     GM_setValue(STORE_KEY, data);
-    GM_setValue(DEBUG_KEY, { version: '0.37', url: location.href, amoId: amoId, seed: seed, data: data, note: note, ts: Date.now() });
+    GM_setValue(DEBUG_KEY, { version: '0.38', url: location.href, amoId: amoId, seed: seed, data: data, note: note, ts: Date.now() });
     console.log(TAG, 'данные из амо:', data);
     fillInputsFromData(data, 'Нашлось в амо' + (note ? '\n(' + note + ')' : ''));
   }
@@ -1441,17 +1445,17 @@
     }
     // Сохраняем результат
     lastFillResult = { ok, miss, data };
-    // Дописываем результат заполнения в отчёт («📤 Отчёт»), чтобы было видно,
+    // Дописываем результат заполнения в отчёт («Отчёт»), чтобы было видно,
     // что именно и почему не вписалось.
     try {
       const prev = GM_getValue(DEBUG_KEY) || {};
-      prev.version = '0.37';
+      prev.version = '0.38';
       prev.fill = { ok: ok.slice(), miss: miss.slice(), at: new Date().toISOString(), url: location.href };
       GM_setValue(DEBUG_KEY, prev);
     } catch (e) {}
     // Обновляем значок ошибки
     updateErrorIcon(miss, ok);
-    // Короткое сообщение. Подробности — по кнопке «📤 Отчёт» в панели.
+    // Короткое сообщение. Подробности — по кнопке «Отчёт» в панели.
     const filledCount = ok.filter(function (s) { return !/^💾/.test(s); }).length;
     if (!ok.length) {
       toast('❌ Ничего не заполнилось.\nКарточка в режиме «редактировать»?\n👉 нажми сюда — покажу подробности', 'error', 10000, showFillReport);
@@ -1461,11 +1465,11 @@
       toast('✅ Готово и сохранено (' + filledCount + ' полей).', 'ok', 4000);
     }
   }
-  // Подробный отчёт по последнему заполнению — по кнопке «📤 Отчёт».
+  // Подробный отчёт по последнему заполнению — по кнопке «Отчёт».
   function showFillReport() {
     const R = lastFillResult;
     if (!R || (!R.ok.length && !R.miss.length)) {
-      toast('Пока нечего показывать — сначала нажми «✨ Заполнить».', 'warn');
+      toast('Пока нечего показывать — сначала нажми «Заполнить».', 'warn');
       return;
     }
     const d = R.data || {};
@@ -1486,12 +1490,12 @@
   }
   function insertStored() {
     const d = GM_getValue(STORE_KEY);
-    if (!d) { toast('Пока ничего не скопировано.\nНажми «✨ Заполнить из амо» или кнопку в амо.', 'warn'); return; }
+    if (!d) { toast('Пока ничего не скопировано.\nНажми «Заполнить из амо» или кнопку в амо.', 'warn'); return; }
     fillInputsFromData(d, 'Вставляю скопированное');
   }
   async function fillAdminOnly() {
     const d = GM_getValue(STORE_KEY);
-    if (!d) { toast('Сначала нажми «✨ Заполнить из амо».', 'warn'); return; }
+    if (!d) { toast('Сначала нажми «Заполнить из амо».', 'warn'); return; }
     toast('Ищу ссылку в админке Эдюсона…', 'info', 6000);
     const ok = [], miss = [];
     await runAdminFill(d, ok, miss);
@@ -1598,8 +1602,8 @@
       dropdown.appendChild(missDiv);
       // Добавляем кнопку копирования отчета
       const reportBtn = document.createElement('button');
-      reportBtn.textContent = '📤 Отчёт';
-      reportBtn.style.cssText = 'width:100%;margin-top:6px;padding:6px;background:#F3F4F6;border:1px solid #E5E7EB;border-radius:6px;cursor:pointer;font-size:11px;color:#374151;';
+      reportBtn.textContent = 'Скопировать отчёт';
+      reportBtn.style.cssText = 'width:100%;margin-top:6px;padding:7px;background:#F3F4F6;border:1px solid #E5E7EB;border-radius:12px;cursor:pointer;font-size:11px;font-weight:700;color:#4B5563;font-family:' + HP_FONT + ';';
       reportBtn.onclick = function(e) {
         e.stopPropagation();
         copyReport();
@@ -1639,8 +1643,18 @@
     if (document.getElementById('eduson-helper-panel')) return;
     const wrap = document.createElement('div');
     wrap.id = 'eduson-helper-panel';
-    // Стиль — как у кружка: белый фон, светло-сиреневая рамка, мягкая тень.
-    wrap.style.cssText = 'position:fixed;z-index:2147483646;display:flex;flex-direction:column;gap:4px;background:#fff;padding:8px 12px;border:1px solid #DDD6FE;border-radius:14px;box-shadow:0 6px 24px rgba(0,0,0,.22);cursor:move;user-select:none;min-width:220px;max-width:96vw;';
+    // Стиль — в гамме Возврат-мастера: белый фон, светло-серая рамка, округлый шрифт.
+    wrap.style.cssText = 'position:fixed;z-index:2147483646;display:flex;flex-direction:column;gap:6px;background:#fff;padding:10px 13px;border:1px solid #E5E7EB;border-radius:16px;box-shadow:0 12px 36px rgba(15,23,42,.22);cursor:move;user-select:none;min-width:220px;max-width:96vw;font-family:' + HP_FONT + ';';
+    // Округлый шрифт Nunito (если CSP не пустит — просто фолбэк)
+    if (!document.getElementById('eduson-hp-font')) {
+      try {
+        const lf = document.createElement('link');
+        lf.id = 'eduson-hp-font';
+        lf.rel = 'stylesheet';
+        lf.href = 'https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap';
+        document.head.appendChild(lf);
+      } catch (e) {}
+    }
     // Позиция: по умолчанию — сразу под кружком сверху по центру; иначе — куда перетащили.
     if (panelPosition.x != null && panelPosition.y != null) {
       wrap.style.left = panelPosition.x + 'px';
@@ -1658,7 +1672,7 @@
     header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;width:100%;margin-bottom:4px;';
     const title = document.createElement('span');
     title.textContent = 'Eduson Helper';
-    title.style.cssText = 'font-size:11px;font-weight:600;color:#7C3AED;';
+    title.style.cssText = 'font-size:11px;font-weight:800;color:' + HP_ACC + ';letter-spacing:.2px;';
     header.appendChild(title);
     const closeBtn = document.createElement('button');
     closeBtn.textContent = '✕';
@@ -1674,7 +1688,7 @@
     // Основная строка с кнопкой и значком ошибки
     const mainRow = document.createElement('div');
     mainRow.style.cssText = 'display:flex;align-items:center;gap:6px;width:100%;flex-wrap:wrap;';
-    const mainBtn = mkBtn(IS_AMO ? '📋 Скопировать' : '✨ Заполнить', true);
+    const mainBtn = mkBtn(IS_AMO ? 'Скопировать' : 'Заполнить', true);
     mainBtn.style.cursor = 'pointer';
     mainBtn.onclick = function(e) {
       e.stopPropagation();
@@ -1691,7 +1705,7 @@
       bAmo.onclick = function(e) { e.stopPropagation(); openAmoSearch(); };
       mainRow.appendChild(bAmo);
       // Кнопка «Отчёт» — подробности по последнему заполнению (по требованию)
-      const bReport = mkBtn('📤 Отчёт');
+      const bReport = mkBtn('Отчёт');
       bReport.style.padding = '4px 8px';
       bReport.style.fontSize = '10px';
       bReport.style.cursor = 'pointer';
@@ -1713,7 +1727,7 @@
       // Выпадающий список ошибок
       const dropdown = document.createElement('div');
       dropdown.id = 'eduson-error-dropdown';
-      dropdown.style.cssText = 'display:none;position:absolute;top:calc(100% + 8px);right:0;min-width:280px;max-width:400px;background:#fff;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,0.2);border:1px solid #DDD6FE;padding:4px 0;z-index:2147483647;font-size:12px;line-height:1.6;color:#111827;max-height:300px;overflow-y:auto;';
+      dropdown.style.cssText = 'display:none;position:absolute;top:calc(100% + 8px);right:0;min-width:280px;max-width:400px;background:#fff;border-radius:14px;box-shadow:0 12px 36px rgba(15,23,42,.2);border:1px solid #E5E7EB;padding:4px 0;z-index:2147483647;font-size:12px;line-height:1.6;color:#111827;max-height:300px;overflow-y:auto;font-family:' + HP_FONT + ';';
       dropdown.onclick = function(e) {
         e.stopPropagation();
       };
@@ -1773,7 +1787,7 @@
 
   // Кнопка-магнит в шапке кейса OmniDesk — в левой части, с отступом от статуса «Закрытое».
   // Белый квадрат (слегка закруглён) + серый магнит, крупнее родных иконок, чтобы бросался в глаза.
-  // Клик — «притянуть» данные из амо и заполнить карточку (= «✨ Заполнить»).
+  // Клик — «притянуть» данные из амо и заполнить карточку (= «Заполнить»).
   // Правый клик — открыть/закрыть панель (отчёт, «🔎 В амо», ручная вставка).
   const MAGNET_SVG =
     '<svg viewBox="-7.5 0 32 32" width="30" height="30" xmlns="http://www.w3.org/2000/svg" ' +
@@ -1800,7 +1814,7 @@
     btn.onmouseleave = function () { btn.style.background = '#fff'; btn.style.boxShadow = '0 1px 5px rgba(0,0,0,.20)'; if (svg) svg.style.fill = '#6B7280'; };
     btn.onclick = function (e) {
       e.stopPropagation();
-      if (svg) { svg.style.fill = '#7C3AED'; setTimeout(function () { svg.style.fill = '#6B7280'; }, 700); }
+      if (svg) { svg.style.fill = '#0284C7'; setTimeout(function () { svg.style.fill = '#6B7280'; }, 700); }
       smartFillOmni();
     };
     btn.oncontextmenu = function (e) {
@@ -1816,8 +1830,8 @@
     const b = document.createElement('button');
     b.textContent = text;
     b.style.cssText = big
-      ? 'background:#7C3AED;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:12px;font-weight:600;box-shadow:0 2px 8px rgba(124,58,237,.3);font-family:Segoe UI,Arial,sans-serif;transition:all 0.2s;'
-      : 'background:#fff;color:#7C3AED;border:1px solid #DDD6FE;border-radius:6px;padding:4px 8px;font-size:10px;cursor:pointer;font-family:Segoe UI,Arial,sans-serif;transition:all 0.2s;';
+      ? 'background:' + HP_ACC + ';color:#fff;border:none;border-radius:16px;padding:8px 16px;font-size:12px;font-weight:700;box-shadow:0 2px 8px rgba(2,132,199,.28);font-family:' + HP_FONT + ';transition:all 0.2s;cursor:pointer;'
+      : 'background:#fff;color:' + HP_ACC + ';border:1.5px solid ' + HP_ACC_BD + ';border-radius:999px;padding:4px 12px;font-size:10px;font-weight:700;cursor:pointer;font-family:' + HP_FONT + ';transition:all 0.2s;';
     b.onmouseenter = function () {
       b.style.opacity = '.85';
       b.style.transform = 'scale(0.98)';
@@ -1829,10 +1843,10 @@
     return b;
   }
   function toast(msg, type, ms, onTap) {
-    const colors = { ok: '#16A34A', warn: '#D97706', error: '#DC2626', info: '#7C3AED' };
+    const colors = { ok: '#16A34A', warn: '#D97706', error: '#DC2626', info: '#0284C7' };
     const box = document.createElement('div');
     // Компактная белая карточка внизу слева — не перекрывает карточку клиента справа.
-    box.style.cssText = 'position:fixed;left:14px;bottom:14px;z-index:2147483647;max-width:340px;background:#fff;color:#1F2937;padding:10px 28px 10px 14px;border:1px solid #DDD6FE;border-radius:12px;font:12px/1.5 Segoe UI,Arial,sans-serif;white-space:pre-wrap;box-shadow:0 6px 24px rgba(0,0,0,.22);border-left:5px solid ' + (colors[type] || colors.info) + ';';
+    box.style.cssText = 'position:fixed;left:14px;bottom:14px;z-index:2147483647;max-width:340px;background:#fff;color:#1F2937;padding:10px 28px 10px 14px;border:1px solid #E5E7EB;border-radius:14px;font-size:12px;line-height:1.5;font-family:' + HP_FONT + ';white-space:pre-wrap;box-shadow:0 12px 36px rgba(15,23,42,.22);border-left:5px solid ' + (colors[type] || colors.info) + ';';
     if (typeof msg === 'object' && msg) {
       const rows = [
         msg.name    && '👤 ' + msg.name,
@@ -1853,7 +1867,7 @@
     closeX.textContent = '✕';
     closeX.title = 'Закрыть (не останавливает скрипт)';
     closeX.style.cssText = 'position:absolute;top:5px;right:9px;cursor:pointer;color:#9CA3AF;font-size:13px;line-height:1;padding:2px;';
-    closeX.onmouseenter = function () { closeX.style.color = '#7C3AED'; };
+    closeX.onmouseenter = function () { closeX.style.color = '#0284C7'; };
     closeX.onmouseleave = function () { closeX.style.color = '#9CA3AF'; };
     closeX.onclick = function (e) { e.stopPropagation(); box.remove(); };
     box.appendChild(closeX);
@@ -1869,7 +1883,7 @@
   }
   /* ---------- запуск ---------- */
   if (IS_AMO || IS_OMNI) {
-    console.log(TAG, 'запущен на', location.host, 'версия 0.37');
+    console.log(TAG, 'запущен на', location.host, 'версия 0.38');
     ensurePanel();
     removeHelperBadge();
     ensureMagnetButton();
