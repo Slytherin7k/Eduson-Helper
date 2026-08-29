@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper: amoCRM → OmniDesk
 // @namespace    eduson-helper
-// @version      0.41.0
+// @version      0.42.0
 // @description  Кнопка в OmniDesk сама находит клиента в amoCRM и заполняет карточку: ФИО, email, телефон, курс, дату поддержки и ссылку на Super User в админке Эдюсона
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -1119,13 +1119,13 @@
       return;
     }
     if (!data || (!data.name && !data.emails.length && !data.phones.length && !data.course && !data.support)) {
-      GM_setValue(DEBUG_KEY, { version: '0.41', url: location.href, amoId: amoId, seed: seed, result: 'ничего не нашлось', ts: Date.now() });
+      GM_setValue(DEBUG_KEY, { version: '0.42', url: location.href, amoId: amoId, seed: seed, result: 'ничего не нашлось', ts: Date.now() });
       toast('В амо ничего не нашлось 😕', 'warn');
       return;
     }
     data.cardAmoId = amoId || '';
     GM_setValue(STORE_KEY, data);
-    GM_setValue(DEBUG_KEY, { version: '0.41', url: location.href, amoId: amoId, seed: seed, data: data, note: note, ts: Date.now() });
+    GM_setValue(DEBUG_KEY, { version: '0.42', url: location.href, amoId: amoId, seed: seed, data: data, note: note, ts: Date.now() });
     console.log(TAG, 'данные из амо:', data);
     fillInputsFromData(data, 'Нашлось в амо' + (note ? '\n(' + note + ')' : ''));
   }
@@ -1615,7 +1615,7 @@
     // что именно и почему не вписалось.
     try {
       const prev = GM_getValue(DEBUG_KEY) || {};
-      prev.version = '0.41';
+      prev.version = '0.42';
       prev.fill = { ok: ok.slice(), miss: miss.slice(), at: new Date().toISOString(), url: location.href };
       GM_setValue(DEBUG_KEY, prev);
     } catch (e) {}
@@ -1966,16 +1966,26 @@
     'style="display:block;fill:#6B7280;transition:fill .15s;">' +
     '<path d="M20.491 0c-4.971 0-9 4.036-9 9.015 0 2.232 0.813 4.27 2.155 5.844-0.276-0.017-0.557 0.076-0.768 0.287l-10.075 10.137c-0.39 0.39-0.39 1.024 0 1.414 0.007 0.008 0.016 0.012 0.024 0.020 0.002 0.003 0.004 0.006 0.006 0.008l4.904 4.997c0.39 0.39 1.024 0.39 1.414 0s0.39-1.024 0-1.414l-4.234-4.314 2.578-2.594 4.242 4.322c0.39 0.39 1.024 0.39 1.414 0s0.39-1.024 0-1.414l-4.245-4.326 5.387-5.421c0.209-0.209 0.302-0.485 0.288-0.758 1.582 1.384 3.646 2.229 5.912 2.229 4.971 0 9-4.036 9-9.015s-4.029-9.015-9-9.015zM20.49 16c-3.852 0-7-3.133-7-7s3.148-7 7-7 7 3.133 7 7c0 3.867-3.148 7-7 7z"></path></svg>';
 
-  // Компактное окошко с логин-линк(ами). Каждая строка — настоящая ссылка:
+  // Компактное окошко-дропдаун из кнопки-ключа. Каждая строка — настоящая ссылка:
   // ЛКМ = скопировать, ПКМ = родное меню браузера → «Открыть в инкогнито». Сам ничего не открывает.
   function showLoginLinks(links, note) {
     const old = document.getElementById('eduson-loginlink-box');
     if (old) old.remove();
     const box = document.createElement('div');
     box.id = 'eduson-loginlink-box';
-    box.style.cssText = 'position:fixed;left:14px;bottom:14px;z-index:2147483647;max-width:300px;background:#fff;color:#1F2937;' +
+    box.style.cssText = 'position:fixed;z-index:2147483647;width:280px;max-width:92vw;background:#fff;color:#1F2937;' +
       'padding:9px 24px 9px 11px;border:1px solid #E5E7EB;border-radius:12px;font-family:' + HP_FONT + ';' +
-      'box-shadow:0 10px 30px rgba(15,23,42,.20);border-left:4px solid #0284C7;';
+      'box-shadow:0 12px 34px rgba(15,23,42,.28);border-left:4px solid #0284C7;';
+    // Позиционируем как выпадашку из кнопки-ключа (иначе — снизу слева).
+    const kbtn = document.getElementById('eduson-loginlink-btn');
+    if (kbtn) {
+      const r = kbtn.getBoundingClientRect();
+      box.style.top = Math.round(r.bottom + 6) + 'px';
+      box.style.right = Math.round(Math.max(8, window.innerWidth - r.right - 4)) + 'px';
+    } else {
+      box.style.left = '14px';
+      box.style.bottom = '14px';
+    }
     const title = document.createElement('div');
     title.textContent = links.length > 1 ? 'Логин-линк — выбери курс' : 'Логин-линк';
     title.style.cssText = 'font-weight:800;font-size:11px;color:#0284C7;margin-bottom:6px;';
@@ -2009,10 +2019,22 @@
     const x = document.createElement('span');
     x.textContent = '✕';
     x.style.cssText = 'position:absolute;top:5px;right:8px;cursor:pointer;color:#9CA3AF;font-size:12px;line-height:1;';
-    x.onclick = function () { box.remove(); };
+    x.onclick = function () { close(); };
     box.appendChild(x);
     document.documentElement.appendChild(box);
-    setTimeout(function () { const b = document.getElementById('eduson-loginlink-box'); if (b) b.remove(); }, 120000);
+
+    function close() {
+      box.remove();
+      document.removeEventListener('mousedown', onOutside, true);
+    }
+    function onOutside(e) {
+      if (box.contains(e.target)) return;
+      if (kbtn && kbtn.contains(e.target)) return; // повторный клик по ключу обрабатывается сам
+      close();
+    }
+    // Закрытие по клику вне окна — но не в тот же тик, что открытие.
+    setTimeout(function () { document.addEventListener('mousedown', onOutside, true); }, 0);
+    setTimeout(close, 120000);
   }
 
   function readCourseTarget() {
@@ -2187,7 +2209,7 @@
   }
   /* ---------- запуск ---------- */
   if (IS_AMO || IS_OMNI) {
-    console.log(TAG, 'запущен на', location.host, 'версия 0.41');
+    console.log(TAG, 'запущен на', location.host, 'версия 0.42');
     ensurePanel();
     removeHelperBadge();
     ensureMagnetButton();
