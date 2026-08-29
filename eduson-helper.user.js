@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper: amoCRM → OmniDesk
 // @namespace    eduson-helper
-// @version      0.38.0
+// @version      0.39.0
 // @description  Кнопка в OmniDesk сама находит клиента в amoCRM и заполняет карточку: ФИО, email, телефон, курс, дату поддержки и ссылку на Super User в админке Эдюсона
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -248,6 +248,50 @@
   function superUserUrl(id) { return ADMIN_BASE + '/admin/super_users/' + id + '?language=ru'; }
 
   function userCardUrl(uid) { return ADMIN_BASE + '/admin/users/' + uid + '?language=ru'; }
+
+  // «Login link» на карточке юзера (/admin/users/<id>) — вход без пароля.
+  // Это по сути пароль: не логируем, не храним, только в буфер / ПКМ→инкогнито.
+  function parseLoginLink(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const a = Array.prototype.find.call(doc.querySelectorAll('a'),
+      function (x) { return /^\s*login\s*link\s*$/i.test(x.textContent || ''); });
+    if (!a) return null;
+    let href = (a.getAttribute('href') || '').trim();
+    if (!href) return null;
+    try { href = new URL(href, ADMIN_BASE).href; } catch (e) {}
+    return /^https?:\/\//i.test(href) ? href : null;
+  }
+
+  // По amo-номеру / почте находит карточку студента в админке и достаёт ОДИН логин-линк.
+  // Для суперюзера любой логин-линк любого курса даёт доступ ко всем курсам (Наталья).
+  async function lookupLoginLink(data) {
+    const keys = [];
+    if (data.amoLeadId) keys.push(String(data.amoLeadId));
+    if (data.cardAmoId && String(data.cardAmoId) !== String(data.amoLeadId)) keys.push(String(data.cardAmoId));
+    if (data.amoContactId) keys.push(String(data.amoContactId));
+    (data.emails || []).slice(0, 2).forEach(function (e) {
+      if (e && !/@eduson\.tv$/i.test(e)) keys.push(e);
+    });
+    if (!keys.length) return { url: null, error: 'нет amo-номера и почты в карточке' };
+
+    let authError = false, lastErr = '';
+    for (const q of keys) {
+      try {
+        const listHtml = await gmFetchText(ADMIN_BASE + '/admin/users?language=ru&q=' + encodeURIComponent(q));
+        if (adminLooksLikeLogin(listHtml)) { authError = true; continue; }
+        const raw = parseUserRowsFromList(listHtml);
+        let rows = raw.filter(function (r) { return r.text.indexOf(q) !== -1; });
+        if (!rows.length && raw.length && raw.length <= 5) rows = raw;
+        for (const r of rows.slice(0, 4)) {
+          const card = await gmFetchText(userCardUrl(r.uid));
+          if (adminLooksLikeLogin(card)) { authError = true; continue; }
+          const ll = parseLoginLink(card);
+          if (ll) return { url: ll, error: null };
+        }
+      } catch (e) { if (e.message === 'NOAUTH') authError = true; else lastErr = e.message; }
+    }
+    return { url: null, error: authError ? 'NOAUTH' : (lastErr || 'карточка студента в админке не нашлась') };
+  }
 
   // Возвращает { links:[{url,courses}], isSuper:bool, error: null|'NOAUTH'|'текст' }
   // isSuper=true  → это Super User, links ведут на /admin/super_users/<N>, ставим галочку СУПЕРЮЗЕР
@@ -973,13 +1017,13 @@
       return;
     }
     if (!data || (!data.name && !data.emails.length && !data.phones.length && !data.course && !data.support)) {
-      GM_setValue(DEBUG_KEY, { version: '0.38', url: location.href, amoId: amoId, seed: seed, result: 'ничего не нашлось', ts: Date.now() });
+      GM_setValue(DEBUG_KEY, { version: '0.39', url: location.href, amoId: amoId, seed: seed, result: 'ничего не нашлось', ts: Date.now() });
       toast('В амо ничего не нашлось 😕', 'warn');
       return;
     }
     data.cardAmoId = amoId || '';
     GM_setValue(STORE_KEY, data);
-    GM_setValue(DEBUG_KEY, { version: '0.38', url: location.href, amoId: amoId, seed: seed, data: data, note: note, ts: Date.now() });
+    GM_setValue(DEBUG_KEY, { version: '0.39', url: location.href, amoId: amoId, seed: seed, data: data, note: note, ts: Date.now() });
     console.log(TAG, 'данные из амо:', data);
     fillInputsFromData(data, 'Нашлось в амо' + (note ? '\n(' + note + ')' : ''));
   }
@@ -1449,7 +1493,7 @@
     // что именно и почему не вписалось.
     try {
       const prev = GM_getValue(DEBUG_KEY) || {};
-      prev.version = '0.38';
+      prev.version = '0.39';
       prev.fill = { ok: ok.slice(), miss: miss.slice(), at: new Date().toISOString(), url: location.href };
       GM_setValue(DEBUG_KEY, prev);
     } catch (e) {}
@@ -1794,6 +1838,115 @@
     'style="display:block;fill:#6B7280;transition:fill .15s;">' +
     '<path d="M3.68 10.6h-2.76c-0.48 0-0.84-0.36-0.84-0.84v-2.68c0-0.48 0.36-0.84 0.84-0.84h2.76c0.48 0 0.84 0.36 0.84 0.84v2.68c0 0.44-0.36 0.84-0.84 0.84zM1.76 8.92h1.12v-1h-1.12v1zM15.8 10.6h-2.76c-0.48 0-0.84-0.36-0.84-0.84v-2.68c0-0.48 0.36-0.84 0.84-0.84h2.76c0.48 0 0.84 0.36 0.84 0.84v2.68c0 0.44-0.36 0.84-0.84 0.84zM13.88 8.92h1.12v-1h-1.12v1zM8.36 25.76c-2.32 0-4.2-0.8-5.6-2.36-3.4-3.8-2.72-10.84-2.68-11.12 0.040-0.44 0.4-0.76 0.84-0.76h2.76c0.24 0 0.44 0.080 0.6 0.28 0.16 0.16 0.24 0.4 0.24 0.64-0.080 1.56 0.040 6.040 1.76 7.92 0.56 0.56 1.2 0.84 2 0.84h0.12c0.8 0 1.44-0.28 2-0.84 1.76-1.88 1.88-6.36 1.76-7.92 0-0.24 0.080-0.44 0.24-0.64s0.4-0.28 0.6-0.28h2.76c0.44 0 0.8 0.32 0.84 0.76 0.040 0.28 0.72 7.32-2.68 11.12-1.36 1.56-3.24 2.36-5.56 2.36zM1.72 13.2c-0.080 1.8 0 6.52 2.32 9.080 1.080 1.2 2.52 1.8 4.36 1.8s3.28-0.6 4.36-1.8c2.32-2.6 2.4-7.28 2.32-9.080h-1.12c0 1.84-0.2 6.080-2.24 8.28-0.88 0.92-1.96 1.4-3.2 1.4h-0.12c-1.28 0-2.36-0.48-3.2-1.4-2.16-2.2-2.36-6.44-2.36-8.28 0 0-1.12 0-1.12 0z"></path></svg>';
 
+  // Иконка-ключ для кнопки логин-линка (svgrepo, перекрашиваем в серый).
+  const KEY_SVG =
+    '<svg viewBox="0 0 32 32" width="25" height="25" xmlns="http://www.w3.org/2000/svg" ' +
+    'style="display:block;fill:#6B7280;transition:fill .15s;">' +
+    '<path d="M20.491 0c-4.971 0-9 4.036-9 9.015 0 2.232 0.813 4.27 2.155 5.844-0.276-0.017-0.557 0.076-0.768 0.287l-10.075 10.137c-0.39 0.39-0.39 1.024 0 1.414 0.007 0.008 0.016 0.012 0.024 0.020 0.002 0.003 0.004 0.006 0.006 0.008l4.904 4.997c0.39 0.39 1.024 0.39 1.414 0s0.39-1.024 0-1.414l-4.234-4.314 2.578-2.594 4.242 4.322c0.39 0.39 1.024 0.39 1.414 0s0.39-1.024 0-1.414l-4.245-4.326 5.387-5.421c0.209-0.209 0.302-0.485 0.288-0.758 1.582 1.384 3.646 2.229 5.912 2.229 4.971 0 9-4.036 9-9.015s-4.029-9.015-9-9.015zM20.49 16c-3.852 0-7-3.133-7-7s3.148-7 7-7 7 3.133 7 7c0 3.867-3.148 7-7 7z"></path></svg>';
+
+  // Мини-окошко со ссылкой-плашкой: ЛКМ по ссылке — копировать, ПКМ — родное меню браузера
+  // («Открыть ссылку в окне в режиме инкогнито»). Сам ничего не открывает.
+  function showLoginLinkBox(url) {
+    const old = document.getElementById('eduson-loginlink-box');
+    if (old) old.remove();
+    const box = document.createElement('div');
+    box.id = 'eduson-loginlink-box';
+    box.style.cssText = 'position:fixed;left:14px;bottom:14px;z-index:2147483647;max-width:360px;background:#fff;color:#1F2937;' +
+      'padding:12px 30px 12px 14px;border:1px solid #E5E7EB;border-radius:14px;font-family:' + HP_FONT + ';' +
+      'box-shadow:0 12px 36px rgba(15,23,42,.22);border-left:5px solid #0284C7;';
+    const title = document.createElement('div');
+    title.textContent = '🔑 Логин-линк студента (вход без пароля)';
+    title.style.cssText = 'font-weight:800;font-size:12px;color:#0284C7;margin-bottom:8px;';
+    box.appendChild(title);
+    const a = document.createElement('a');
+    a.href = url;
+    a.rel = 'noopener noreferrer';
+    const LABEL = '🔗 Скопировать · ПКМ → «Открыть в инкогнито»';
+    a.textContent = LABEL;
+    a.style.cssText = 'display:block;font-weight:700;font-size:12px;color:#075985;text-decoration:none;' +
+      'background:#E0F2FE;border:1px solid #BAE6FD;border-radius:10px;padding:9px 11px;cursor:pointer;';
+    a.onclick = function (e) {
+      e.preventDefault();
+      try { GM_setClipboard(url); } catch (err) {}
+      a.textContent = '✓ Скопировано — вставь студенту';
+      setTimeout(function () { a.textContent = LABEL; }, 2500);
+    };
+    box.appendChild(a);
+    const hint = document.createElement('div');
+    hint.textContent = 'Не открывай в этом браузере — разлогинит. Только инкогнито или другой браузер.';
+    hint.style.cssText = 'font-size:10.5px;color:#9CA3AF;margin-top:7px;font-weight:600;line-height:1.4;';
+    box.appendChild(hint);
+    const x = document.createElement('span');
+    x.textContent = '✕';
+    x.style.cssText = 'position:absolute;top:6px;right:10px;cursor:pointer;color:#9CA3AF;font-size:13px;line-height:1;';
+    x.onclick = function () { box.remove(); };
+    box.appendChild(x);
+    document.documentElement.appendChild(box);
+    setTimeout(function () { const b = document.getElementById('eduson-loginlink-box'); if (b) b.remove(); }, 90000);
+  }
+
+  let loginLinkBusy = false;
+  async function copyLoginLink() {
+    if (loginLinkBusy) return;
+    loginLinkBusy = true;
+    try {
+      const amoId = grabAmoIdFromPage();
+      const seed = grabContactSeed();
+      let data = { cardAmoId: amoId || '', amoLeadId: 0, amoContactId: 0, emails: seed.emails || [] };
+      if (!data.cardAmoId && !data.emails.length) {
+        const stored = GM_getValue(STORE_KEY);
+        if (stored) data = {
+          cardAmoId: stored.cardAmoId || '', amoLeadId: stored.amoLeadId || 0,
+          amoContactId: stored.amoContactId || 0, emails: stored.emails || []
+        };
+      }
+      if (!data.cardAmoId && !data.amoLeadId && !data.amoContactId && !data.emails.length) {
+        toast('Не вижу, кто студент 😕\nСначала нажми магнит 🧲 или открой карточку с виджетом amoCRM.', 'warn', 9000);
+        return;
+      }
+      toast('Ищу логин-линк в админке Эдюсон…', 'info', 6000);
+      const r = await lookupLoginLink(data);
+      if (r.url) { showLoginLinkBox(r.url); return; }
+      if (r.error === 'NOAUTH') {
+        toast('Админка не пустила 😕\nОткрой www.eduson.tv, залогинься и нажми 🔑 снова.', 'warn', 10000);
+      } else {
+        toast('Логин-линк не нашёлся: ' + (r.error || 'неизвестно') + '.', 'warn', 9000);
+      }
+    } catch (e) {
+      toast('Ошибка при поиске логин-линка: ' + e.message, 'error');
+    } finally {
+      loginLinkBusy = false;
+    }
+  }
+
+  // Кнопка-ключ 🔑 — слева от магнита. ЛКМ → найти логин-линк студента и показать плашку.
+  function ensureLoginLinkButton() {
+    if (!IS_OMNI) return;
+    const bar = document.querySelector('.request-content-title-act');
+    if (!bar) {
+      const ex = document.getElementById('eduson-loginlink-btn');
+      if (ex) ex.remove();
+      return;
+    }
+    if (document.getElementById('eduson-loginlink-btn')) return;
+    const btn = document.createElement('div');
+    btn.id = 'eduson-loginlink-btn';
+    btn.title = 'Логин-линк студента (вход без пароля). Открывать только в инкогнито.';
+    btn.style.cssText = 'float:right;width:38px;height:38px;margin:-2px 6px 0 4px;display:flex;align-items:center;justify-content:center;cursor:pointer;' +
+      'background:#fff;border:1px solid #E1E1E4;border-radius:6px;box-shadow:0 1px 5px rgba(0,0,0,.20);transition:background .15s,box-shadow .15s;';
+    btn.innerHTML = KEY_SVG;
+    const svg = btn.firstChild;
+    btn.onmouseenter = function () { btn.style.background = '#F4F4F6'; btn.style.boxShadow = '0 2px 8px rgba(0,0,0,.28)'; if (svg) svg.style.fill = '#374151'; };
+    btn.onmouseleave = function () { btn.style.background = '#fff'; btn.style.boxShadow = '0 1px 5px rgba(0,0,0,.20)'; if (svg) svg.style.fill = '#6B7280'; };
+    btn.onclick = function (e) {
+      e.stopPropagation();
+      if (svg) { svg.style.fill = '#0284C7'; setTimeout(function () { svg.style.fill = '#6B7280'; }, 700); }
+      copyLoginLink();
+    };
+    // добавляем ПОСЛЕ магнита → при float:right оказывается ЛЕВЕЕ магнита
+    bar.appendChild(btn);
+  }
+
   function ensureMagnetButton() {
     if (!IS_OMNI) return;
     const bar = document.querySelector('.request-content-title-act');
@@ -1883,10 +2036,11 @@
   }
   /* ---------- запуск ---------- */
   if (IS_AMO || IS_OMNI) {
-    console.log(TAG, 'запущен на', location.host, 'версия 0.38');
+    console.log(TAG, 'запущен на', location.host, 'версия 0.39');
     ensurePanel();
     removeHelperBadge();
     ensureMagnetButton();
-    setInterval(function () { ensurePanel(); removeHelperBadge(); ensureMagnetButton(); }, 1500);
+    ensureLoginLinkButton();
+    setInterval(function () { ensurePanel(); removeHelperBadge(); ensureMagnetButton(); ensureLoginLinkButton(); }, 1500);
   }
 })();
