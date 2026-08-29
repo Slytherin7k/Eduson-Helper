@@ -1,8 +1,12 @@
 // ==UserScript==
 // @name         Eduson Helper: amoCRM → OmniDesk
 // @namespace    eduson-helper
-// @version      0.32.0
+// @version      0.33.0
 // @description  Кнопка в OmniDesk сама находит клиента в amoCRM и заполняет карточку: ФИО, email, телефон, курс, дату поддержки и ссылку на Super User в админке Эдюсона
+// @author       Astanina Natalia
+// @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
+// @updateURL    https://raw.githubusercontent.com/Slytherin7k/Eduson-Helper/main/eduson-helper.user.js
+// @downloadURL  https://raw.githubusercontent.com/Slytherin7k/Eduson-Helper/main/eduson-helper.user.js
 // @match        https://eduson.amocrm.ru/*
 // @match        https://*.omnidesk.ru/*
 // @grant        GM_setValue
@@ -965,13 +969,13 @@
       return;
     }
     if (!data || (!data.name && !data.emails.length && !data.phones.length && !data.course && !data.support)) {
-      GM_setValue(DEBUG_KEY, { version: '0.32', url: location.href, amoId: amoId, seed: seed, result: 'ничего не нашлось', ts: Date.now() });
+      GM_setValue(DEBUG_KEY, { version: '0.33', url: location.href, amoId: amoId, seed: seed, result: 'ничего не нашлось', ts: Date.now() });
       toast('В амо ничего не нашлось 😕', 'warn');
       return;
     }
     data.cardAmoId = amoId || '';
     GM_setValue(STORE_KEY, data);
-    GM_setValue(DEBUG_KEY, { version: '0.32', url: location.href, amoId: amoId, seed: seed, data: data, note: note, ts: Date.now() });
+    GM_setValue(DEBUG_KEY, { version: '0.33', url: location.href, amoId: amoId, seed: seed, data: data, note: note, ts: Date.now() });
     console.log(TAG, 'данные из амо:', data);
     fillInputsFromData(data, 'Нашлось в амо' + (note ? '\n(' + note + ')' : ''));
   }
@@ -1441,28 +1445,44 @@
     // что именно и почему не вписалось.
     try {
       const prev = GM_getValue(DEBUG_KEY) || {};
-      prev.version = '0.32';
+      prev.version = '0.33';
       prev.fill = { ok: ok.slice(), miss: miss.slice(), at: new Date().toISOString(), url: location.href };
       GM_setValue(DEBUG_KEY, prev);
     } catch (e) {}
     // Обновляем значок ошибки
     updateErrorIcon(miss, ok);
-    // Показываем тост с результатом
-    const found = prefix ? [
-      data.name    && '👤 ' + data.name,
-      data.emails && data.emails.length && '✉️ ' + data.emails.join(', '),
-      data.phones && data.phones.length && '📞 ' + data.phones.join(', '),
-      data.course  && '📚 ' + (courseLabel || data.course) + (months !== undefined ? ' (' + (months === 0 ? 'без поддержки' : months + ' мес.)') : ''),
-      data.purchaseTs && '🧾 покупка: ' + fmtTs(data.purchaseTs),
-      data.support && '📅 поддержка до ' + data.support,
-      data.admin && data.admin.length && (data.isSuper ? '🖥 Super User: ' : '🖥 карточка юзера: ') + data.admin.join('  '),
-    ].filter(Boolean).join('\n') + '\n— — —\n' : '';
-    let tail = miss.length ? '\nЕсли поле не нашлось — проверь, что карточка в режиме «Изменить».' : '';
-    if (!ok.length) tail = '\nКарточка не в режиме редактирования? Нажми «Изменить».' + tail;
-    toast(found +
-      'Заполнено: ' + (ok.length ? ok.join(', ') : '—') + '\n' +
-      'Не получилось: ' + (miss.length ? miss.join(', ') : '—') + tail,
-      ok.length && !miss.length ? 'ok' : (ok.length ? 'warn' : 'error'), 12000);
+    // Короткое сообщение. Подробности — по кнопке «📤 Отчёт» в панели.
+    const filledCount = ok.filter(function (s) { return !/^💾/.test(s); }).length;
+    if (!ok.length) {
+      toast('❌ Ничего не заполнилось.\nКарточка в режиме «редактировать»? Открой панель (📋) → «📤 Отчёт».', 'error', 8000);
+    } else if (miss.length) {
+      toast('⚠️ Заполнено, но ' + miss.length + ' не вышло.\nОткрой панель (📋) → «📤 Отчёт».', 'warn', 7000);
+    } else {
+      toast('✅ Готово и сохранено (' + filledCount + ' полей).', 'ok', 4000);
+    }
+  }
+  // Подробный отчёт по последнему заполнению — по кнопке «📤 Отчёт».
+  function showFillReport() {
+    const R = lastFillResult;
+    if (!R || (!R.ok.length && !R.miss.length)) {
+      toast('Пока нечего показывать — сначала нажми «✨ Заполнить».', 'warn');
+      return;
+    }
+    const d = R.data || {};
+    const lines = [
+      d.name && '👤 ' + d.name,
+      d.emails && d.emails.length && '✉️ ' + d.emails.join(', '),
+      d.phones && d.phones.length && '📞 ' + d.phones.join(', '),
+      d.course && '📚 ' + d.course,
+      d.purchaseTs && '🧾 покупка: ' + fmtTs(d.purchaseTs),
+      d.support && '📅 поддержка до ' + d.support,
+      d.admin && d.admin.length && '🖥 ' + d.admin.join('  '),
+      '— — —',
+      '✅ ' + (R.ok.length ? R.ok.join(', ') : '—'),
+      R.miss.length ? '❌ ' + R.miss.join(', ') : null,
+    ].filter(Boolean).join('\n');
+    toast(lines, R.miss.length ? 'warn' : 'ok', 20000);
+    try { GM_setClipboard(JSON.stringify(GM_getValue(DEBUG_KEY) || {}, null, 2)); } catch (e) {}
   }
   function insertStored() {
     const d = GM_getValue(STORE_KEY);
@@ -1511,39 +1531,6 @@
       toast('Список полей формы скопирован в буфер обмена.', 'ok');
     } catch (e) {
       toast('Список полей выведен в консоль (F12 → Console).', 'warn');
-    }
-  }
-  // Диагностика: копирует строение блоков EMAIL и ТЕЛЕФОН (как они устроены
-  // в HTML) + кнопки «Сохранить» рядом — чтобы понять, почему почта не сохраняется.
-  function dumpAccBlocks() {
-    const wanted = [['email', 'почта'], ['телефон', 'phone']];
-    const clip = function (s, n) { s = s || ''; return s.length > n ? s.slice(0, n) + '…[обрезано]' : s; };
-    const parts = [];
-    document.querySelectorAll('.a17_additional_fields').forEach(function (b) {
-      const h = b.querySelector('h6');
-      const ht = h ? (h.textContent || '').trim().toLowerCase() : '';
-      if (!wanted.some(function (grp) { return grp.some(function (p) { return ht.includes(p); }); })) return;
-      const inputs = Array.prototype.map.call(b.querySelectorAll('input'), function (i) {
-        return '  input: id=' + (i.id || '—') + ' name=' + (i.name || '—') +
-               ' type=' + (i.type || '—') + ' value="' + (i.value || '') + '"' +
-               ' visible=' + isVisible(i) + ' disabled=' + i.disabled;
-      }).join('\n');
-      parts.push('=== БЛОК: ' + (h ? h.textContent.trim() : '(без заголовка)') + ' ===\n' +
-                 inputs + '\n--- HTML ---\n' + clip(b.outerHTML, 6000));
-    });
-    const saves = Array.prototype.map.call(
-      document.querySelectorAll('a.info_save, .info_save, a[class*="save"], button[class*="save"]'),
-      function (el, k) { return '  save#' + k + ': ' + clip(el.outerHTML, 300) + ' visible=' + isVisible(el); }
-    ).join('\n');
-    parts.push('=== КНОПКИ СОХРАНЕНИЯ ===\n' + (saves || 'не нашлись'));
-    const text = parts.length > 1 ? parts.join('\n\n')
-      : 'Блоки EMAIL/ТЕЛЕФОН не нашлись — карточка точно в режиме «Изменить»?';
-    console.log(TAG, 'строение полей:', text);
-    try {
-      GM_setClipboard(text);
-      toast('Скопировала строение полей почты/телефона.\nВставь (Ctrl+V) в чат — разберёмся 💜', 'ok', 12000);
-    } catch (e) {
-      toast('Вывела в консоль (F12 → Console), скопируй текст возле ' + TAG + '.', 'warn', 12000);
     }
   }
   function showStored() {
@@ -1663,13 +1650,9 @@
       wrap.style.top = '44px';
       wrap.style.transform = 'translateX(-50%)';
     }
-    // В OmniDesk панель по умолчанию спрятана — открывается кружком 🪄
-    // сверху экрана (рядом с воронкой 🌀). Состояние запоминается.
-    if (IS_OMNI) {
-      let panelOpen = false;
-      try { panelOpen = GM_getValue('helperPanelOpen') === true; } catch (e) {}
-      wrap.style.display = panelOpen ? 'flex' : 'none';
-    }
+    // В OmniDesk панель ВСЕГДА спрятана при загрузке страницы —
+    // открывается только кликом по кружку 📋 сверху экрана.
+    if (IS_OMNI) wrap.style.display = 'none';
     // Заголовок с крестиком
     const header = document.createElement('div');
     header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;width:100%;margin-bottom:4px;';
@@ -1683,7 +1666,6 @@
     closeBtn.onclick = function(e) {
       e.stopPropagation();
       wrap.style.display = 'none';
-      try { GM_setValue('helperPanelOpen', false); } catch (err) {}
     };
     closeBtn.onmouseenter = function() { this.style.color = '#DC2626'; };
     closeBtn.onmouseleave = function() { this.style.color = '#6B7280'; };
@@ -1708,14 +1690,14 @@
       bAmo.style.cursor = 'pointer';
       bAmo.onclick = function(e) { e.stopPropagation(); openAmoSearch(); };
       mainRow.appendChild(bAmo);
-      // Кнопка диагностики поля почты (для отладки — прислать строение в чат)
-      const bDbg = mkBtn('🔬 Поле почты');
-      bDbg.style.padding = '4px 8px';
-      bDbg.style.fontSize = '10px';
-      bDbg.style.cursor = 'pointer';
-      bDbg.title = 'Скопировать строение полей почты/телефона для диагностики';
-      bDbg.onclick = function(e) { e.stopPropagation(); dumpAccBlocks(); };
-      mainRow.appendChild(bDbg);
+      // Кнопка «Отчёт» — подробности по последнему заполнению (по требованию)
+      const bReport = mkBtn('📤 Отчёт');
+      bReport.style.padding = '4px 8px';
+      bReport.style.fontSize = '10px';
+      bReport.style.cursor = 'pointer';
+      bReport.title = 'Показать подробный отчёт по последнему заполнению (и скопировать его в буфер)';
+      bReport.onclick = function(e) { e.stopPropagation(); showFillReport(); };
+      mainRow.appendChild(bReport);
     }
     if (IS_OMNI) {
       // Значок ошибки (изначально скрыт)
@@ -1806,9 +1788,7 @@
       ensurePanel();
       const wrap = document.getElementById('eduson-helper-panel');
       if (!wrap) return;
-      const willShow = wrap.style.display === 'none';
-      wrap.style.display = willShow ? 'flex' : 'none';
-      try { GM_setValue('helperPanelOpen', willShow); } catch (err) {}
+      wrap.style.display = (wrap.style.display === 'none') ? 'flex' : 'none';
     };
     document.documentElement.appendChild(b);
   }
@@ -1831,9 +1811,8 @@
   function toast(msg, type, ms) {
     const colors = { ok: '#16A34A', warn: '#D97706', error: '#DC2626', info: '#7C3AED' };
     const box = document.createElement('div');
-    // Стиль — как у кружка/панели: белая карточка со светло-сиреневой рамкой,
-    // цветная полоска слева по типу сообщения. Появляется сверху, рядом с кружком.
-    box.style.cssText = 'position:fixed;top:46px;right:14px;z-index:2147483647;max-width:400px;background:#fff;color:#1F2937;padding:12px 30px 12px 16px;border:1px solid #DDD6FE;border-radius:14px;font:12px/1.6 Segoe UI,Arial,sans-serif;white-space:pre-wrap;box-shadow:0 6px 24px rgba(0,0,0,.22);border-left:5px solid ' + (colors[type] || colors.info) + ';';
+    // Компактная белая карточка внизу слева — не перекрывает карточку клиента справа.
+    box.style.cssText = 'position:fixed;left:14px;bottom:14px;z-index:2147483647;max-width:340px;background:#fff;color:#1F2937;padding:10px 28px 10px 14px;border:1px solid #DDD6FE;border-radius:12px;font:12px/1.5 Segoe UI,Arial,sans-serif;white-space:pre-wrap;box-shadow:0 6px 24px rgba(0,0,0,.22);border-left:5px solid ' + (colors[type] || colors.info) + ';';
     if (typeof msg === 'object' && msg) {
       const rows = [
         msg.name    && '👤 ' + msg.name,
@@ -1864,7 +1843,7 @@
   }
   /* ---------- запуск ---------- */
   if (IS_AMO || IS_OMNI) {
-    console.log(TAG, 'запущен на', location.host, 'версия 0.32');
+    console.log(TAG, 'запущен на', location.host, 'версия 0.33');
     ensurePanel();
     ensureHelperBadge();
     setInterval(function () { ensurePanel(); ensureHelperBadge(); }, 1500);
