@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper: amoCRM → OmniDesk
 // @namespace    eduson-helper
-// @version      0.39.0
+// @version      0.40.0
 // @description  Кнопка в OmniDesk сама находит клиента в amoCRM и заполняет карточку: ФИО, email, телефон, курс, дату поддержки и ссылку на Super User в админке Эдюсона
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -262,35 +262,128 @@
     return /^https?:\/\//i.test(href) ? href : null;
   }
 
-  // По amo-номеру / почте находит карточку студента в админке и достаёт ОДИН логин-линк.
-  // Для суперюзера любой логин-линк любого курса даёт доступ ко всем курсам (Наталья).
-  async function lookupLoginLink(data) {
-    const keys = [];
-    if (data.amoLeadId) keys.push(String(data.amoLeadId));
-    if (data.cardAmoId && String(data.cardAmoId) !== String(data.amoLeadId)) keys.push(String(data.cardAmoId));
-    if (data.amoContactId) keys.push(String(data.amoContactId));
-    (data.emails || []).slice(0, 2).forEach(function (e) {
-      if (e && !/@eduson\.tv$/i.test(e)) keys.push(e);
+  // Название курса на карточке юзера в админке: строка "Company: <a>Название</a>".
+  // Берём САМЫЙ МАЛЕНЬКИЙ элемент со словом "Company:" и ссылкой на компанию — иначе цепляем меню.
+  function parseUserCardCourse(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    let best = null, bestLen = 1e9;
+    doc.querySelectorAll('p, div, td, li, span').forEach(function (e) {
+      const t = e.textContent || '';
+      if (!/company\s*:/i.test(t)) return;
+      if (!e.querySelector('a[href*="/admin/companies/"]')) return;
+      if (t.length < bestLen) { best = e; bestLen = t.length; }
     });
-    if (!keys.length) return { url: null, error: 'нет amo-номера и почты в карточке' };
+    const a = best && best.querySelector('a[href*="/admin/companies/"]');
+    return a ? (a.textContent || '').trim() : '';
+  }
 
+  // Почта из логин-линка (для отсева сотрудников @eduson.tv).
+  function loginLinkEmail(url) {
+    try { return (new URL(url)).searchParams.get('user_email') || ''; } catch (e) { return ''; }
+  }
+
+  // Достаёт логин-линки ПО ПОЛЮ «АДМИНКА» карточки OmniDesk (ту ссылку, что уже нашёл магнит),
+  // а не свободным поиском по почте — иначе можно попасть на чужой/демо-аккаунт с похожей почтой.
+  function readAdminUrlsFromCard() {
+    let el = document.querySelector(OMNI_FIELDS.admin);
+    if (!el || !isVisible(el)) el = findOmniInput(LABELS.admin);
+    const raw = el ? String(el.value || el.textContent || '') : '';
+    const out = { superIds: [], userIds: [] };
+    (raw.match(/\/admin\/super_users\/(\d+)/g) || []).forEach(function (m) {
+      const id = m.match(/(\d+)/)[1];
+      if (out.superIds.indexOf(id) === -1) out.superIds.push(id);
+    });
+    (raw.match(/\/admin\/users\/(\d+)/g) || []).forEach(function (m) {
+      const id = m.match(/(\d+)/)[1];
+      if (out.userIds.indexOf(id) === -1) out.userIds.push(id);
+    });
+    return out;
+  }
+
+  // Возвращает { links: [{course, url}], error: null|'NOAUTH'|'ADMINKA_EMPTY'|текст }
+  async function lookupLoginLinks() {
+    const src = readAdminUrlsFromCard();
+    if (!src.superIds.length && !src.userIds.length) {
+      return { links: [], error: 'ADMINKA_EMPTY' };
+    }
     let authError = false, lastErr = '';
-    for (const q of keys) {
+    const userIds = src.userIds.slice();
+
+    // super_user → его sub-users (ТОЛЬКО из таблицы «Sub Users», не из меню/шапки страницы)
+    for (const sid of src.superIds.slice(0, 4)) {
       try {
-        const listHtml = await gmFetchText(ADMIN_BASE + '/admin/users?language=ru&q=' + encodeURIComponent(q));
-        if (adminLooksLikeLogin(listHtml)) { authError = true; continue; }
-        const raw = parseUserRowsFromList(listHtml);
-        let rows = raw.filter(function (r) { return r.text.indexOf(q) !== -1; });
-        if (!rows.length && raw.length && raw.length <= 5) rows = raw;
-        for (const r of rows.slice(0, 4)) {
-          const card = await gmFetchText(userCardUrl(r.uid));
-          if (adminLooksLikeLogin(card)) { authError = true; continue; }
-          const ll = parseLoginLink(card);
-          if (ll) return { url: ll, error: null };
+        const page = await gmFetchText(superUserUrl(sid));
+        if (adminLooksLikeLogin(page)) { authError = true; continue; }
+        const doc = new DOMParser().parseFromString(page, 'text/html');
+        doc.querySelectorAll('table tr a[href*="/admin/users/"]').forEach(function (a) {
+          const m = (a.getAttribute('href') || '').match(/\/admin\/users\/(\d+)/);
+          if (m && userIds.indexOf(m[1]) === -1) userIds.push(m[1]);
+        });
+      } catch (e) { if (e.message === 'NOAUTH') authError = true; else lastErr = e.message; }
+    }
+
+    const links = [];
+    for (const uid of userIds.slice(0, 8)) {
+      try {
+        const card = await gmFetchText(userCardUrl(uid));
+        if (adminLooksLikeLogin(card)) { authError = true; continue; }
+        const ll = parseLoginLink(card);
+        if (ll && !/@eduson\.tv$/i.test(loginLinkEmail(ll)) && !links.some(function (x) { return x.url === ll; })) {
+          links.push({ course: parseUserCardCourse(card), url: ll });
         }
       } catch (e) { if (e.message === 'NOAUTH') authError = true; else lastErr = e.message; }
     }
-    return { url: null, error: authError ? 'NOAUTH' : (lastErr || 'карточка студента в админке не нашлась') };
+
+    if (!links.length) {
+      return { links: [], error: authError ? 'NOAUTH' : (lastErr || 'на карточке(ах) в админке нет «Login link»') };
+    }
+    return { links: links, error: null };
+  }
+
+  // Запасной путь, если поле АДМИНКА пустое: строгий поиск по amo-номеру (без свободного email).
+  async function lookupLoginLinksByAmoId(amoId) {
+    if (!amoId) return { links: [], error: 'нет amo-номера' };
+    let authError = false, lastErr = '';
+    try {
+      const listHtml = await gmFetchText(ADMIN_BASE + '/admin/users?language=ru&q=' + encodeURIComponent(amoId));
+      if (adminLooksLikeLogin(listHtml)) return { links: [], error: 'NOAUTH' };
+      const rows = parseUserRowsFromList(listHtml).filter(function (r) { return r.text.indexOf(String(amoId)) !== -1; });
+      const links = [];
+      for (const r of rows.slice(0, 6)) {
+        const card = await gmFetchText(userCardUrl(r.uid));
+        if (adminLooksLikeLogin(card)) { authError = true; continue; }
+        const ll = parseLoginLink(card);
+        if (ll && !/@eduson\.tv$/i.test(loginLinkEmail(ll)) && !links.some(function (x) { return x.url === ll; })) {
+          links.push({ course: parseUserCardCourse(card), url: ll });
+        }
+      }
+      if (links.length) return { links: links, error: null };
+      return { links: [], error: authError ? 'NOAUTH' : 'по amo-номеру карточка в админке не нашлась' };
+    } catch (e) {
+      return { links: [], error: e.message === 'NOAUTH' ? 'NOAUTH' : e.message };
+    }
+  }
+
+  // Совпадение курса обращения с курсом карточки в админке (по общим словам).
+  function courseTokens(s) {
+    return normCourse(s).split(' ').filter(function (w) {
+      return w.length >= 3 && ['pro', 'про', 'для', 'при', 'тариф', 'курс'].indexOf(w) === -1;
+    });
+  }
+  function courseOverlap(a, b) {
+    const A = courseTokens(a), B = courseTokens(b);
+    if (!A.length || !B.length) return 0;
+    let n = 0;
+    A.forEach(function (w) { if (B.indexOf(w) !== -1) n++; });
+    return n;
+  }
+  function pickLoginLinkByCourse(links, target) {
+    if (links.length <= 1) return links[0] || null;
+    if (!target) return null;
+    const scored = links.map(function (l) { return { l: l, s: courseOverlap(l.course, target) }; })
+      .sort(function (x, y) { return y.s - x.s; });
+    if (scored[0].s >= 2 && scored[0].s > (scored[1] ? scored[1].s : 0)) return scored[0].l;
+    return null;
   }
 
   // Возвращает { links:[{url,courses}], isSuper:bool, error: null|'NOAUTH'|'текст' }
@@ -1017,13 +1110,13 @@
       return;
     }
     if (!data || (!data.name && !data.emails.length && !data.phones.length && !data.course && !data.support)) {
-      GM_setValue(DEBUG_KEY, { version: '0.39', url: location.href, amoId: amoId, seed: seed, result: 'ничего не нашлось', ts: Date.now() });
+      GM_setValue(DEBUG_KEY, { version: '0.40', url: location.href, amoId: amoId, seed: seed, result: 'ничего не нашлось', ts: Date.now() });
       toast('В амо ничего не нашлось 😕', 'warn');
       return;
     }
     data.cardAmoId = amoId || '';
     GM_setValue(STORE_KEY, data);
-    GM_setValue(DEBUG_KEY, { version: '0.39', url: location.href, amoId: amoId, seed: seed, data: data, note: note, ts: Date.now() });
+    GM_setValue(DEBUG_KEY, { version: '0.40', url: location.href, amoId: amoId, seed: seed, data: data, note: note, ts: Date.now() });
     console.log(TAG, 'данные из амо:', data);
     fillInputsFromData(data, 'Нашлось в амо' + (note ? '\n(' + note + ')' : ''));
   }
@@ -1493,7 +1586,7 @@
     // что именно и почему не вписалось.
     try {
       const prev = GM_getValue(DEBUG_KEY) || {};
-      prev.version = '0.39';
+      prev.version = '0.40';
       prev.fill = { ok: ok.slice(), miss: miss.slice(), at: new Date().toISOString(), url: location.href };
       GM_setValue(DEBUG_KEY, prev);
     } catch (e) {}
@@ -1846,7 +1939,7 @@
 
   // Мини-окошко со ссылкой-плашкой: ЛКМ по ссылке — копировать, ПКМ — родное меню браузера
   // («Открыть ссылку в окне в режиме инкогнито»). Сам ничего не открывает.
-  function showLoginLinkBox(url) {
+  function showLoginLinkBox(url, courseNote) {
     const old = document.getElementById('eduson-loginlink-box');
     if (old) old.remove();
     const box = document.createElement('div');
@@ -1855,15 +1948,21 @@
       'padding:12px 30px 12px 14px;border:1px solid #E5E7EB;border-radius:14px;font-family:' + HP_FONT + ';' +
       'box-shadow:0 12px 36px rgba(15,23,42,.22);border-left:5px solid #0284C7;';
     const title = document.createElement('div');
-    title.textContent = '🔑 Логин-линк студента (вход без пароля)';
+    title.textContent = 'Логин-линк студента (вход без пароля)';
     title.style.cssText = 'font-weight:800;font-size:12px;color:#0284C7;margin-bottom:8px;';
     box.appendChild(title);
+    if (courseNote) {
+      const c = document.createElement('div');
+      c.textContent = courseNote;
+      c.style.cssText = 'font-size:10.5px;color:#6B7280;font-weight:700;margin:-4px 0 8px;';
+      box.appendChild(c);
+    }
     const a = document.createElement('a');
     a.href = url;
     a.rel = 'noopener noreferrer';
-    const LABEL = '🔗 Скопировать · ПКМ → «Открыть в инкогнито»';
+    const LABEL = 'Скопировать / Инкогнито (ПКМ)';
     a.textContent = LABEL;
-    a.style.cssText = 'display:block;font-weight:700;font-size:12px;color:#075985;text-decoration:none;' +
+    a.style.cssText = 'display:block;text-align:center;font-weight:800;font-size:12px;color:#075985;text-decoration:none;' +
       'background:#E0F2FE;border:1px solid #BAE6FD;border-radius:10px;padding:9px 11px;cursor:pointer;';
     a.onclick = function (e) {
       e.preventDefault();
@@ -1885,33 +1984,89 @@
     setTimeout(function () { const b = document.getElementById('eduson-loginlink-box'); if (b) b.remove(); }, 90000);
   }
 
+  // Выбор курса, если у студента несколько логин-линков и по курсу обращения не подобралось.
+  function chooseLoginLink(links) {
+    return new Promise(function (resolve) {
+      const box = document.createElement('div');
+      box.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:2147483647;background:#fff;' +
+        'border-radius:16px;box-shadow:0 12px 40px rgba(15,23,42,.35);padding:18px;max-width:460px;width:92%;font-family:' + HP_FONT + ';';
+      const t = document.createElement('div');
+      t.textContent = 'По какому курсу логин-линк?';
+      t.style.cssText = 'font-size:14px;font-weight:800;color:#111827;margin-bottom:4px;';
+      box.appendChild(t);
+      const sub = document.createElement('div');
+      sub.textContent = 'Для суперюзера любой из них открывает все курсы.';
+      sub.style.cssText = 'font-size:12px;color:#6B7280;margin-bottom:12px;font-weight:600;';
+      box.appendChild(sub);
+      links.forEach(function (l) {
+        const b = document.createElement('button');
+        b.textContent = l.course || 'курс без названия';
+        b.style.cssText = 'display:block;width:100%;text-align:left;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:10px;' +
+          'padding:10px 12px;margin-bottom:8px;cursor:pointer;font-size:13px;font-weight:700;color:#111827;font-family:inherit;';
+        b.onclick = function () { box.remove(); resolve(l); };
+        box.appendChild(b);
+      });
+      const cancel = document.createElement('button');
+      cancel.textContent = 'Отмена';
+      cancel.style.cssText = 'background:none;border:none;color:#0284C7;font-size:12px;cursor:pointer;padding:4px;font-family:inherit;font-weight:700;';
+      cancel.onclick = function () { box.remove(); resolve(null); };
+      box.appendChild(cancel);
+      document.documentElement.appendChild(box);
+    });
+  }
+
+  function readCourseTarget() {
+    const st = GM_getValue(STORE_KEY);
+    if (st && st.course) return st.course;
+    let el = document.querySelector(OMNI_FIELDS.course);
+    if (!el || !isVisible(el)) el = findOmniInput(LABELS.course);
+    if (el) { const v = (el.value || el.textContent || '').trim(); if (v && v !== '—') return v; }
+    return '';
+  }
+
   let loginLinkBusy = false;
   async function copyLoginLink() {
     if (loginLinkBusy) return;
     loginLinkBusy = true;
     try {
-      const amoId = grabAmoIdFromPage();
-      const seed = grabContactSeed();
-      let data = { cardAmoId: amoId || '', amoLeadId: 0, amoContactId: 0, emails: seed.emails || [] };
-      if (!data.cardAmoId && !data.emails.length) {
-        const stored = GM_getValue(STORE_KEY);
-        if (stored) data = {
-          cardAmoId: stored.cardAmoId || '', amoLeadId: stored.amoLeadId || 0,
-          amoContactId: stored.amoContactId || 0, emails: stored.emails || []
-        };
+      toast('Ищу логин-линк в админке Эдюсон…', 'info', 6000);
+
+      // Основной путь — по ссылке из поля «АДМИНКА» (её уже нашёл магнит), не свободным поиском.
+      let res = await lookupLoginLinks();
+
+      // Запасной путь: поле АДМИНКА пустое → строгий поиск по amo-номеру (без свободного email).
+      if (res.error === 'ADMINKA_EMPTY') {
+        const st = GM_getValue(STORE_KEY) || {};
+        const amoId = grabAmoIdFromPage() || st.amoLeadId || st.amoContactId || st.cardAmoId || '';
+        if (!amoId) {
+          toast('Поле АДМИНКА пустое, amo-номера тоже нет.\nНажми сначала магнит 🧲 — он заполнит админку.', 'warn', 10000);
+          return;
+        }
+        res = await lookupLoginLinksByAmoId(amoId);
       }
-      if (!data.cardAmoId && !data.amoLeadId && !data.amoContactId && !data.emails.length) {
-        toast('Не вижу, кто студент 😕\nСначала нажми магнит 🧲 или открой карточку с виджетом amoCRM.', 'warn', 9000);
+
+      if (res.error === 'NOAUTH') {
+        toast('Админка не пустила 😕\nОткрой www.eduson.tv, залогинься и нажми ключ снова.', 'warn', 10000);
         return;
       }
-      toast('Ищу логин-линк в админке Эдюсон…', 'info', 6000);
-      const r = await lookupLoginLink(data);
-      if (r.url) { showLoginLinkBox(r.url); return; }
-      if (r.error === 'NOAUTH') {
-        toast('Админка не пустила 😕\nОткрой www.eduson.tv, залогинься и нажми 🔑 снова.', 'warn', 10000);
-      } else {
-        toast('Логин-линк не нашёлся: ' + (r.error || 'неизвестно') + '.', 'warn', 9000);
+      const links = res.links || [];
+      if (!links.length) {
+        toast('Логин-линк не нашёлся: ' + (res.error || 'неизвестно') + '.', 'warn', 9000);
+        return;
       }
+      if (links.length === 1) {
+        showLoginLinkBox(links[0].url, links[0].course ? 'курс: ' + links[0].course : '');
+        return;
+      }
+      // Несколько курсов — подбираем по курсу обращения, иначе спрашиваем.
+      const target = readCourseTarget();
+      const best = pickLoginLinkByCourse(links, target);
+      if (best) {
+        showLoginLinkBox(best.url, 'курс: ' + best.course + ' (по курсу обращения)');
+        return;
+      }
+      const chosen = await chooseLoginLink(links);
+      if (chosen) showLoginLinkBox(chosen.url, chosen.course ? 'курс: ' + chosen.course : '');
     } catch (e) {
       toast('Ошибка при поиске логин-линка: ' + e.message, 'error');
     } finally {
@@ -2036,7 +2191,7 @@
   }
   /* ---------- запуск ---------- */
   if (IS_AMO || IS_OMNI) {
-    console.log(TAG, 'запущен на', location.host, 'версия 0.39');
+    console.log(TAG, 'запущен на', location.host, 'версия 0.40');
     ensurePanel();
     removeHelperBadge();
     ensureMagnetButton();
