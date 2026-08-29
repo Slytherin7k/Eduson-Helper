@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper: amoCRM → OmniDesk
 // @namespace    eduson-helper
-// @version      0.34.0
+// @version      0.35.0
 // @description  Кнопка в OmniDesk сама находит клиента в amoCRM и заполняет карточку: ФИО, email, телефон, курс, дату поддержки и ссылку на Super User в админке Эдюсона
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -969,13 +969,13 @@
       return;
     }
     if (!data || (!data.name && !data.emails.length && !data.phones.length && !data.course && !data.support)) {
-      GM_setValue(DEBUG_KEY, { version: '0.34', url: location.href, amoId: amoId, seed: seed, result: 'ничего не нашлось', ts: Date.now() });
+      GM_setValue(DEBUG_KEY, { version: '0.35', url: location.href, amoId: amoId, seed: seed, result: 'ничего не нашлось', ts: Date.now() });
       toast('В амо ничего не нашлось 😕', 'warn');
       return;
     }
     data.cardAmoId = amoId || '';
     GM_setValue(STORE_KEY, data);
-    GM_setValue(DEBUG_KEY, { version: '0.34', url: location.href, amoId: amoId, seed: seed, data: data, note: note, ts: Date.now() });
+    GM_setValue(DEBUG_KEY, { version: '0.35', url: location.href, amoId: amoId, seed: seed, data: data, note: note, ts: Date.now() });
     console.log(TAG, 'данные из амо:', data);
     fillInputsFromData(data, 'Нашлось в амо' + (note ? '\n(' + note + ')' : ''));
   }
@@ -1445,7 +1445,7 @@
     // что именно и почему не вписалось.
     try {
       const prev = GM_getValue(DEBUG_KEY) || {};
-      prev.version = '0.34';
+      prev.version = '0.35';
       prev.fill = { ok: ok.slice(), miss: miss.slice(), at: new Date().toISOString(), url: location.href };
       GM_setValue(DEBUG_KEY, prev);
     } catch (e) {}
@@ -1454,9 +1454,9 @@
     // Короткое сообщение. Подробности — по кнопке «📤 Отчёт» в панели.
     const filledCount = ok.filter(function (s) { return !/^💾/.test(s); }).length;
     if (!ok.length) {
-      toast('❌ Ничего не заполнилось.\nКарточка в режиме «редактировать»? Открой панель (📋) → «📤 Отчёт».', 'error', 8000);
+      toast('❌ Ничего не заполнилось.\nКарточка в режиме «редактировать»?\n👉 нажми сюда — покажу подробности', 'error', 10000, showFillReport);
     } else if (miss.length) {
-      toast('⚠️ Заполнено, но ' + miss.length + ' не вышло.\nОткрой панель (📋) → «📤 Отчёт».', 'warn', 7000);
+      toast('⚠️ Заполнено, но ' + miss.length + ' не вышло.\n👉 нажми сюда — покажу подробности', 'warn', 9000, showFillReport);
     } else {
       toast('✅ Готово и сохранено (' + filledCount + ' полей).', 'ok', 4000);
     }
@@ -1764,41 +1764,20 @@
   }
   // Белый кружок 📋 — сверху экрана, слева вплотную к воронке 🌀 «Возврат-мастера».
   // По клику показывает/прячет панель хэлпера.
-  function ensureHelperBadge() {
-    if (!IS_OMNI) return;
-    if (!isCardPage()) {
-      const ex = document.getElementById('eduson-helper-badge');
-      if (ex) ex.remove();
-      return;
-    }
-    if (document.getElementById('eduson-helper-badge')) return;
-    const b = document.createElement('button');
-    b.id = 'eduson-helper-badge';
-    b.textContent = '📋';
-    b.title = 'Хэлпер: заполнение карточки клиента';
-    b.style.cssText =
-      'position:fixed;left:50%;top:5px;transform:translateX(calc(-50% - 38px));z-index:2147483647;' +
-      'width:32px;height:32px;padding:0;border:1px solid #DDD6FE;border-radius:50%;background:#fff;' +
-      'font-size:17px;line-height:32px;text-align:center;cursor:pointer;' +
-      'box-shadow:0 3px 12px rgba(0,0,0,.30);font-family:Segoe UI,Arial,sans-serif;';
-    b.onmouseenter = function () { b.style.opacity = '.85'; };
-    b.onmouseleave = function () { b.style.opacity = '1'; };
-    b.onclick = function (e) {
-      e.stopPropagation();
-      ensurePanel();
-      const wrap = document.getElementById('eduson-helper-panel');
-      if (!wrap) return;
-      wrap.style.display = (wrap.style.display === 'none') ? 'flex' : 'none';
-    };
-    document.documentElement.appendChild(b);
+  // Кружок 📋 сверху экрана убран (v0.35) — его роль взяла кнопка-магнит
+  // в шапке кейса: клик = заполнить, правый клик = панель с отчётом.
+  function removeHelperBadge() {
+    const ex = document.getElementById('eduson-helper-badge');
+    if (ex) ex.remove();
   }
 
-  // Иконка-магнит в шапке кейса OmniDesk — слева от статуса «Закрытое».
-  // Оформлена как родные иконки справа от статуса (.request-cont-it), серая.
+  // Кнопка-магнит в шапке кейса OmniDesk — слева от статуса «Закрытое».
+  // Белый круг + серый магнит, крупнее родных иконок, чтобы бросалась в глаза.
   // Клик — «притянуть» данные из амо и заполнить карточку (= «✨ Заполнить»).
+  // Правый клик — открыть/закрыть панель (отчёт, «🔎 В амо», ручная вставка).
   const MAGNET_SVG =
-    '<svg viewBox="-7.5 0 32 32" width="16" height="16" xmlns="http://www.w3.org/2000/svg" ' +
-    'style="display:block;fill:#A4A5A5;transition:fill .15s;">' +
+    '<svg viewBox="-7.5 0 32 32" width="19" height="19" xmlns="http://www.w3.org/2000/svg" ' +
+    'style="display:block;fill:#6B7280;transition:fill .15s;">' +
     '<path d="M3.68 10.6h-2.76c-0.48 0-0.84-0.36-0.84-0.84v-2.68c0-0.48 0.36-0.84 0.84-0.84h2.76c0.48 0 0.84 0.36 0.84 0.84v2.68c0 0.44-0.36 0.84-0.84 0.84zM1.76 8.92h1.12v-1h-1.12v1zM15.8 10.6h-2.76c-0.48 0-0.84-0.36-0.84-0.84v-2.68c0-0.48 0.36-0.84 0.84-0.84h2.76c0.48 0 0.84 0.36 0.84 0.84v2.68c0 0.44-0.36 0.84-0.84 0.84zM13.88 8.92h1.12v-1h-1.12v1zM8.36 25.76c-2.32 0-4.2-0.8-5.6-2.36-3.4-3.8-2.72-10.84-2.68-11.12 0.040-0.44 0.4-0.76 0.84-0.76h2.76c0.24 0 0.44 0.080 0.6 0.28 0.16 0.16 0.24 0.4 0.24 0.64-0.080 1.56 0.040 6.040 1.76 7.92 0.56 0.56 1.2 0.84 2 0.84h0.12c0.8 0 1.44-0.28 2-0.84 1.76-1.88 1.88-6.36 1.76-7.92 0-0.24 0.080-0.44 0.24-0.64s0.4-0.28 0.6-0.28h2.76c0.44 0 0.8 0.32 0.84 0.76 0.040 0.28 0.72 7.32-2.68 11.12-1.36 1.56-3.24 2.36-5.56 2.36zM1.72 13.2c-0.080 1.8 0 6.52 2.32 9.080 1.080 1.2 2.52 1.8 4.36 1.8s3.28-0.6 4.36-1.8c2.32-2.6 2.4-7.28 2.32-9.080h-1.12c0 1.84-0.2 6.080-2.24 8.28-0.88 0.92-1.96 1.4-3.2 1.4h-0.12c-1.28 0-2.36-0.48-3.2-1.4-2.16-2.2-2.36-6.44-2.36-8.28 0 0-1.12 0-1.12 0z"></path></svg>';
 
   function ensureMagnetButton() {
@@ -1812,17 +1791,23 @@
     if (document.getElementById('eduson-magnet-btn')) return;
     const btn = document.createElement('div');
     btn.id = 'eduson-magnet-btn';
-    btn.className = 'request-cont-it';   // размер/поведение — как у родных иконок
-    btn.title = 'Заполнить карточку клиента из amoCRM (Eduson Helper)';
-    btn.style.cssText = 'float:right;width:34px;height:34px;display:flex;align-items:center;justify-content:center;cursor:pointer;';
+    btn.title = 'Заполнить карточку из amoCRM. Правый клик — панель с отчётом.';
+    btn.style.cssText = 'float:right;width:30px;height:30px;margin:2px 8px 0 4px;display:flex;align-items:center;justify-content:center;cursor:pointer;' +
+      'background:#fff;border:1px solid #E1E1E4;border-radius:50%;box-shadow:0 1px 5px rgba(0,0,0,.20);transition:background .15s,box-shadow .15s;';
     btn.innerHTML = MAGNET_SVG;
     const svg = btn.firstChild;
-    btn.onmouseenter = function () { if (svg) svg.style.fill = '#767676'; };
-    btn.onmouseleave = function () { if (svg) svg.style.fill = '#A4A5A5'; };
+    btn.onmouseenter = function () { btn.style.background = '#F4F4F6'; btn.style.boxShadow = '0 2px 8px rgba(0,0,0,.28)'; if (svg) svg.style.fill = '#374151'; };
+    btn.onmouseleave = function () { btn.style.background = '#fff'; btn.style.boxShadow = '0 1px 5px rgba(0,0,0,.20)'; if (svg) svg.style.fill = '#6B7280'; };
     btn.onclick = function (e) {
       e.stopPropagation();
-      if (svg) { svg.style.fill = '#7C3AED'; setTimeout(function () { svg.style.fill = '#A4A5A5'; }, 700); }
+      if (svg) { svg.style.fill = '#7C3AED'; setTimeout(function () { svg.style.fill = '#6B7280'; }, 700); }
       smartFillOmni();
+    };
+    btn.oncontextmenu = function (e) {
+      e.preventDefault(); e.stopPropagation();
+      ensurePanel();
+      const wrap = document.getElementById('eduson-helper-panel');
+      if (wrap) wrap.style.display = (wrap.style.display === 'none') ? 'flex' : 'none';
     };
     // добавляем последним ребёнком → при float:right оказывается ЛЕВЕЕ статуса «Закрытое»
     bar.appendChild(btn);
@@ -1843,7 +1828,7 @@
     };
     return b;
   }
-  function toast(msg, type, ms) {
+  function toast(msg, type, ms, onTap) {
     const colors = { ok: '#16A34A', warn: '#D97706', error: '#DC2626', info: '#7C3AED' };
     const box = document.createElement('div');
     // Компактная белая карточка внизу слева — не перекрывает карточку клиента справа.
@@ -1872,16 +1857,22 @@
     closeX.onmouseleave = function () { closeX.style.color = '#9CA3AF'; };
     closeX.onclick = function (e) { e.stopPropagation(); box.remove(); };
     box.appendChild(closeX);
+    if (onTap) {
+      box.style.cursor = 'pointer';
+      box.style.borderStyle = 'solid dashed solid solid';
+      box.onclick = function () { box.remove(); try { onTap(); } catch (e) {} };
+    } else {
+      box.onclick = function () { box.remove(); };
+    }
     document.documentElement.appendChild(box);
-    box.onclick = function () { box.remove(); };
     setTimeout(function () { box.remove(); }, ms || 9000);
   }
   /* ---------- запуск ---------- */
   if (IS_AMO || IS_OMNI) {
-    console.log(TAG, 'запущен на', location.host, 'версия 0.34');
+    console.log(TAG, 'запущен на', location.host, 'версия 0.35');
     ensurePanel();
-    ensureHelperBadge();
+    removeHelperBadge();
     ensureMagnetButton();
-    setInterval(function () { ensurePanel(); ensureHelperBadge(); ensureMagnetButton(); }, 1500);
+    setInterval(function () { ensurePanel(); removeHelperBadge(); ensureMagnetButton(); }, 1500);
   }
 })();
