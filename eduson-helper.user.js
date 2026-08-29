@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper: amoCRM → OmniDesk
 // @namespace    eduson-helper
-// @version      0.42.0
+// @version      0.43.0
 // @description  Кнопка в OmniDesk сама находит клиента в amoCRM и заполняет карточку: ФИО, email, телефон, курс, дату поддержки и ссылку на Super User в админке Эдюсона
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -1119,13 +1119,13 @@
       return;
     }
     if (!data || (!data.name && !data.emails.length && !data.phones.length && !data.course && !data.support)) {
-      GM_setValue(DEBUG_KEY, { version: '0.42', url: location.href, amoId: amoId, seed: seed, result: 'ничего не нашлось', ts: Date.now() });
+      GM_setValue(DEBUG_KEY, { version: '0.43', url: location.href, amoId: amoId, seed: seed, result: 'ничего не нашлось', ts: Date.now() });
       toast('В амо ничего не нашлось 😕', 'warn');
       return;
     }
     data.cardAmoId = amoId || '';
     GM_setValue(STORE_KEY, data);
-    GM_setValue(DEBUG_KEY, { version: '0.42', url: location.href, amoId: amoId, seed: seed, data: data, note: note, ts: Date.now() });
+    GM_setValue(DEBUG_KEY, { version: '0.43', url: location.href, amoId: amoId, seed: seed, data: data, note: note, ts: Date.now() });
     console.log(TAG, 'данные из амо:', data);
     fillInputsFromData(data, 'Нашлось в амо' + (note ? '\n(' + note + ')' : ''));
   }
@@ -1615,7 +1615,7 @@
     // что именно и почему не вписалось.
     try {
       const prev = GM_getValue(DEBUG_KEY) || {};
-      prev.version = '0.42';
+      prev.version = '0.43';
       prev.fill = { ok: ok.slice(), miss: miss.slice(), at: new Date().toISOString(), url: location.href };
       GM_setValue(DEBUG_KEY, prev);
     } catch (e) {}
@@ -2077,13 +2077,13 @@
         return;
       }
       if (links.length === 1) {
-        showLoginLinks(links, links[0].course ? 'курс: ' + links[0].course : '');
+        showLoginLinks(links);
         return;
       }
-      // Несколько курсов: если по курсу обращения уверенно подобралось — показываем один,
-      // иначе показываем все строки (выбор = копирование, отдельного шага нет).
+      // Несколько курсов: если по курсу обращения уверенно подобралось — показываем один
+      // (с пометкой, что подобран сам), иначе показываем все строки (выбор = копирование).
       const best = pickLoginLinkByCourse(links, readCourseTarget());
-      if (best) showLoginLinks([best], 'по курсу обращения');
+      if (best) showLoginLinks([best], 'подобрано по курсу обращения');
       else showLoginLinks(links);
     } catch (e) {
       toast('Ошибка при поиске логин-линка: ' + e.message, 'error');
@@ -2209,7 +2209,7 @@
   }
   /* ---------- запуск ---------- */
   if (IS_AMO || IS_OMNI) {
-    console.log(TAG, 'запущен на', location.host, 'версия 0.42');
+    console.log(TAG, 'запущен на', location.host, 'версия 0.43');
     ensurePanel();
     removeHelperBadge();
     ensureMagnetButton();
