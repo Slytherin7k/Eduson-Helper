@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.19.0
+// @version      1.20.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -337,8 +337,8 @@
   // «Пройдено, %» курса — со страницы статистики студента на платформе курса
   // (та же, что куратор смотрит из инкогнито; открывается админ-логином Натальи).
   // Путь: поле АДМИНКА → /admin/users/<id> (для суперюзера — sub-user по совпадению курса/почты/тел.)
-  //       → ссылка на кабинет https://<домен>.eduson.tv/ru/users/<id>/stats
-  //       → блок курса «Осталось X … из Y» → прогресс = округл.вверх (Y−X)/Y.
+  //       → кабинет /ru/users/<id>/stats → ссылка «Курс: …» = учебный план
+  //       /ru/users/<id>/assignments/<N> → точный процент в шапке (.academy-plan-header .progress-scale__value).
   async function fetchProgressPct(courseName, seedEmail, seedPhone) {
     const raw = omniCardField(7302) || '';
     const userIds = (raw.match(/\/admin\/users\/(\d+)/g) || []).map(m => m.match(/(\d+)/)[1]);
@@ -377,20 +377,45 @@
       } catch (e) { if (e.message === 'NOAUTH') return ''; }
     }
 
+    const okUrl = u => u && /^https?:\/\/[^/]*eduson\.tv\//i.test(u);
     for (const uid of ids.slice(0, 4)) {
       try {
-        const doc = new DOMParser().parseFromString(await gmFetchText(A + '/admin/users/' + uid + '?language=ru'), 'text/html');
-        const link = doc.querySelector('a[href*="/ru/users/"][href*="/stats"]');
-        const statsUrl = link && link.getAttribute('href');
-        if (!statsUrl || !/^https?:\/\/[^/]*eduson\.tv\//i.test(statsUrl)) continue;
-        const text = (await gmFetchText(statsUrl)).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
-        // На этой странице «Пройдено N%» = выполнение ПЛАНА обучения (0/1 программ), не курса — не берём.
-        // Реальный прогресс курса: «Осталось X … из Y уроков» → (Y−X)/Y, округляем вверх (как на платформе).
-        const m = text.match(/Осталось\s+(\d+)\s+[а-яё]+\s+из\s+(\d+)/i);
-        if (m) {
-          const rem = +m[1], tot = +m[2];
-          if (tot > 0 && rem >= 0 && rem <= tot) return String(Math.ceil((tot - rem) / tot * 100));
+        const adoc = new DOMParser().parseFromString(await gmFetchText(A + '/admin/users/' + uid + '?language=ru'), 'text/html');
+        const sLink = adoc.querySelector('a[href*="/ru/users/"][href*="/stats"]');
+        if (!okUrl(sLink && sLink.getAttribute('href'))) continue;
+        const sdoc = new DOMParser().parseFromString(await gmFetchText(sLink.getAttribute('href')), 'text/html');
+
+        // Ссылка на учебный план курса (.../assignments/<N>) — там точный процент.
+        // Если курсов несколько — берём карточку по совпадению названия, иначе «текущую», иначе первую.
+        const cards = [...sdoc.querySelectorAll('.inline-course')];
+        let planUrl = '';
+        if (cards.length) {
+          let card = courseName ? cards.find(c => courseHit(courseName, c.textContent)) : null;
+          if (!card) card = sdoc.querySelector('.inline-course--current') || cards[0];
+          const a = card && card.querySelector('a[href*="/assignments/"]');
+          planUrl = a && a.getAttribute('href');
         }
+        if (!planUrl) {
+          const a2 = sdoc.querySelector('a[href*="/assignments/"]');
+          planUrl = a2 && a2.getAttribute('href');
+        }
+        // ссылка на плане может быть относительной — достраиваем от адреса кабинета
+        if (planUrl && planUrl.charAt(0) === '/') {
+          try { planUrl = new URL(planUrl, sLink.getAttribute('href')).href; } catch (e) {}
+        }
+        if (!okUrl(planUrl)) continue;
+
+        const planHtml = await gmFetchText(planUrl);
+        const pdoc = new DOMParser().parseFromString(planHtml, 'text/html');
+        const valEl = pdoc.querySelector('.academy-plan-header .progress-scale__value, .academy-plan-header__progress-scale .progress-scale__value, .academy-plan-header__progress-scale');
+        let m = valEl && (valEl.textContent || '').match(/(\d{1,3})\s*%/);
+        if (!m) {
+          const bar = pdoc.querySelector('.academy-plan-header .progress-scale__bar, .academy-plan-header__progress-scale .progress-scale__bar');
+          const w = bar && (bar.getAttribute('style') || '').match(/width:\s*(\d{1,3})/);
+          if (w) m = [null, w[1]];
+        }
+        if (!m) m = planHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').match(/(\d{1,3})\s*%\s+\d+\s+курс/i);
+        if (m) return String(Math.min(100, Math.max(0, +m[1])));
       } catch (e) { if (e.message === 'NOAUTH') return ''; }
     }
     return '';
@@ -1221,7 +1246,7 @@
   }
 
   if (location.hostname.endsWith('omnidesk.ru')) {
-    console.log(TAG, 'запущен, версия ' + '1.19.0');
+    console.log(TAG, 'запущен, версия ' + '1.20.0');
     removeLauncher();
     ensureMenuItem();
     setInterval(function () { removeLauncher(); ensureMenuItem(); }, 2000);
