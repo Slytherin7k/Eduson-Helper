@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.54.0
+// @version      0.55.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -111,7 +111,7 @@
 
   /* ================================================ */
 
-  const VER = '0.54.0';
+  const VER = '0.55.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -2694,7 +2694,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.54.0'; // синхр. с Хэлпером
+  const VER = '0.55.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -2952,17 +2952,29 @@
       });
     });
   }
-  // МОП берём из полей самой сделки (эндпоинт /api/v4/leads/<id> — тот же, что у магнита).
-  // Приоритет полей: «УР МОП» → «Первый Менеджер» → «Менеджер КЦ». Возвращает { name, sure, err }.
+  // Кто продал сделку. Источники по надёжности:
+  //  1) заметка «Коллега <Имя> продал курс…» — фактическая запись о продаже (как у Возврат-мастера);
+  //  2) поле сделки «УР МОП» / «Первый Менеджер» / «Менеджер КЦ».
+  // Никаких догадок (по «Лид получил» / ответственному — там часто не тот). Возвращает { name, sure, err }.
   async function fetchMopName(dealNum) {
     if (!dealNum) return { name: '', sure: false, err: 'no-deal' };
     const base = 'https://eduson.amocrm.ru';
-    let l;
+
+    // 1) заметка о продаже
     try {
-      l = await gmFetch(base + '/api/v4/leads/' + dealNum);
-    } catch (e) {
-      return { name: '', sure: false, err: e.message };
-    }
+      const j = await gmFetch(base + '/api/v4/leads/' + dealNum + '/notes?filter[note_type]=common&order[id]=desc&limit=250');
+      const notes = ((j && j._embedded) || {}).notes || [];
+      for (const n of notes) {
+        const t = (n.params && (n.params.text || n.params.message)) || '';
+        const m = t.match(/Коллега\s+(.+?)\s+продал/i);
+        if (m) return { name: m[1].replace(/["'«».,]+/g, '').replace(/\s+/g, ' ').trim(), sure: true, err: '' };
+      }
+    } catch (e) { if (e.message === 'NOAUTH') return { name: '', sure: false, err: 'NOAUTH' }; }
+
+    // 2) поле сделки
+    let l;
+    try { l = await gmFetch(base + '/api/v4/leads/' + dealNum); }
+    catch (e) { return { name: '', sure: false, err: e.message }; }
     const cf = (l && l.custom_fields_values) || [];
     const fieldVal = function (re) {
       const f = cf.find(function (x) { return re.test(x.field_name || ''); });
@@ -2971,17 +2983,7 @@
     };
     const mop = fieldVal(/^ур\s*моп$/i) || fieldVal(/первый\s*менеджер/i) || fieldVal(/менеджер\s*кц/i);
     if (mop) return { name: mop, sure: true, err: '' };
-    // менее надёжно: кто получил лид (у закрытой сделки часто он же и продал)
-    const maybe = fieldVal(/лид\s*получил/i) || fieldVal(/^менеджер$/i);
-    if (maybe) return { name: maybe, sure: false, err: '' };
-    // запасной — ответственный за сделку (эндпоинт /users/ у куратора обычно закрыт — это ок)
-    const uid = l && l.responsible_user_id;
-    if (uid) {
-      try {
-        const usr = await gmFetch(base + '/api/v4/users/' + uid);
-        if (usr && usr.name) return { name: usr.name, sure: false, err: '' };
-      } catch (e) { /* тихо */ }
-    }
+
     return { name: '', sure: false, err: '' };
   }
 
@@ -3232,7 +3234,7 @@
         fetchMopName(deal).then(function (r) {
           if (r.name) {
             mopInput.value = r.name;
-            mopNote.textContent = r.sure ? 'из поля «УР МОП» сделки в амо' : 'по данным амо (получил лид / ответственный) — проверь, тот ли это МОП';
+            mopNote.textContent = r.sure ? 'из амо — кто продал сделку' : 'по данным амо — проверь, тот ли это МОП';
             recompute();
           } else if (r.err === 'NOAUTH') {
             mopNote.textContent = 'амо не пустило (' + deal + '). Открой eduson.amocrm.ru в соседней вкладке, войди, вернись и открой пинг заново. Если не помогает — впиши МОП сам.';
