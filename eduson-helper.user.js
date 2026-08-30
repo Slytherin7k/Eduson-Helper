@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper: amoCRM → OmniDesk
 // @namespace    eduson-helper
-// @version      0.47.0
+// @version      0.48.0
 // @description  Кнопка в OmniDesk сама находит клиента в amoCRM и заполняет карточку: ФИО, email, телефон, курс, дату поддержки и ссылку на Super User в админке Эдюсона
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -102,14 +102,15 @@
 
     // IT
     [/python/i, 'Python', 12],
-    [/java/i, 'Java', 12],
-    [/javascript/i, 'JavaScript', 12],
+    [/full[\s-]?stack|фул{1,2}[\s-]?ст[еэа]к/i, 'Fullstack на JavaScript', 12],
+    [/javascript|js[\s-]?разработ/i, 'JavaScript-разработчик', 12],
+    [/\bjava\b/i, 'Java', 12],
     [/sql/i, 'SQL', 12],
   ];
 
   /* ================================================ */
 
-  const VER = '0.47.0';
+  const VER = '0.48.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -1416,7 +1417,8 @@
   }
   // Слова-«мусор» в названиях курсов — не участвуют в сравнении.
   const COURSE_STOP = ['тариф', 'тарифа', 'тарифу', 'курс', 'курса', 'курсу', 'программа', 'программе',
-    'обучение', 'обучению', 'доступ', 'для', 'при', 'под', 'the', 'and', 'пакет', 'версия', 'формат'];
+    'обучение', 'обучению', 'доступ', 'для', 'при', 'под', 'the', 'and', 'пакет', 'версия', 'формат',
+    'разработчик', 'разработчика', 'разработчику', 'developer'];
   // Синонимы тарифов: первая в группе — «ключ». Нужно, чтобы «Мастер» amo совпал с «Максимум» в омни и т.п.
   const TARIFF_SYN = [
     ['pro', 'про', 'профи', 'профессионал', 'профессиональный'],
