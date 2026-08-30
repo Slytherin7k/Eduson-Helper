@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper: amoCRM → OmniDesk
 // @namespace    eduson-helper
-// @version      0.51.0
+// @version      0.52.0
 // @description  Кнопка в OmniDesk сама находит клиента в amoCRM и заполняет карточку: ФИО, email, телефон, курс, дату поддержки и ссылку на Super User в админке Эдюсона
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -110,7 +110,7 @@
 
   /* ================================================ */
 
-  const VER = '0.51.0';
+  const VER = '0.52.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -1357,65 +1357,68 @@
     out = out.replace(/(^|\s)(Оглы|Оглу|Кызы|Гызы|Уулу|Улы)(?=\s|$)/g, function (_, a, b) { return a + b.toLowerCase(); });
     return out.replace(/\s+/g, ' ').trim();
   }
-  // Окно «нашлось несколько человек». Мультивыбор: куратор отмечает галочками
-  // всех, кто относится к студенту. Возвращает ОСНОВНОЙ контакт (первый отмеченный
-  // по порядку — список отсортирован по совпадению), у него в ._mergeExtra —
-  // остальные отмеченные, чьи почты/телефоны надо слить в карточку.
+  // Окно «нашлось несколько человек». ГЛАВНОЕ действие — НАЖАТЬ на того, кто наш студент
+  // (его данные и пойдут в карточку). Возвращает выбранный контакт. Если у студента несколько
+  // карточек в амо — куратор ставит галочку «＋ слить» у остальных, тогда их телефоны/почты
+  // добавятся к выбранному (в ._mergeExtra). По умолчанию ничего не слито — так безопаснее,
+  // когда на одной сделке разные люди с общей почтой.
   function chooseCandidate(candidates, seed) {
     return new Promise(function (resolve) {
       const list = candidates.slice(0, 6);
       const box = document.createElement('div');
-      box.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:2147483647;background:#fff;border-radius:16px;box-shadow:0 12px 40px rgba(15,23,42,.35);padding:18px;max-width:460px;width:92%;font-family:' + HP_FONT + ';';
+      box.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:2147483647;background:#fff;border-radius:16px;box-shadow:0 12px 40px rgba(15,23,42,.35);padding:18px;max-width:480px;width:92%;font-family:' + HP_FONT + ';';
       const title = document.createElement('div');
       title.style.cssText = 'font-size:14px;font-weight:700;color:#111827;margin-bottom:4px;';
       title.textContent = 'В амо нашлось несколько человек 👥';
       const sub = document.createElement('div');
       sub.style.cssText = 'font-size:12px;color:#6B7280;margin-bottom:12px;';
       const by = [...seed.emails, ...seed.phones].filter(Boolean);
-      sub.textContent = 'Отметь всех, кто относится к этому студенту — почты и телефоны отмеченных сольются в карточку.' +
-        (by.length ? ' В карточке Омни: ' + by.join(', ') + '.' : '');
+      sub.textContent = 'Нажми на того, кто наш студент — его данные пойдут в карточку.' +
+        (by.length ? ' В карточке Омни: ' + by.join(', ') + '.' : '') +
+        ' Если у студента несколько карточек в амо — отметь «＋ слить» у остальных.';
       box.appendChild(title);
       box.appendChild(sub);
 
-      const checks = [];
-      list.forEach(function (c, i) {
-        const row = document.createElement('label');
-        row.style.cssText = 'display:flex;gap:9px;align-items:flex-start;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:10px;padding:10px 12px;margin-bottom:8px;cursor:pointer;font-size:13px;color:#111827;';
-        const cb = document.createElement('input');
-        cb.type = 'checkbox';
-        cb.style.cssText = 'margin-top:2px;flex:0 0 auto;width:16px;height:16px;cursor:pointer;';
-        // по умолчанию отмечаем того, у кого совпал контакт (или самого вероятного — первого)
-        cb.checked = !!(c._matchEmail || c._matchPhone) || (i === 0);
-        checks.push({ cb: cb, c: c });
-        const txt = document.createElement('div');
+      const cbs = new Map();
+      list.forEach(function (c) {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:8px;align-items:stretch;margin-bottom:8px;';
+
+        const pick = document.createElement('button');
+        pick.style.cssText = 'flex:1;text-align:left;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:10px;padding:10px 12px;cursor:pointer;font-size:13px;color:#111827;font-family:inherit;';
+        pick.onmouseenter = function () { pick.style.background = '#E0F2FE'; pick.style.borderColor = '#7DD3FC'; };
+        pick.onmouseleave = function () { pick.style.background = '#F9FAFB'; pick.style.borderColor = '#E5E7EB'; };
         const hints = [];
-        if (c._hintEmails.length) hints.push('✉️ ' + c._hintEmails.join(', '));
-        if (c._hintPhones.length) hints.push('📞 ' + c._hintPhones.join(', '));
+        if (c._hintEmails && c._hintEmails.length) hints.push('✉️ ' + c._hintEmails.slice(0, 3).join(', ') + (c._hintEmails.length > 3 ? ' …' : ''));
+        if (c._hintPhones && c._hintPhones.length) hints.push('📞 ' + c._hintPhones.slice(0, 2).join(', '));
         if (c._matchEmail) hints.push('✅ почта совпала');
         else if (c._matchPhone) hints.push('✅ телефон совпал');
-        txt.innerHTML = '<div style="font-weight:600;">' + (c._preferred ? '⭐ ' : '') +
+        pick.innerHTML = '<div style="font-weight:600;">' + (c._preferred ? '⭐ ' : '') +
           String(candidateName(c)).replace(/[<>&]/g, '') + '</div>' +
           (hints.length ? '<div style="font-size:11.5px;color:#6B7280;margin-top:2px;">' + hints.join('  ·  ').replace(/[<>]/g, '') + '</div>' : '');
-        row.appendChild(cb);
-        row.appendChild(txt);
+        pick.onclick = function () {
+          c._mergeExtra = list.filter(function (x) { return x !== c && cbs.get(x) && cbs.get(x).checked; });
+          box.remove();
+          resolve(c);
+        };
+
+        const mlab = document.createElement('label');
+        mlab.title = 'слить телефоны и почты этой карточки в выбранного студента';
+        mlab.style.cssText = 'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;border:1px solid #E5E7EB;border-radius:10px;padding:0 9px;cursor:pointer;font-size:9px;color:#6B7280;font-weight:700;flex:0 0 auto;';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.style.cssText = 'width:15px;height:15px;cursor:pointer;margin:0;';
+        cbs.set(c, cb);
+        mlab.appendChild(cb);
+        mlab.appendChild(document.createTextNode('＋ слить'));
+
+        row.appendChild(pick);
+        row.appendChild(mlab);
         box.appendChild(row);
       });
 
-      const done = document.createElement('button');
-      done.style.cssText = 'display:block;width:100%;background:#0284C7;color:#fff;border:none;border-radius:12px;padding:10px 12px;margin:4px 0 8px;cursor:pointer;font-size:13px;font-weight:700;font-family:inherit;';
-      done.textContent = 'Готово ✓';
-      done.onclick = function () {
-        const picked = checks.filter(x => x.cb.checked).map(x => x.c);
-        if (!picked.length) { resolve(null); box.remove(); return; }
-        const main = picked[0];
-        main._mergeExtra = picked.slice(1);
-        box.remove();
-        resolve(main);
-      };
-      box.appendChild(done);
-
       const cancel = document.createElement('button');
-      cancel.style.cssText = 'background:none;border:none;color:#0284C7;font-size:12px;cursor:pointer;padding:4px;display:block;margin:0 auto;';
+      cancel.style.cssText = 'background:none;border:none;color:#0284C7;font-size:12px;cursor:pointer;padding:6px 4px 0;display:block;margin:2px auto 0;font-family:inherit;';
       cancel.textContent = 'Отмена — никого не выбирать';
       cancel.onclick = function () { box.remove(); resolve(null); };
       box.appendChild(cancel);
@@ -1446,7 +1449,10 @@
       if (!err && candidates.length) {
         let chosen = candidates[0];
         const second = candidates[1];
-        if (candidates.length > 1 && (chosen._score - (second ? second._score : 0)) < 4) {
+        // спрашиваем, если счёт близкий ИЛИ по контактам совпало сразу несколько человек
+        // (бывает: на одной сделке разные люди с общей почтой — сам выбирать нельзя)
+        const matchCount = candidates.filter(function (c) { return c._matchEmail || c._matchPhone; }).length;
+        if (candidates.length > 1 && (matchCount > 1 || (chosen._score - (second ? second._score : 0)) < 4)) {
           chosen = await chooseCandidate(candidates, seed);
         }
         if (chosen) {
