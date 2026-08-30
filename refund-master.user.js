@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.18.0
+// @version      1.19.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -242,6 +242,31 @@
     return looksLikeFio(n) || nameWords(n).length ? n.trim() : '';
   }
 
+  // Куратор = ответственный за обращение в OmniDesk (select #case_staff_id, формат «Имя Ф.»).
+  // Сопоставляем со списком CURATORS («Фамилия Имя»): имя совпало + фамилия на ту же букву.
+  function curatorFromResponsible() {
+    const sel = document.querySelector('#case_staff_id, select[name="case_staff_id"]');
+    let raw = '';
+    if (sel && sel.options && sel.selectedIndex >= 0) raw = (sel.options[sel.selectedIndex].textContent || '').trim();
+    if (!raw || /не назначен/i.test(raw)) return '';
+    const low = s => String(s || '').toLowerCase().replace(/ё/g, 'е');
+    // «Имя Ф.» либо «Имя Фамилия» либо «Фамилия Имя»
+    const parts = raw.split(/\s+/).filter(Boolean);
+    if (parts.length < 2) return '';
+    const a = low(parts[0]), b = low(parts[1]).replace(/\.$/, '');
+    const initMatch = (fam, given) => {
+      // raw = «Имя Ф.»: given == parts0, fam[0] == parts1[0]
+      if (b.length === 1 || (parts[1].endsWith('.') && b.length <= 2)) return given === a && fam[0] === b[0];
+      // raw = полное: любой порядок
+      return (given === a && fam === b) || (given === b && fam === a);
+    };
+    const hit = CURATORS.find(c => {
+      const p = c.split(' '); // «Фамилия Имя»
+      return p[1] && initMatch(low(p[0]), low(p[1]));
+    });
+    return hit || '';
+  }
+
   // Полное ФИО из админки Эдюсон — если в карточке/амо только имя.
   // Берём ссылку(и) из поля АДМИНКА сайдбара:
   //  /admin/users/<id>       → <h1> страницы = «Фамилия Имя»
@@ -312,7 +337,8 @@
   // «Пройдено, %» курса — со страницы статистики студента на платформе курса
   // (та же, что куратор смотрит из инкогнито; открывается админ-логином Натальи).
   // Путь: поле АДМИНКА → /admin/users/<id> (для суперюзера — sub-user по совпадению курса/почты/тел.)
-  //       → ссылка на кабинет вида https://<домен>.eduson.tv/ru/users/<id>/stats → текст «Пройдено N%».
+  //       → ссылка на кабинет https://<домен>.eduson.tv/ru/users/<id>/stats
+  //       → блок курса «Осталось X … из Y» → прогресс = округл.вверх (Y−X)/Y.
   async function fetchProgressPct(courseName, seedEmail, seedPhone) {
     const raw = omniCardField(7302) || '';
     const userIds = (raw.match(/\/admin\/users\/(\d+)/g) || []).map(m => m.match(/(\d+)/)[1]);
@@ -357,9 +383,14 @@
         const link = doc.querySelector('a[href*="/ru/users/"][href*="/stats"]');
         const statsUrl = link && link.getAttribute('href');
         if (!statsUrl || !/^https?:\/\/[^/]*eduson\.tv\//i.test(statsUrl)) continue;
-        const text = (await gmFetchText(statsUrl)).replace(/<[^>]+>/g, ' ');
-        const m = text.match(/Пройдено\s*(\d+(?:[.,]\d+)?)\s*%/i);
-        if (m) return m[1].replace(',', '.');
+        const text = (await gmFetchText(statsUrl)).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+        // На этой странице «Пройдено N%» = выполнение ПЛАНА обучения (0/1 программ), не курса — не берём.
+        // Реальный прогресс курса: «Осталось X … из Y уроков» → (Y−X)/Y, округляем вверх (как на платформе).
+        const m = text.match(/Осталось\s+(\d+)\s+[а-яё]+\s+из\s+(\d+)/i);
+        if (m) {
+          const rem = +m[1], tot = +m[2];
+          if (tot > 0 && rem >= 0 && rem <= tot) return String(Math.ceil((tot - rem) / tot * 100));
+        }
       } catch (e) { if (e.message === 'NOAUTH') return ''; }
     }
     return '';
@@ -569,7 +600,7 @@
     const pick = (k, fallback) => (cs[k] !== undefined && cs[k] !== '') ? cs[k] : fallback;
 
     const T = {
-      curator: pick('curator', GM_getValue('rm_curator') || CURATORS[0]),
+      curator: pick('curator', curatorFromResponsible() || GM_getValue('rm_curator') || CURATORS[0]),
       name: '', status: pick('status', GM_getValue('rm_status') || STATUSES[0]),
       claimDate: pick('claimDate', todayStr()), accessDate: '',
       progress: pick('progress', ''), cluster: '', course: '', payType: '',
@@ -1190,7 +1221,7 @@
   }
 
   if (location.hostname.endsWith('omnidesk.ru')) {
-    console.log(TAG, 'запущен, версия ' + '1.18.0');
+    console.log(TAG, 'запущен, версия ' + '1.19.0');
     removeLauncher();
     ensureMenuItem();
     setInterval(function () { removeLauncher(); ensureMenuItem(); }, 2000);

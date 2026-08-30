@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.56.0
+// @version      0.57.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -111,7 +111,7 @@
 
   /* ================================================ */
 
-  const VER = '0.56.0';
+  const VER = '0.57.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -861,54 +861,6 @@
     });
     return best || String((lead && lead.name) || 'сделка');
   }
-
-  /* ---------- память выбора по кейсу ---------- */
-  // Когда магнит спрашивает «кто из нескольких» или «какая из сделок» — запоминаем ответ,
-  // привязав к номеру обращения OmniDesk. Повторный клик магнита по тому же кейсу не переспрашивает.
-  function caseKey() {
-    const m = location.pathname.match(/(\d{2,4}-\d{5,})/);
-    return m ? 'helper_pick_' + m[1] : '';
-  }
-  function savedPick() {
-    const k = caseKey(); if (!k) return null;
-    try { return JSON.parse(GM_getValue(k) || 'null'); } catch (e) { return null; }
-  }
-  function savePick(kind, id, label) {
-    const k = caseKey(); if (!k) return;
-    const cur = savedPick() || {};
-    cur[kind] = { id: String(id), label: label || '', ts: Date.now() };
-    try { GM_setValue(k, JSON.stringify(cur)); } catch (e) { /* ignore */ }
-  }
-  function forgetPick() {
-    const k = caseKey(); if (k) { try { GM_setValue(k, ''); } catch (e) {} }
-  }
-  // Выбор контакта: сперва — запомненный по кейсу, иначе окно «нашлось несколько человек».
-  async function pickContact(list, seed) {
-    const sp = savedPick();
-    if (sp && sp.contact) {
-      const hit = list.find(function (c) { return String(c.id) === String(sp.contact.id); });
-      if (hit) {
-        toast('Клиент по этому кейсу запомнен: ' + candidateName(hit) + '.\nНажми тут, чтобы выбрать заново.',
-          'info', 9000, function () { forgetPick(); toast('Сбросила выбор. Нажми магнит 🧲 ещё раз.', 'info'); });
-        return hit;
-      }
-    }
-    const chosen = await chooseCandidate(list, seed);
-    if (chosen) savePick('contact', chosen.id, candidateName(chosen));
-    return chosen;
-  }
-  // Выбор сделки: сперва — запомненная по кейсу, иначе окно «несколько оплаченных сделок».
-  async function pickDeal(deals) {
-    const sp = savedPick();
-    if (sp && sp.deal) {
-      const hit = deals.find(function (l) { return String(l.id) === String(sp.deal.id); });
-      if (hit) return hit;
-    }
-    const l = await chooseDeal(deals);
-    if (l) savePick('deal', l.id, dealCoursePreview(l));
-    return l;
-  }
-
   function chooseDeal(deals) {
     return new Promise(function (resolve) {
       const box = document.createElement('div');
@@ -1009,7 +961,7 @@
       return data;
     }
     let useLead = wonLeads[0];
-    if (wonLeads.length > 1) useLead = await pickDeal(wonLeads);
+    if (wonLeads.length > 1) useLead = await chooseDeal(wonLeads);
     if (useLead) {
       data.amoLeadId = useLead.id || data.amoLeadId;
       await applyLeadToData(useLead, data, api, true);
@@ -1178,7 +1130,7 @@
         chosen = contacts[0];
       } else if (contacts.length > 1) {
         contacts[0]._preferred = true;
-        chosen = await pickContact(contacts, seed);
+        chosen = await chooseCandidate(contacts, seed);
         if (!chosen) throw new Error('CANCELLED');
       }
       const d = newClientData(base + (chosen ? '/contacts/detail/' + chosen.id : '/leads/detail/' + lead.id));
@@ -1199,7 +1151,7 @@
         wonLeads.sort((a, b) => (b.closed_at || 0) - (a.closed_at || 0));
         let useLead = wonLeads[0];
         if (wonLeads.length > 1) {
-          useLead = await pickDeal(wonLeads);
+          useLead = await chooseDeal(wonLeads);
         }
         if (useLead) {
           d.amoLeadId = useLead.id || d.amoLeadId;
@@ -1501,9 +1453,8 @@
         // спрашиваем, если счёт близкий ИЛИ по контактам совпало сразу несколько человек
         // (бывает: на одной сделке разные люди с общей почтой — сам выбирать нельзя)
         const matchCount = candidates.filter(function (c) { return c._matchEmail || c._matchPhone; }).length;
-        const ambiguous = matchCount > 1 || (chosen._score - (second ? second._score : 0)) < 4;
-        if (candidates.length > 1 && (ambiguous || (savedPick() && savedPick().contact))) {
-          chosen = await pickContact(candidates, seed);
+        if (candidates.length > 1 && (matchCount > 1 || (chosen._score - (second ? second._score : 0)) < 4)) {
+          chosen = await chooseCandidate(candidates, seed);
         }
         if (chosen) {
           const d = newClientData(base + '/contacts/detail/' + chosen.id);
@@ -2743,7 +2694,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.56.0'; // синхр. с Хэлпером
+  const VER = '0.57.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
