@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper: amoCRM → OmniDesk
 // @namespace    eduson-helper
-// @version      0.44.0
+// @version      0.45.0
 // @description  Кнопка в OmniDesk сама находит клиента в amoCRM и заполняет карточку: ФИО, email, телефон, курс, дату поддержки и ссылку на Super User в админке Эдюсона
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -105,7 +105,7 @@
 
   /* ================================================ */
 
-  const VER = '0.44.0';
+  const VER = '0.45.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -2261,25 +2261,28 @@
     }
   }
 
-  // Одна иконка в шапке кейса (ключ / магнит). Без float и отрицательных отступов —
-  // выравнивание держит общий flex-контейнер, поэтому кнопки больше не «съезжают».
+  // Одна иконка в шапке кейса (ключ / магнит). Размер — как у нативных иконок омника,
+  // чтобы не торчали вверх и не залезали на панель справа.
   function makeHdrIcon(id, svgHtml, titleText) {
     const btn = document.createElement('div');
     btn.id = id;
     btn.title = titleText;
-    btn.style.cssText = 'width:36px;height:36px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;cursor:pointer;' +
-      'background:#fff;border:1px solid #E1E1E4;border-radius:6px;box-shadow:0 1px 5px rgba(0,0,0,.20);transition:background .15s,box-shadow .15s;';
+    btn.style.cssText = 'width:30px;height:28px;flex:0 0 auto;box-sizing:border-box;' +
+      'display:flex;align-items:center;justify-content:center;cursor:pointer;' +
+      'background:#fff;border:1px solid #DADCE0;border-radius:5px;box-shadow:0 1px 2px rgba(0,0,0,.12);transition:background .15s;';
     btn.innerHTML = svgHtml;
     const svg = btn.firstChild;
-    btn.onmouseenter = function () { btn.style.background = '#F4F4F6'; btn.style.boxShadow = '0 2px 8px rgba(0,0,0,.28)'; if (svg) svg.style.fill = '#374151'; };
-    btn.onmouseleave = function () { btn.style.background = '#fff'; btn.style.boxShadow = '0 1px 5px rgba(0,0,0,.20)'; if (svg) svg.style.fill = '#6B7280'; };
+    if (svg && svg.style) { svg.style.width = '18px'; svg.style.height = '18px'; svg.style.display = 'block'; }
+    btn.onmouseenter = function () { btn.style.background = '#EEF0F3'; if (svg) svg.style.fill = '#374151'; };
+    btn.onmouseleave = function () { btn.style.background = '#fff'; if (svg) svg.style.fill = '#6B7280'; };
     btn._flash = function () { if (svg) { svg.style.fill = '#0284C7'; setTimeout(function () { svg.style.fill = '#6B7280'; }, 700); } };
     return btn;
   }
 
-  // Ключ 🔑 + магнит 🧲 в шапке кейса OmniDesk — в одном контейнере.
-  // Контейнер держим ПОСЛЕДНИМ ребёнком шапки: если омник перерисовал шапку и отодвинул
-  // кнопки — на следующем «тике» ставим контейнер обратно на место (больше не съезжают).
+  // Ключ 🔑 + магнит 🧲 в шапке кейса OmniDesk — в одном контейнере, ПОСЛЕДНИМ ребёнком
+  // панели `.request-content-title-act` (там нативное выравнивание работает).
+  // Контейнер держим последним: если омник перерисовал шапку — на следующем «тике»
+  // возвращаем на место. Высота 34px = высота строки → кнопки по центру, ничего не торчит.
   function ensureHeaderButtons() {
     if (!IS_OMNI) return;
     const bar = document.querySelector('.request-content-title-act');
@@ -2292,7 +2295,7 @@
     if (!wrap) {
       wrap = document.createElement('div');
       wrap.id = 'eduson-hdr-btns';
-      wrap.style.cssText = 'float:right;display:inline-flex;align-items:center;gap:7px;margin:1px 20px 0 10px;vertical-align:middle;';
+      wrap.style.cssText = 'float:right;display:flex;align-items:center;gap:5px;height:34px;margin:0 14px 0 6px;';
 
       const keyBtn = makeHdrIcon('eduson-loginlink-btn', KEY_SVG,
         'Логин-линк студента (вход без пароля). Открывать только в инкогнито.');
