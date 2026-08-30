@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper: amoCRM → OmniDesk
 // @namespace    eduson-helper
-// @version      0.46.0
+// @version      0.47.0
 // @description  Кнопка в OmniDesk сама находит клиента в amoCRM и заполняет карточку: ФИО, email, телефон, курс, дату поддержки и ссылку на Super User в админке Эдюсона
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -50,6 +50,10 @@
   };
 
   const DEFAULT_SUPPORT_MONTHS = 12;
+
+  // Всегда приводить имя к порядку «Фамилия Имя Отчество», как бы оно ни было записано в амо.
+  // Заодно чинит РЕГИСТР, если имя пришло КАПСом или строчными.
+  const NAME_FIO_ORDER = true;
 
   // Админка Эдюсона: искать ссылку на Super User и вписывать её в поле «АДМИНКА»
   const ADMIN_LOOKUP = true;
@@ -105,7 +109,7 @@
 
   /* ================================================ */
 
-  const VER = '0.46.0';
+  const VER = '0.47.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -869,6 +873,7 @@
       toast('Не получилось прочитать amoCRM.\nНажми F12 → вкладка Console и пришли текст возле ' + TAG, 'error');
       return;
     }
+    if (data.name) data.name = fioOrder(data.name) || data.name;
     GM_setValue(STORE_KEY, data);
     console.log(TAG, 'данные:', data);
     toast(data, 'ok');
@@ -1122,6 +1127,108 @@
       [c.first_name, c.last_name].filter(Boolean).join(' ').trim() ||
       '(без имени)';
   }
+
+  /* ---------- порядок имени: всегда «Фамилия Имя Отчество» ---------- */
+  var FIO_MALE = ('александр алексей анатолий андрей антон аркадий арсений артем артур афанасий богдан ' +
+    'борис вадим валентин валерий василий вениамин виктор виталий владимир владислав влад всеволод ' +
+    'вячеслав геннадий георгий герман глеб григорий давид даниил данила данил денис дмитрий ' +
+    'евгений егор ефим захар иван игнат игорь илья иннокентий кирилл константин кузьма лев леонид ' +
+    'лука макар максим марк матвей мирон мирослав михаил моисей назар наум никита николай олег павел петр ' +
+    'платон прохор родион роман ростислав руслан савва савелий святослав семен сергей спартак ' +
+    'станислав степан тарас тимофей тимур тихон федор филипп фома эдуард эмиль юрий яков ян ярослав ' +
+    'азамат азат айрат алан альберт амир арсен аскар ахмед батыр булат дамир ильдар ильдус ильнур ' +
+    'ильшат ирек ислам иса камиль карен магомед марат мурад мурат наиль нариман нурлан рамазан рамиль ' +
+    'рашид ринат рифат рустам рустем тагир тамерлан фарид хасан шамиль эльдар эрик').split(' ');
+  var FIO_FEMALE = ('алена алина алиса алла анастасия ангелина анжела анна антонина алевтина валентина ' +
+    'валерия варвара вера вероника виктория галина дарья диана дина ева евгения екатерина елена ' +
+    'елизавета жанна зинаида зоя инна ирина карина кира кристина ксения лариса лидия лилия любовь ' +
+    'людмила маргарита марина мария марьяна милана надежда наталья наталия нина оксана олеся ольга ' +
+    'полина раиса регина римма светлана снежана софия софья таисия тамара татьяна ульяна элина ' +
+    'эльвира юлия яна азиза айгуль айна алсу амина гузель дарина зарина зульфия камила лейла мадина ' +
+    'малика сабина самира фатима эльмира юлдуз').split(' ');
+  var FIO_MALE_SET = new Set(FIO_MALE);
+  var FIO_NAME_SET = new Set(FIO_MALE.concat(FIO_FEMALE));
+
+  var FIO_PARTICLE = /^(оглы|оглу|кызы|гызы|уулу|улы)$/;
+
+  function fioLow(w) { return String(w || '').toLowerCase().replace(/ё/g, 'е'); }
+  function fioIsName(w) { return FIO_NAME_SET.has(fioLow(w)); }
+  function fioPatrStem(t) {
+    var m = t.match(/^(.+?)(ович|евич|ьевич|ьич|ич|овна|евна|инична|ична)$/);
+    if (!m) return null;
+    var st = m[1];
+    var known = FIO_MALE_SET.has(st) || FIO_MALE_SET.has(st + 'ий') || FIO_MALE_SET.has(st + 'й') ||
+      FIO_MALE_SET.has(st + 'а') || FIO_MALE_SET.has(st + 'я') || FIO_MALE_SET.has(st.replace(/ь$/, 'ий'));
+    return { suf: m[2], known: known };
+  }
+  // «сильное» отчество: тюркская частица или основа = известное мужское имя
+  function fioStrongPatr(w) {
+    var t = fioLow(w);
+    if (FIO_PARTICLE.test(t)) return true;
+    var s = fioPatrStem(t);
+    return !!(s && s.known);
+  }
+  // «слабое» отчество: длинное однозначное окончание, но основу не опознали (для 3–4-словных ФИО)
+  function fioWeakPatr(w) {
+    var s = fioPatrStem(fioLow(w));
+    return !!(s && /^(ович|евич|ьевич|овна|евна|инична|ична)$/.test(s.suf));
+  }
+  function fioCase(w) {
+    if (/[А-ЯЁ]/.test(w) && /[а-яё]/.test(w)) return w;      // смешанный регистр — оставляем как есть
+    return w.replace(/[А-Яа-яЁёA-Za-z]+/g, function (p) {
+      return p.charAt(0).toUpperCase() + p.slice(1).toLowerCase();
+    });
+  }
+  function fioOrder(raw) {
+    if (!NAME_FIO_ORDER) return raw;
+    var s = String(raw || '').replace(/\s+/g, ' ').trim();
+    if (!s || !/[а-яё]/i.test(s)) return raw;                 // пусто или не кириллица — не трогаем
+    var toks = s.replace(/,/g, ' ').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+    if (toks.length < 2 || toks.length > 4) return s;
+
+    // отчество ищем только в ФИО из 3+ слов (в двух словах «-ович» — обычно фамилия)
+    var patrIdx = -1;
+    if (toks.length >= 3) {
+      for (var i = toks.length - 1; i >= 0; i--) { if (fioStrongPatr(toks[i])) { patrIdx = i; break; } }
+      if (patrIdx < 0) for (var i2 = toks.length - 1; i2 >= 0; i2--) { if (fioWeakPatr(toks[i2])) { patrIdx = i2; break; } }
+    }
+
+    var patr = '', rest = toks.slice();
+    if (patrIdx >= 0) {
+      patr = toks[patrIdx];
+      rest.splice(patrIdx, 1);
+      // тюркская частица «оглы/кызы/…» — приклеиваем к ней имя отца слева
+      if (FIO_PARTICLE.test(fioLow(patr)) && patrIdx > 0) {
+        patr = toks[patrIdx - 1] + ' ' + patr;
+        rest.splice(patrIdx - 1, 1);
+      }
+    }
+
+    var nameIdx = -1;
+    for (var j = 0; j < rest.length; j++) { if (fioIsName(rest[j])) { nameIdx = j; break; } }
+
+    var surn, given;
+    if (nameIdx >= 0) {
+      given = rest[nameIdx];
+      var sr = rest.slice(); sr.splice(nameIdx, 1);
+      surn = sr.join(' ');
+    } else if (patrIdx >= 0) {
+      // имя по словарю не опознали — опираемся на позицию отчества
+      if (patrIdx === toks.length - 1) {          // «Фамилия… Имя Отчество»
+        given = rest[rest.length - 1];
+        surn = rest.slice(0, -1).join(' ');
+      } else {                                    // отчество впереди/в середине → «Имя Фамилия…»
+        given = rest[0];
+        surn = rest.slice(1).join(' ');
+      }
+    } else {
+      return s;                                   // 2 слова без словарного имени — не рискуем
+    }
+    if (!surn || !given) return s;
+    var out = fioCase(surn) + ' ' + fioCase(given) + (patr ? ' ' + fioCase(patr) : '');
+    out = out.replace(/(^|\s)(Оглы|Оглу|Кызы|Гызы|Уулу|Улы)(?=\s|$)/g, function (_, a, b) { return a + b.toLowerCase(); });
+    return out.replace(/\s+/g, ' ').trim();
+  }
   function chooseCandidate(candidates, seed) {
     return new Promise(function (resolve) {
       const box = document.createElement('div');
@@ -1240,6 +1347,13 @@
       return;
     }
     data.cardAmoId = amoId || '';
+    if (data.name) {
+      var nameFio = fioOrder(data.name);
+      if (nameFio && nameFio !== data.name) {
+        note = (note ? note + '; ' : '') + 'имя переставила в порядок ФИО';
+        data.name = nameFio;
+      }
+    }
     GM_setValue(STORE_KEY, data);
     GM_setValue(DEBUG_KEY, { version: VER, url: location.href, amoId: amoId, seed: seed, data: data, note: note, ts: Date.now() });
     console.log(TAG, 'данные из амо:', data);
