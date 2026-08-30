@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper: amoCRM → OmniDesk
 // @namespace    eduson-helper
-// @version      0.48.0
+// @version      0.49.0
 // @description  Кнопка в OmniDesk сама находит клиента в amoCRM и заполняет карточку: ФИО, email, телефон, курс, дату поддержки и ссылку на Super User в админке Эдюсона
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -110,7 +110,7 @@
 
   /* ================================================ */
 
-  const VER = '0.48.0';
+  const VER = '0.49.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -901,13 +901,9 @@
               });
             }
           } else {
-            const matches = text.match(/(?:\+7|8)[\s(.-]*\d{3}[\s).-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}/g);
-            if (matches) {
-              matches.forEach(m => {
-                const clean = m.replace(/\s/g, '');
-                if (!results.includes(clean)) results.push(clean);
-              });
-            }
+            grabPhonesFromText(text).forEach(clean => {
+              if (!results.includes(clean)) results.push(clean);
+            });
           }
           el = el.parentElement;
         }
@@ -918,7 +914,21 @@
   function looksLikePhone(v) {
     if (/[a-zа-яё]/i.test(v) || v.includes('://')) return false;
     const d = v.replace(/\D/g, '');
-    return d.length === 10 || d.length === 11;
+    return d.length >= 10 && d.length <= 13;   // РФ 10–11, СНГ/зарубеж до 13 (напр. +375…)
+  }
+  // Телефоны из текста: РФ (+7/8) и зарубеж (+375, +380, +77, +998…). Двухступенчато:
+  // кандидат по форме → отсев по числу цифр (10–13), чтобы не ловить номера обращений и id.
+  function grabPhonesFromText(text) {
+    const cands = String(text || '').match(/(?:\+\d{1,3}|\b8)[\s()\-–—.]{0,3}\d[\d\s()\-–—.]{6,16}\d/g) || [];
+    const out = [];
+    cands.forEach(function (c) {
+      const d = c.replace(/\D/g, '');
+      if (d.length >= 10 && d.length <= 13) {
+        const clean = c.replace(/\s/g, '');
+        if (out.indexOf(clean) === -1) out.push(clean);
+      }
+    });
+    return out;
   }
   function grabContactSeed() {
     const seed = { phones: [], emails: [] };
@@ -946,13 +956,9 @@
         }
       });
     }
-    const phoneMatches = text.match(/(?:\+7|8)[\s(.-]*\d{3}[\s).-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}/g);
-    if (phoneMatches) {
-      phoneMatches.forEach(m => {
-        const clean = m.replace(/\s/g, '');
-        if (!seed.phones.includes(clean)) seed.phones.push(clean);
-      });
-    }
+    grabPhonesFromText(text).forEach(clean => {
+      if (!seed.phones.includes(clean)) seed.phones.push(clean);
+    });
     return seed;
   }
   function grabAmoIdFromPage() {
