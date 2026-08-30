@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper: amoCRM → OmniDesk
 // @namespace    eduson-helper
-// @version      0.43.0
+// @version      0.44.0
 // @description  Кнопка в OmniDesk сама находит клиента в amoCRM и заполняет карточку: ФИО, email, телефон, курс, дату поддержки и ссылку на Super User в админке Эдюсона
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -105,6 +105,7 @@
 
   /* ================================================ */
 
+  const VER = '0.44.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -362,6 +363,92 @@
     } catch (e) {
       return { links: [], error: e.message === 'NOAUTH' ? 'NOAUTH' : e.message };
     }
+  }
+
+  // Из HTML/текста админки достаём amo_lead_id / amo_contact_id (в «Tracking info» вида
+  // {"amo_lead_id"=>"46492748", "amo_contact_id"=>"72877002", ...}).
+  function collectAmoIds(text, leadIds, contactIds) {
+    const s = String(text || '');
+    (s.match(/amo[_\-\s]*lead[_\-\s]*id["'\s]*(?:=>|:)?["'\s]*(\d{4,})/gi) || []).forEach(function (m) {
+      const id = (m.match(/(\d{4,})/) || [])[1];
+      if (id && leadIds.indexOf(id) === -1) leadIds.push(id);
+    });
+    (s.match(/amo[_\-\s]*contact[_\-\s]*id["'\s]*(?:=>|:)?["'\s]*(\d{4,})/gi) || []).forEach(function (m) {
+      const id = (m.match(/(\d{4,})/) || [])[1];
+      if (id && contactIds.indexOf(id) === -1) contactIds.push(id);
+    });
+  }
+
+  // Запасной путь для СДЕЛКИ: активной сделки в амо по почте не нашлось →
+  // идём в админку Эдюсон, ищем по почте/телефону, берём amo_lead_id из «Tracking info»
+  // (в списке /admin/users он часто виден сразу; иначе — открываем карточку юзера и его Super User),
+  // затем по этому номеру берём выигранную сделку из амо.
+  async function findDealViaAdmin(seed, api) {
+    const queries = [];
+    (seed.emails || []).forEach(function (e) { if (e && !/@eduson\.tv$/i.test(e)) queries.push(e); });
+    (seed.phones || []).forEach(function (p) { const d = String(p).replace(/\D/g, ''); if (d.length >= 10) queries.push(d.slice(-10)); });
+    if (!queries.length) return {};
+
+    let auth = false;
+    const leadIds = [], contactIds = [];
+
+    for (const q of queries.slice(0, 3)) {
+      let listHtml;
+      try { listHtml = await gmFetchText(ADMIN_BASE + '/admin/users?language=ru&q=' + encodeURIComponent(q)); }
+      catch (e) { if (e.message === 'NOAUTH') auth = true; continue; }
+      if (adminLooksLikeLogin(listHtml)) { auth = true; continue; }
+
+      collectAmoIds(listHtml, leadIds, contactIds);            // трекинг часто прямо в списке
+      if (leadIds.length || contactIds.length) break;
+
+      const rows = parseUserRowsFromList(listHtml);
+      for (const r of rows.slice(0, 3)) {
+        collectAmoIds(r.text, leadIds, contactIds);
+        let card = '';
+        try { card = await gmFetchText(userCardUrl(r.uid)); }
+        catch (e) { if (e.message === 'NOAUTH') auth = true; continue; }
+        if (adminLooksLikeLogin(card)) { auth = true; continue; }
+        collectAmoIds(card, leadIds, contactIds);
+
+        const suId = parseSuperUserIdFromUserCard(card);       // Super User → его sub-users
+        if (suId && !leadIds.length) {
+          try {
+            const sup = await gmFetchText(superUserUrl(suId));
+            if (!adminLooksLikeLogin(sup)) {
+              collectAmoIds(sup, leadIds, contactIds);
+              const sdoc = new DOMParser().parseFromString(sup, 'text/html');
+              const subUids = [];
+              sdoc.querySelectorAll('table tr a[href*="/admin/users/"]').forEach(function (a) {
+                const mm = (a.getAttribute('href') || '').match(/\/admin\/users\/(\d+)/);
+                if (mm && mm[1] !== r.uid && subUids.indexOf(mm[1]) === -1) subUids.push(mm[1]);
+              });
+              for (const su of subUids.slice(0, 3)) {
+                try { const sc = await gmFetchText(userCardUrl(su)); if (!adminLooksLikeLogin(sc)) collectAmoIds(sc, leadIds, contactIds); }
+                catch (e) {}
+              }
+            }
+          } catch (e) {}
+        }
+        if (leadIds.length) break;
+      }
+      if (leadIds.length || contactIds.length) break;
+    }
+
+    // по найденным lead_id — берём выигранную сделку
+    for (const lid of leadIds.slice(0, 8)) {
+      try {
+        const l = await api('/api/v4/leads/' + lid + '?with=contacts');
+        if (l && l.id && isWon(l)) return { lead: l };
+      } catch (e) { if (e.message === 'NOAUTH') return { error: 'NOAUTH' }; }
+    }
+    // выигранных по lead_id нет — пробуем контакт
+    for (const cid of contactIds.slice(0, 4)) {
+      try {
+        const c = await api('/api/v4/contacts/' + cid + '?with=leads');
+        if (c && c.id) return { contact: c };
+      } catch (e) { if (e.message === 'NOAUTH') return { error: 'NOAUTH' }; }
+    }
+    return auth ? { error: 'NOAUTH' } : {};
   }
 
   // Совпадение курса обращения с курсом карточки в админке (по общим словам).
@@ -1112,20 +1199,49 @@
       if (err.message === 'CANCELLED') { toast('Хорошо, никого не выбираю 🙂', 'info'); return; }
       console.error(TAG, 'ошибка:', err);
       if (err.message === 'NOAUTH') {
-        toast('Браузер не пустил меня в амо 😕\nПлан Б: открой амо, нажми там фиолетовую кнопку,\nвернись сюда и нажми «📋 Вставить скопированное».', 'warn', 12000);
+        toast('Браузер не пустил меня в амо 😕\nОткрой амо в соседней вкладке, убедись что залогинена,\nи нажми магнит ещё раз.', 'warn', 12000);
       } else {
         toast('Не получилось связаться с амо: ' + err.message, 'error');
       }
       return;
     }
+    // Запасной путь: клиент найден, но оплаченной сделки в амо нет (или курс так и не подтянулся) —
+    // ищем amo_lead_id в админке Эдюсон и берём выигранную сделку по нему.
+    if (data && (data.noPurchase || (!data.chosenDeal && !data.course)) && (seed.emails.length || seed.phones.length)) {
+      toast('Оплаченной сделки в амо не вижу — смотрю в админке Эдюсон…', 'info', 9000);
+      try {
+        const adm = await findDealViaAdmin(seed, api);
+        if (adm && adm.lead) {
+          data.noPurchase = false;
+          data.course = ''; data.support = ''; data.purchaseTs = 0; data.supportMonths = 0;
+          data.amoLeadId = adm.lead.id || data.amoLeadId;
+          await applyLeadToData(adm.lead, data, api, true);
+          data.chosenDeal = { id: adm.lead.id, course: dealCoursePreview(adm.lead),
+                              closed: adm.lead.closed_at ? fmtTs(adm.lead.closed_at) : '' };
+          note = (note ? note + '; ' : '') + 'сделку нашла через админку Эдюсон';
+        } else if (adm && adm.contact) {
+          const d2 = newClientData(base + '/contacts/detail/' + adm.contact.id);
+          try {
+            await assembleDataInto(adm.contact, d2, api);
+            if (!d2.noPurchase && d2.course && d2.course !== 'не покупал') {
+              d2.name = d2.name || data.name;
+              (data.emails || []).forEach(function (e) { if (d2.emails.indexOf(e) === -1) d2.emails.push(e); });
+              (data.phones || []).forEach(function (p) { if (d2.phones.indexOf(p) === -1) d2.phones.push(p); });
+              data = d2;
+              note = (note ? note + '; ' : '') + 'клиента нашла через админку Эдюсон';
+            }
+          } catch (e) { /* NOAUTH или иное — оставляем что было */ }
+        }
+      } catch (e) { /* админка недоступна — оставляем как есть */ }
+    }
     if (!data || (!data.name && !data.emails.length && !data.phones.length && !data.course && !data.support)) {
-      GM_setValue(DEBUG_KEY, { version: '0.43', url: location.href, amoId: amoId, seed: seed, result: 'ничего не нашлось', ts: Date.now() });
+      GM_setValue(DEBUG_KEY, { version: VER, url: location.href, amoId: amoId, seed: seed, result: 'ничего не нашлось', ts: Date.now() });
       toast('В амо ничего не нашлось 😕', 'warn');
       return;
     }
     data.cardAmoId = amoId || '';
     GM_setValue(STORE_KEY, data);
-    GM_setValue(DEBUG_KEY, { version: '0.43', url: location.href, amoId: amoId, seed: seed, data: data, note: note, ts: Date.now() });
+    GM_setValue(DEBUG_KEY, { version: VER, url: location.href, amoId: amoId, seed: seed, data: data, note: note, ts: Date.now() });
     console.log(TAG, 'данные из амо:', data);
     fillInputsFromData(data, 'Нашлось в амо' + (note ? '\n(' + note + ')' : ''));
   }
@@ -1182,50 +1298,60 @@
     el.dispatchEvent(new Event('focusout', { bubbles: true }));
   }
   function normCourse(s) {
-    return String(s || '').toLowerCase().replace(/[^a-zа-яё0-9 ]/gi, ' ').replace(/\s+/g, ' ').trim();
+    return String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9 ]/gi, ' ').replace(/\s+/g, ' ').trim();
   }
+  // Слова-«мусор» в названиях курсов — не участвуют в сравнении.
+  const COURSE_STOP = ['тариф', 'тарифа', 'тарифу', 'курс', 'курса', 'курсу', 'программа', 'программе',
+    'обучение', 'обучению', 'доступ', 'для', 'при', 'под', 'the', 'and', 'пакет', 'версия', 'формат'];
+  // Синонимы тарифов: первая в группе — «ключ». Нужно, чтобы «Мастер» amo совпал с «Максимум» в омни и т.п.
+  const TARIFF_SYN = [
+    ['pro', 'про', 'профи', 'профессионал', 'профессиональный'],
+    ['базовый', 'базовая', 'base', 'старт', 'стартовый', 'начальный', 'лайт', 'light', 'мини'],
+    ['стандарт', 'стандартный', 'standard', 'оптимальный', 'оптимум', 'optimal'],
+    ['премиум', 'премиальный', 'premium', 'vip', 'вип'],
+    ['мастер', 'максимум', 'master', 'max', 'эксперт', 'экспертный', 'продвинутый', 'расширенный', 'advanced', 'ультра'],
+  ];
+  function tariffKey(w) {
+    for (let i = 0; i < TARIFF_SYN.length; i++) if (TARIFF_SYN[i].indexOf(w) !== -1) return TARIFF_SYN[i][0];
+    return null;
+  }
+  function courseSig(s) {
+    return normCourse(s).split(' ').filter(function (w) { return w.length >= 3 && COURSE_STOP.indexOf(w) === -1; });
+  }
+  // Подбор варианта в выпадашке КУРС с учётом тарифа.
+  // Пример: amo «Нейросети на практике: тариф PRO» → «Нейросети на практике: для себя, работы и бизнеса PRO».
   function pickCourseOption(sel, courseName) {
-    const target = normCourse(courseName);
-    if (!target) return null;
+    const tSig = courseSig(courseName);
+    if (!tSig.length) return null;
+    const tSet = {}; tSig.forEach(function (w) { tSet[w] = 1; });
+    const tKeys = {}; tSig.forEach(function (w) { const k = tariffKey(w); if (k) tKeys[k] = 1; });
+    const tHasTariff = Object.keys(tKeys).length > 0;
 
-    // Сначала ищем по маппингу (точное соответствие)
-    const omniCourseName = findOmniCourseName(courseName);
-    const targetOmni = normCourse(omniCourseName);
-
-    let best = null, bestScore = 0;
-    sel.querySelectorAll('option').forEach(o => {
+    let best = null, bestScore = -1e9;
+    sel.querySelectorAll('option').forEach(function (o) {
       const t = (o.textContent || '').trim();
-      if (!t || t === '—') return;
-      const n = normCourse(t);
-      let score = 0;
+      if (!t || t === '—' || t === '-') return;
+      const oSig = courseSig(t);
+      if (!oSig.length) return;
+      const oSet = {}; oSig.forEach(function (w) { oSet[w] = 1; });
+      let common = 0; tSig.forEach(function (w) { if (oSet[w]) common++; });
+      const targetCov = common / tSig.length;   // сколько слов amo нашлось в варианте
+      const optCov = common / oSig.length;      // насколько вариант «про то же»
 
-      // Проверяем точное совпадение с названием из маппинга
-      if (targetOmni && n === targetOmni) {
-        score = 100;
-      } else if (n === target) {
-        score = 100;
-      } else if (n.includes(target) || target.includes(n)) {
-        score = 80;
-      } else {
-        // Сравниваем по словам
-        const words = n.split(' ');
-        let hit = 0;
-        target.split(' ').forEach(w => {
-          if (w.length > 2 && words.some(word => word.includes(w) || w.includes(word))) hit++;
-        });
-        // Также проверяем ключевые слова (Excel, 1С и т.д.)
-        const keyWords = ['excel', '1с', 'собственник', 'python', 'java', 'javascript', 'sql', 'figma', 'photoshop', 'smm'];
-        for (const kw of keyWords) {
-          if (target.includes(kw) && n.includes(kw)) {
-            hit += 3;
-          }
-        }
-        score = Math.min(100, Math.round(hit / Math.max(target.split(' ').length, 1) * 40));
-      }
+      const oKeys = {}; oSig.forEach(function (w) { const k = tariffKey(w); if (k) oKeys[k] = 1; });
+      const oHasTariff = Object.keys(oKeys).length > 0;
+      let tariffMatch = false;
+      for (const k in tKeys) { if (oKeys[k]) tariffMatch = true; }
+      const tariffClash = tHasTariff && !tariffMatch && oHasTariff;
+
+      let score = targetCov * 70 + optCov * 20;
+      if (tariffMatch) score += 25;
+      if (tariffClash) score -= 45;                 // amo просит один тариф, вариант — другой
+      if (!tHasTariff && oHasTariff) score -= 6;    // amo без тарифа, вариант с тарифом — лёгкий минус
 
       if (score > bestScore) { bestScore = score; best = o; }
     });
-    return bestScore >= 40 ? best : null;
+    return bestScore >= 45 ? best : null;
   }
   function fillCourseSelect(courseName) {
     const sel = document.querySelector(OMNI_FIELDS.course) || findOmniInput(LABELS.course);
@@ -1414,16 +1540,22 @@
         'var orig=b.querySelector("input.form-custom-field-acc")||b.querySelector(\'input[name^="field_"]\');' +
         'if(!orig){res.err="поле не найдено";return fin();}' +
         'var $o=$(orig);var s2=$o.data("select2");' +
-        'if(!s2||typeof s2.onSelect!=="function"){res.err="Select2 без onSelect";return fin();}' +
         'var P=' + payload + ';' +
         'var norm=function(v){return P.isPhone?String(v).replace(/\\D/g,"").slice(-10):String(v).toLowerCase().trim();};' +
-        'var cur=$o.select2("val");if(!Array.isArray(cur))cur=cur?[cur]:[];' +
-        'var have=cur.map(norm);' +
+        // что УЖЕ есть в поле: модель select2 + текст скрытого input + «плашки» в DOM
+        'var have=[];' +
+        'try{var cur=$o.select2("val");if(!Array.isArray(cur))cur=cur?[cur]:[];cur.forEach(function(v){if(v)have.push(norm(v));});}catch(e0){}' +
+        'try{(orig.value||"").split(/[,;\\s]+/).forEach(function(p){p=p.trim();if(p)have.push(norm(p));});}catch(e0){}' +
+        'try{b.querySelectorAll(".select2-search-choice,.select2-selection__choice,li.select2-selection__choice").forEach(function(x){' +
+        'var tt=(x.textContent||"").replace(/^[\\s\\u00d7\\u2715\\u2716x]+|[\\s\\u00d7\\u2715\\u2716x]+$/g,"").trim();if(tt)have.push(norm(tt));});}catch(e0){}' +
+        'var toAdd=P.values.filter(function(v){return have.indexOf(norm(v))===-1;});' +
+        'res.skipCount=P.values.length-toAdd.length;' +
+        'if(!toAdd.length){return fin();}' +   // всё уже в карточке — это НЕ ошибка
+        'if(!s2||typeof s2.onSelect!=="function"){res.err="S2_NO_ONSELECT";return fin();}' +
         'var hasCSC=s2.opts&&typeof s2.opts.createSearchChoice==="function";' +
-        'P.values.forEach(function(v){if(have.indexOf(norm(v))!==-1){res.skipCount++;return;}' +
-        'try{var ch=null;' +
+        'toAdd.forEach(function(v){try{var ch=null;' +
         'if(hasCSC){try{ch=s2.opts.createSearchChoice.call(s2,v,[]);}catch(e0){}' +
-        'if(!ch){res.err="OmniDesk не принял адрес «"+v+"» (проверь формат)";return;}}' +
+        'if(!ch){res.err="S2_BAD_VALUE:"+v;return;}}' +
         'if(!ch)ch={id:v,text:v};' +
         's2.onSelect(ch);have.push(norm(v));res.okCount++;}catch(e2){res.err=(e2&&e2.message)||String(e2);}});' +
         'try{$o.trigger("change");}catch(e3){}' +
@@ -1450,7 +1582,13 @@
       }, 50);
     });
   }
-  async function fillAccFieldAsync(patterns, values, ruName, ok, miss, directSel) {
+  // Мягкая жалоба по почте: не «ошибка», а «допиши руками» — не пугает и не зажигает красный значок.
+  function s2SoftMessage(err) {
+    if (err === 'S2_NO_ONSELECT') return 'впиши руками — виджет омника не даёт вписать её сам';
+    if (/^S2_BAD_VALUE:/.test(err)) return 'омник не принял адрес «' + err.slice(12) + '» — проверь формат / впиши руками';
+    return err;
+  }
+  async function fillAccFieldAsync(patterns, values, ruName, ok, miss, directSel, soft) {
     let block = null;
     document.querySelectorAll('.a17_additional_fields').forEach(function (b) {
       if (block) return;
@@ -1459,6 +1597,7 @@
     });
     if (!block) { fillAccFieldDirect(directSel, values, ruName, ok, miss); return; }
     const isPhone = patterns.some(p => p.includes('телефон'));
+    const softBucket = soft || miss;   // куда складывать «не смогла, но не страшно»
 
     // EMAIL — виджет Select2 («теги»). Он инициализируется при входе
     // в режим «редактировать»; если ещё не готов — ждём и подталкиваем «+».
@@ -1476,8 +1615,13 @@
       const r = await fillSelect2Field(block, values, isPhone);
       if (r.okCount) ok.push(ruName + ' (+' + r.okCount + ' новых)');
       if (r.skipCount) ok.push(ruName + ' (' + r.skipCount + ' уже были, пропущены)');
-      if (r.err) miss.push(ruName + ' — ' + r.err);
-      else if (!r.okCount && !r.skipCount) miss.push(ruName + ' — нечего добавлять');
+      if (r.err) {
+        if (/^S2_/.test(r.err)) softBucket.push(ruName + ' — ' + s2SoftMessage(r.err));
+        else miss.push(ruName + ' — ' + r.err);
+      } else if (!r.okCount && !r.skipCount) {
+        // ничего не добавили и нечего было — значит всё уже в карточке
+        ok.push(ruName + ' — уже в карточке');
+      }
       return;
     }
     const added = [];
@@ -1497,14 +1641,14 @@
         if (r.added) added.push(val);
         else skipped.push(val);
       } else {
-        miss.push(ruName + ': ' + r.why + ' (' + val + ')');
+        softBucket.push(ruName + ': ' + r.why + ' (' + val + ')');
         hasError = true;
       }
     }
     if (added.length) ok.push(ruName + ' (+' + added.length + ' новых)');
     if (skipped.length && !hasError) ok.push(ruName + ' (' + skipped.length + ' уже были, пропущены)');
     if (!added.length && !skipped.length && !hasError) {
-      miss.push(ruName + ' — нет новых значений для добавления');
+      ok.push(ruName + ' — уже в карточке');
     }
   }
   // Сам жмёт «Сохранить» в карточке OmniDesk (ссылки <a class="info_save">сохранить</a>)
@@ -1541,10 +1685,19 @@
     return saveShown();
   }
 
+  // Что из data.emails уже видно в карточке OmniDesk (чтобы не пытаться вписать снова).
+  function cardEmailSet() {
+    const set = new Set();
+    try {
+      grabContactSeed().emails.forEach(function (e) { set.add(String(e).toLowerCase().trim()); });
+    } catch (e) {}
+    return set;
+  }
+
   // Глобальные переменные для хранения результатов заполнения
-  let lastFillResult = { ok: [], miss: [], data: null };
+  let lastFillResult = { ok: [], miss: [], soft: [], data: null };
   async function fillInputsFromData(data, prefix) {
-    const ok = [], miss = [];
+    const ok = [], miss = [], soft = [];   // soft = «не смогла, но не страшно — допиши руками»
     if (IS_OMNI) {
       const edit = await ensureOmniEditMode();
       if (!edit) miss.push('карточка не в режиме «редактировать» — нажми «редактировать» в блоке ДАННЫЕ ПОЛЬЗОВАТЕЛЯ');
@@ -1588,7 +1741,13 @@
     }
 
     if (data.emails && data.emails.length) {
-      await fillAccFieldAsync(['email', 'почта'], data.emails, RU.email, ok, miss, OMNI_FIELDS.email);
+      const onCard = cardEmailSet();
+      const freshEmails = data.emails.filter(function (e) { return !onCard.has(String(e).toLowerCase().trim()); });
+      if (!freshEmails.length) {
+        ok.push(RU.email + ' — уже в карточке');
+      } else {
+        await fillAccFieldAsync(['email', 'почта'], freshEmails, RU.email, ok, miss, OMNI_FIELDS.email, soft);
+      }
     } else {
       miss.push(RU.email + ' — в амо пусто');
     }
@@ -1610,23 +1769,26 @@
       else miss.push('💾 кнопка «Сохранить» не нашлась — сохрани вручную');
     }
     // Сохраняем результат
-    lastFillResult = { ok, miss, data };
+    lastFillResult = { ok, miss, soft, data };
     // Дописываем результат заполнения в отчёт («Отчёт»), чтобы было видно,
     // что именно и почему не вписалось.
     try {
       const prev = GM_getValue(DEBUG_KEY) || {};
-      prev.version = '0.43';
-      prev.fill = { ok: ok.slice(), miss: miss.slice(), at: new Date().toISOString(), url: location.href };
+      prev.version = VER;
+      prev.fill = { ok: ok.slice(), miss: miss.slice(), soft: soft.slice(), at: new Date().toISOString(), url: location.href };
       GM_setValue(DEBUG_KEY, prev);
     } catch (e) {}
-    // Обновляем значок ошибки
+    // Красный значок — только на настоящие ошибки (soft туда не идёт).
     updateErrorIcon(miss, ok);
     // Короткое сообщение. Подробности — по кнопке «Отчёт» в панели.
     const filledCount = ok.filter(function (s) { return !/^💾/.test(s); }).length;
+    const softTail = soft.length ? '\n✍️ ' + soft.join('; ') : '';
     if (!ok.length) {
       toast('❌ Ничего не заполнилось.\nКарточка в режиме «редактировать»?\n👉 нажми сюда — покажу подробности', 'error', 10000, showFillReport);
     } else if (miss.length) {
       toast('⚠️ Заполнено, но ' + miss.length + ' не вышло.\n👉 нажми сюда — покажу подробности', 'warn', 9000, showFillReport);
+    } else if (soft.length) {
+      toast('✅ Готово и сохранено (' + filledCount + ' полей).' + softTail, 'ok', 8000, showFillReport);
     } else {
       toast('✅ Готово и сохранено (' + filledCount + ' полей).', 'ok', 4000);
     }
@@ -1649,6 +1811,7 @@
       d.admin && d.admin.length && '🖥 ' + d.admin.join('  '),
       '— — —',
       '✅ ' + (R.ok.length ? R.ok.join(', ') : '—'),
+      (R.soft && R.soft.length) ? '✍️ впиши руками: ' + R.soft.join(', ') : null,
       R.miss.length ? '❌ ' + R.miss.join(', ') : null,
     ].filter(Boolean).join('\n');
     toast(lines, R.miss.length ? 'warn' : 'ok', 20000);
@@ -1799,6 +1962,12 @@
     return !!hasFields;
   }
   function ensurePanel() {
+    // В amoCRM панель-«окошко» больше не показываем — всё делает кнопка-магнит в OmniDesk.
+    if (IS_AMO) {
+      const exAmo = document.getElementById('eduson-helper-panel');
+      if (exAmo) exAmo.remove();
+      return;
+    }
     // Проверяем, что это страница с карточкой (только для OmniDesk)
     if (IS_OMNI && !isCardPage()) {
       // Удаляем панель, если она есть
@@ -2092,65 +2261,58 @@
     }
   }
 
-  // Кнопка-ключ 🔑 — слева от магнита. ЛКМ → найти логин-линк студента и показать плашку.
-  function ensureLoginLinkButton() {
-    if (!IS_OMNI) return;
-    const bar = document.querySelector('.request-content-title-act');
-    if (!bar) {
-      const ex = document.getElementById('eduson-loginlink-btn');
-      if (ex) ex.remove();
-      return;
-    }
-    if (document.getElementById('eduson-loginlink-btn')) return;
+  // Одна иконка в шапке кейса (ключ / магнит). Без float и отрицательных отступов —
+  // выравнивание держит общий flex-контейнер, поэтому кнопки больше не «съезжают».
+  function makeHdrIcon(id, svgHtml, titleText) {
     const btn = document.createElement('div');
-    btn.id = 'eduson-loginlink-btn';
-    btn.title = 'Логин-линк студента (вход без пароля). Открывать только в инкогнито.';
-    btn.style.cssText = 'float:right;width:38px;height:38px;margin:-2px 6px 0 4px;display:flex;align-items:center;justify-content:center;cursor:pointer;' +
+    btn.id = id;
+    btn.title = titleText;
+    btn.style.cssText = 'width:36px;height:36px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;cursor:pointer;' +
       'background:#fff;border:1px solid #E1E1E4;border-radius:6px;box-shadow:0 1px 5px rgba(0,0,0,.20);transition:background .15s,box-shadow .15s;';
-    btn.innerHTML = KEY_SVG;
+    btn.innerHTML = svgHtml;
     const svg = btn.firstChild;
     btn.onmouseenter = function () { btn.style.background = '#F4F4F6'; btn.style.boxShadow = '0 2px 8px rgba(0,0,0,.28)'; if (svg) svg.style.fill = '#374151'; };
     btn.onmouseleave = function () { btn.style.background = '#fff'; btn.style.boxShadow = '0 1px 5px rgba(0,0,0,.20)'; if (svg) svg.style.fill = '#6B7280'; };
-    btn.onclick = function (e) {
-      e.stopPropagation();
-      if (svg) { svg.style.fill = '#0284C7'; setTimeout(function () { svg.style.fill = '#6B7280'; }, 700); }
-      copyLoginLink();
-    };
-    // добавляем ПОСЛЕ магнита → при float:right оказывается ЛЕВЕЕ магнита
-    bar.appendChild(btn);
+    btn._flash = function () { if (svg) { svg.style.fill = '#0284C7'; setTimeout(function () { svg.style.fill = '#6B7280'; }, 700); } };
+    return btn;
   }
 
-  function ensureMagnetButton() {
+  // Ключ 🔑 + магнит 🧲 в шапке кейса OmniDesk — в одном контейнере.
+  // Контейнер держим ПОСЛЕДНИМ ребёнком шапки: если омник перерисовал шапку и отодвинул
+  // кнопки — на следующем «тике» ставим контейнер обратно на место (больше не съезжают).
+  function ensureHeaderButtons() {
     if (!IS_OMNI) return;
     const bar = document.querySelector('.request-content-title-act');
     if (!bar) {
-      const ex = document.getElementById('eduson-magnet-btn');
+      const ex = document.getElementById('eduson-hdr-btns');
       if (ex) ex.remove();
       return;
     }
-    if (document.getElementById('eduson-magnet-btn')) return;
-    const btn = document.createElement('div');
-    btn.id = 'eduson-magnet-btn';
-    btn.title = 'Заполнить карточку из amoCRM. Правый клик — панель с отчётом.';
-    btn.style.cssText = 'float:right;width:38px;height:38px;margin:-2px 22px 0 4px;display:flex;align-items:center;justify-content:center;cursor:pointer;' +
-      'background:#fff;border:1px solid #E1E1E4;border-radius:6px;box-shadow:0 1px 5px rgba(0,0,0,.20);transition:background .15s,box-shadow .15s;';
-    btn.innerHTML = MAGNET_SVG;
-    const svg = btn.firstChild;
-    btn.onmouseenter = function () { btn.style.background = '#F4F4F6'; btn.style.boxShadow = '0 2px 8px rgba(0,0,0,.28)'; if (svg) svg.style.fill = '#374151'; };
-    btn.onmouseleave = function () { btn.style.background = '#fff'; btn.style.boxShadow = '0 1px 5px rgba(0,0,0,.20)'; if (svg) svg.style.fill = '#6B7280'; };
-    btn.onclick = function (e) {
-      e.stopPropagation();
-      if (svg) { svg.style.fill = '#0284C7'; setTimeout(function () { svg.style.fill = '#6B7280'; }, 700); }
-      smartFillOmni();
-    };
-    btn.oncontextmenu = function (e) {
-      e.preventDefault(); e.stopPropagation();
-      ensurePanel();
-      const wrap = document.getElementById('eduson-helper-panel');
-      if (wrap) wrap.style.display = (wrap.style.display === 'none') ? 'flex' : 'none';
-    };
-    // добавляем последним ребёнком → при float:right оказывается ЛЕВЕЕ статуса «Закрытое»
-    bar.appendChild(btn);
+    let wrap = document.getElementById('eduson-hdr-btns');
+    if (!wrap) {
+      wrap = document.createElement('div');
+      wrap.id = 'eduson-hdr-btns';
+      wrap.style.cssText = 'float:right;display:inline-flex;align-items:center;gap:7px;margin:1px 20px 0 10px;vertical-align:middle;';
+
+      const keyBtn = makeHdrIcon('eduson-loginlink-btn', KEY_SVG,
+        'Логин-линк студента (вход без пароля). Открывать только в инкогнито.');
+      keyBtn.onclick = function (e) { e.stopPropagation(); keyBtn._flash(); copyLoginLink(); };
+
+      const magBtn = makeHdrIcon('eduson-magnet-btn', MAGNET_SVG,
+        'Заполнить карточку из amoCRM. Правый клик — панель с отчётом.');
+      magBtn.onclick = function (e) { e.stopPropagation(); magBtn._flash(); smartFillOmni(); };
+      magBtn.oncontextmenu = function (e) {
+        e.preventDefault(); e.stopPropagation();
+        ensurePanel();
+        const p = document.getElementById('eduson-helper-panel');
+        if (p) p.style.display = (p.style.display === 'none') ? 'flex' : 'none';
+      };
+
+      wrap.appendChild(keyBtn);   // ключ слева
+      wrap.appendChild(magBtn);   // магнит справа
+    }
+    // всегда последним ребёнком шапки — не даём кнопкам «уехать»
+    if (bar.lastElementChild !== wrap) bar.appendChild(wrap);
   }
   function mkBtn(text, big) {
     const b = document.createElement('button');
@@ -2209,11 +2371,10 @@
   }
   /* ---------- запуск ---------- */
   if (IS_AMO || IS_OMNI) {
-    console.log(TAG, 'запущен на', location.host, 'версия 0.43');
+    console.log(TAG, 'запущен на', location.host, 'версия ' + VER);
     ensurePanel();
     removeHelperBadge();
-    ensureMagnetButton();
-    ensureLoginLinkButton();
-    setInterval(function () { ensurePanel(); removeHelperBadge(); ensureMagnetButton(); ensureLoginLinkButton(); }, 1500);
+    ensureHeaderButtons();
+    setInterval(function () { ensurePanel(); removeHelperBadge(); ensureHeaderButtons(); }, 1500);
   }
 })();
