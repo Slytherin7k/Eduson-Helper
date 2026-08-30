@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper: amoCRM → OmniDesk
 // @namespace    eduson-helper
-// @version      0.49.0
+// @version      0.50.0
 // @description  Кнопка в OmniDesk сама находит клиента в amoCRM и заполняет карточку: ФИО, email, телефон, курс, дату поддержки и ссылку на Super User в админке Эдюсона
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -110,7 +110,7 @@
 
   /* ================================================ */
 
-  const VER = '0.49.0';
+  const VER = '0.50.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -725,6 +725,30 @@
     });
     if (!data.course && bestCourseScore > 0) data.course = bestCourse;
   }
+  // Слить в карточку ТОЛЬКО телефоны и почты доп. контакта — когда в окне
+  // «нашлось несколько человек» куратор отметил галочками сразу нескольких
+  // (у одного студента бывает 2–3 карточки амо с разными почтами/телефонами).
+  // Курс, поддержку и сделку берём только из основного контакта.
+  function mergeContactExtras(contact, data) {
+    (((contact || {}).custom_fields_values) || []).forEach(function (f) {
+      const n = (f.field_name || '').toLowerCase();
+      const values = amoFieldValues(f);
+      if (!values.length) return;
+      if (/телефон|phone/.test(n)) {
+        if (!data.phones) data.phones = [];
+        values.forEach(function (v) {
+          const clean = v.replace(/\s/g, '');
+          if (!data.phones.some(p => p.replace(/\D/g, '').slice(-10) === clean.replace(/\D/g, '').slice(-10))) data.phones.push(v);
+        });
+      } else if (/e-?mail|почта/.test(n)) {
+        if (!data.emails) data.emails = [];
+        values.forEach(function (v) {
+          const clean = v.toLowerCase().trim();
+          if (!data.emails.some(e => e.toLowerCase().trim() === clean)) data.emails.push(v);
+        });
+      }
+    });
+  }
   /* ---------- закрытая (успешная) сделка ---------- */
   function isWon(l) {
     return l.status_id === 142 || (!!l.closed_at && l.status_id !== 143);
@@ -1043,6 +1067,7 @@
         d.name = String(chosen.name || '').trim() ||
           [chosen.first_name, chosen.last_name].filter(Boolean).join(' ').trim();
         readAmoFields(chosen.custom_fields_values, d, true);
+        (chosen._mergeExtra || []).forEach(function (x) { mergeContactExtras(x, d); });
         if (contacts.length) {
           d.dealContacts = contacts.map(function (c) {
             const cEmails = [], cPhones = [];
@@ -1236,8 +1261,13 @@
     out = out.replace(/(^|\s)(Оглы|Оглу|Кызы|Гызы|Уулу|Улы)(?=\s|$)/g, function (_, a, b) { return a + b.toLowerCase(); });
     return out.replace(/\s+/g, ' ').trim();
   }
+  // Окно «нашлось несколько человек». Мультивыбор: куратор отмечает галочками
+  // всех, кто относится к студенту. Возвращает ОСНОВНОЙ контакт (первый отмеченный
+  // по порядку — список отсортирован по совпадению), у него в ._mergeExtra —
+  // остальные отмеченные, чьи почты/телефоны надо слить в карточку.
   function chooseCandidate(candidates, seed) {
     return new Promise(function (resolve) {
+      const list = candidates.slice(0, 6);
       const box = document.createElement('div');
       box.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:2147483647;background:#fff;border-radius:16px;box-shadow:0 12px 40px rgba(15,23,42,.35);padding:18px;max-width:460px;width:92%;font-family:' + HP_FONT + ';';
       const title = document.createElement('div');
@@ -1246,23 +1276,50 @@
       const sub = document.createElement('div');
       sub.style.cssText = 'font-size:12px;color:#6B7280;margin-bottom:12px;';
       const by = [...seed.emails, ...seed.phones].filter(Boolean);
-      sub.textContent = 'Кто из них наш студент?' + (by.length ? ' (в карточке Омни: ' + by.join(', ') + ')' : '');
+      sub.textContent = 'Отметь всех, кто относится к этому студенту — почты и телефоны отмеченных сольются в карточку.' +
+        (by.length ? ' В карточке Омни: ' + by.join(', ') + '.' : '');
       box.appendChild(title);
       box.appendChild(sub);
-      candidates.slice(0, 5).forEach(function (c) {
-        const btn = document.createElement('button');
-        btn.style.cssText = 'display:block;width:100%;text-align:left;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:10px;padding:10px 12px;margin-bottom:8px;cursor:pointer;font-size:13px;color:#111827;white-space:pre-wrap;';
+
+      const checks = [];
+      list.forEach(function (c, i) {
+        const row = document.createElement('label');
+        row.style.cssText = 'display:flex;gap:9px;align-items:flex-start;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:10px;padding:10px 12px;margin-bottom:8px;cursor:pointer;font-size:13px;color:#111827;';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.style.cssText = 'margin-top:2px;flex:0 0 auto;width:16px;height:16px;cursor:pointer;';
+        // по умолчанию отмечаем того, у кого совпал контакт (или самого вероятного — первого)
+        cb.checked = !!(c._matchEmail || c._matchPhone) || (i === 0);
+        checks.push({ cb: cb, c: c });
+        const txt = document.createElement('div');
         const hints = [];
         if (c._hintEmails.length) hints.push('✉️ ' + c._hintEmails.join(', '));
         if (c._hintPhones.length) hints.push('📞 ' + c._hintPhones.join(', '));
         if (c._matchEmail) hints.push('✅ почта совпала');
         else if (c._matchPhone) hints.push('✅ телефон совпал');
-        btn.textContent = (c._preferred ? '⭐ ' : '') + candidateName(c) + (hints.length ? '\n' + hints.join('  ·  ') : '');
-        btn.onclick = function () { box.remove(); resolve(c); };
-        box.appendChild(btn);
+        txt.innerHTML = '<div style="font-weight:600;">' + (c._preferred ? '⭐ ' : '') +
+          String(candidateName(c)).replace(/[<>&]/g, '') + '</div>' +
+          (hints.length ? '<div style="font-size:11.5px;color:#6B7280;margin-top:2px;">' + hints.join('  ·  ').replace(/[<>]/g, '') + '</div>' : '');
+        row.appendChild(cb);
+        row.appendChild(txt);
+        box.appendChild(row);
       });
+
+      const done = document.createElement('button');
+      done.style.cssText = 'display:block;width:100%;background:#0284C7;color:#fff;border:none;border-radius:12px;padding:10px 12px;margin:4px 0 8px;cursor:pointer;font-size:13px;font-weight:700;font-family:inherit;';
+      done.textContent = 'Готово ✓';
+      done.onclick = function () {
+        const picked = checks.filter(x => x.cb.checked).map(x => x.c);
+        if (!picked.length) { resolve(null); box.remove(); return; }
+        const main = picked[0];
+        main._mergeExtra = picked.slice(1);
+        box.remove();
+        resolve(main);
+      };
+      box.appendChild(done);
+
       const cancel = document.createElement('button');
-      cancel.style.cssText = 'background:none;border:none;color:#0284C7;font-size:12px;cursor:pointer;padding:4px;';
+      cancel.style.cssText = 'background:none;border:none;color:#0284C7;font-size:12px;cursor:pointer;padding:4px;display:block;margin:0 auto;';
       cancel.textContent = 'Отмена — никого не выбирать';
       cancel.onclick = function () { box.remove(); resolve(null); };
       box.appendChild(cancel);
@@ -1300,8 +1357,12 @@
           const d = newClientData(base + '/contacts/detail/' + chosen.id);
           try {
             await assembleDataInto(chosen, d, api);
+            (chosen._mergeExtra || []).forEach(function (x) { mergeContactExtras(x, d); });
             data = d;
-            if (candidates.length > 1) note = 'нашла поиском, выбрала: ' + candidateName(chosen);
+            if (candidates.length > 1) {
+              const extra = (chosen._mergeExtra || []).length;
+              note = 'нашла поиском, выбрала: ' + candidateName(chosen) + (extra ? ' (+ ещё ' + extra + ' — слила почты/телефоны)' : '');
+            }
           } catch (e) { err = e; }
         } else {
           toast('Хорошо, никого не выбираю 🙂', 'info');
@@ -2291,10 +2352,13 @@
       const a = document.createElement('a');
       a.href = l.url;
       a.rel = 'noopener noreferrer';
-      const label = l.course || 'вход без пароля';
+      const label = (l._matched ? '★ ' : '') + (l.course || 'вход без пароля');
       a.textContent = label;
       a.style.cssText = 'display:block;font-weight:700;font-size:11.5px;color:#075985;text-decoration:none;' +
-        'background:#E0F2FE;border:1px solid #BAE6FD;border-radius:8px;padding:6px 9px;margin-top:4px;cursor:pointer;';
+        'border-radius:8px;padding:6px 9px;margin-top:4px;cursor:pointer;' +
+        (l._matched
+          ? 'background:#FEF9C3;border:1.5px solid #FACC15;'
+          : 'background:#E0F2FE;border:1px solid #BAE6FD;');
       a.onclick = function (e) {
         e.preventDefault();
         try { GM_setClipboard(l.url); } catch (err) {}
@@ -2371,11 +2435,17 @@
         showLoginLinks(links);
         return;
       }
-      // Несколько курсов: если по курсу обращения уверенно подобралось — показываем один
-      // (с пометкой, что подобран сам), иначе показываем все строки (выбор = копирование).
+      // Несколько курсов: показываем ВСЕ логин-линки. Если по курсу обращения
+      // что-то уверенно подобралось — этот линк подсвечиваем ★ и ставим первым,
+      // но остальные тоже на виду (курс обращения не всегда = нужный курс).
       const best = pickLoginLinkByCourse(links, readCourseTarget());
-      if (best) showLoginLinks([best], 'подобрано по курсу обращения');
-      else showLoginLinks(links);
+      if (best) {
+        best._matched = true;
+        const ordered = [best].concat(links.filter(function (l) { return l !== best; }));
+        showLoginLinks(ordered, '★ — курс обращения; если нужен другой, бери его');
+      } else {
+        showLoginLinks(links);
+      }
     } catch (e) {
       toast('Ошибка при поиске логин-линка: ' + e.message, 'error');
     } finally {
