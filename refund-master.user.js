@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.17.0
+// @version      1.18.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -309,6 +309,62 @@
     return { name: best || omniName || amoName || '', source: src };
   }
 
+  // «Пройдено, %» курса — со страницы статистики студента на платформе курса
+  // (та же, что куратор смотрит из инкогнито; открывается админ-логином Натальи).
+  // Путь: поле АДМИНКА → /admin/users/<id> (для суперюзера — sub-user по совпадению курса/почты/тел.)
+  //       → ссылка на кабинет вида https://<домен>.eduson.tv/ru/users/<id>/stats → текст «Пройдено N%».
+  async function fetchProgressPct(courseName, seedEmail, seedPhone) {
+    const raw = omniCardField(7302) || '';
+    const userIds = (raw.match(/\/admin\/users\/(\d+)/g) || []).map(m => m.match(/(\d+)/)[1]);
+    const superIds = (raw.match(/\/admin\/super_users\/(\d+)/g) || []).map(m => m.match(/(\d+)/)[1]);
+    if (!userIds.length && !superIds.length) return '';
+    const A = 'https://www.eduson.tv';
+    const digits = s => String(s || '').replace(/\D/g, '').slice(-10);
+    const wantPhone = digits(seedPhone), wantEmail = String(seedEmail || '').toLowerCase().trim();
+    const lc = s => String(s || '').toLowerCase().replace(/ё/g, 'е');
+    const courseHit = (a, b) => {
+      a = lc(a); b = lc(b);
+      if (!a || !b) return false;
+      return a.split(/[^a-zа-я0-9]+/).filter(w => w.length >= 4).some(w => b.indexOf(w) !== -1);
+    };
+
+    let ids = userIds.slice(0, 3);
+    for (const sid of superIds.slice(0, 2)) {
+      try {
+        const doc = new DOMParser().parseFromString(await gmFetchText(A + '/admin/super_users/' + sid + '?language=ru'), 'text/html');
+        let tbl = null;
+        doc.querySelectorAll('table').forEach(t => {
+          const head = (t.querySelector('tr') || {}).textContent || '';
+          if (/first name/i.test(head) && /last name/i.test(head)) tbl = t;
+        });
+        if (!tbl) continue;
+        const heads = [...tbl.querySelectorAll('tr')[0].querySelectorAll('th,td')].map(x => x.textContent.trim().toLowerCase());
+        const iE = heads.indexOf('email'), iP = heads.indexOf('phone'), iC = heads.indexOf('company');
+        const rows = [...tbl.querySelectorAll('tr')].slice(1);
+        const cells = tr => [...tr.querySelectorAll('td')].map(td => td.textContent.trim());
+        const uidOf = tr => { const a = tr.querySelector('a[href*="/admin/users/"]'); const m = a && a.getAttribute('href').match(/\/admin\/users\/(\d+)/); return m ? m[1] : ''; };
+        let picked = (iC >= 0 && courseName) ? rows.find(tr => courseHit(courseName, cells(tr)[iC])) : null;
+        if (!picked) picked = rows.find(tr => { const c = cells(tr); return (wantEmail && iE >= 0 && (c[iE] || '').toLowerCase() === wantEmail) || (wantPhone && iP >= 0 && digits(c[iP]) === wantPhone); });
+        if (!picked) picked = rows[0];
+        const u = picked && uidOf(picked);
+        if (u && ids.indexOf(u) === -1) ids.unshift(u);
+      } catch (e) { if (e.message === 'NOAUTH') return ''; }
+    }
+
+    for (const uid of ids.slice(0, 4)) {
+      try {
+        const doc = new DOMParser().parseFromString(await gmFetchText(A + '/admin/users/' + uid + '?language=ru'), 'text/html');
+        const link = doc.querySelector('a[href*="/ru/users/"][href*="/stats"]');
+        const statsUrl = link && link.getAttribute('href');
+        if (!statsUrl || !/^https?:\/\/[^/]*eduson\.tv\//i.test(statsUrl)) continue;
+        const text = (await gmFetchText(statsUrl)).replace(/<[^>]+>/g, ' ');
+        const m = text.match(/Пройдено\s*(\d+(?:[.,]\d+)?)\s*%/i);
+        if (m) return m[1].replace(',', '.');
+      } catch (e) { if (e.message === 'NOAUTH') return ''; }
+    }
+    return '';
+  }
+
   function isWon(l) { return l && l.status_id === 142; }
   function contactNameOf(c) {
     return String((c && c.name) || '').trim() ||
@@ -366,7 +422,7 @@
     const base = 'https://' + AMO_SUBDOMAIN + '.amocrm.ru';
     const out = {
       amoId: '', name: '', nameSource: '', course: '', cluster: '', payType: '', mop: '', mopFromNote: false, producer: '',
-      amount: '', purchaseDate: '', amoLink: '', omniLink: location.href.split('#')[0], foundBy: '',
+      amount: '', purchaseDate: '', progress: '', amoLink: '', omniLink: location.href.split('#')[0], foundBy: '',
     };
     const omniName = grabNameFromOmniCard();
     const seedEmail = omniCardField(2), seedPhone = omniCardField(16);
@@ -414,6 +470,11 @@
       const r = await resolveClientName(omniName, amoName, seedEmail || grabSeedFromPage(), seedPhone);
       out.name = r.name; out.nameSource = r.source;
     } catch (e) { out.name = omniName || amoName || ''; }
+    // «Пройдено, %» — со страницы статистики студента (через админку Эдюсон).
+    try {
+      const pct = await fetchProgressPct(out.course, seedEmail || grabSeedFromPage(), seedPhone);
+      if (pct !== '') out.progress = pct;
+    } catch (e) { /* не критично — куратор впишет руками */ }
     return out;
   }
 
@@ -728,7 +789,7 @@
     mkField(bForm, 'status', 'Статус', 'man', { list: STATUSES, save: 'rm_status' });
     mkField(bForm, 'claimDate', 'Дата заявки на возврат', 'man', { ph: 'дд.мм.гггг', onChange: onDate });
     bForm.appendChild(dateWarn);
-    mkField(bForm, 'progress', 'Пройдено, % (из инкогнито)', 'man', { ph: 'например 15 или 0' });
+    mkField(bForm, 'progress', 'Пройдено, % (подтянется из админки, можно поправить)', 'man', { ph: 'например 15 или 0' });
     mkField(bForm, 'reason', 'Причина возврата', 'man', { list: REASONS, save: 'rm_reason' });
     mkField(bForm, 'clientComment', 'Комментарий клиента (цитата)', 'man', { area: true, ph: 'Вставь текст клиента' });
 
@@ -1009,6 +1070,8 @@
         setF('name', d.name); setF('course', d.course); setF('cluster', d.cluster);
         setF('payType', d.payType); setF('amount', d.amount); setF('mop', d.mop);
         if (d.purchaseDate) setF('accessDate', d.purchaseDate);
+        // «Пройдено, %» — «0» тоже валидно (setF его бы пропустил как falsy)
+        if (d.progress !== '') { T.progress = d.progress; if (inputs.progress) inputs.progress.value = d.progress; saveCase(); }
         T.producer = d.producer || PRODUCERS[T.cluster] || '';
         if (inputs.producer) inputs.producer.value = T.producer;
         syncAgreed(); renderAmoCard(); updateScenario();
@@ -1021,6 +1084,7 @@
         if (d.amount) what.push('сумма');
         if (d.mop) what.push('МОП');
         if (d.purchaseDate) what.push('дата покупки');
+        if (d.progress !== '') what.push('пройдено ' + d.progress + '%');
         const mopSure = d.mop && d.mopFromNote;
         // полный отчёт — в «ℹ️»
         lastAmoDetail =
@@ -1126,7 +1190,7 @@
   }
 
   if (location.hostname.endsWith('omnidesk.ru')) {
-    console.log(TAG, 'запущен, версия ' + '1.17.0');
+    console.log(TAG, 'запущен, версия ' + '1.18.0');
     removeLauncher();
     ensureMenuItem();
     setInterval(function () { removeLauncher(); ensureMenuItem(); }, 2000);
