@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper: amoCRM → OmniDesk
 // @namespace    eduson-helper
-// @version      0.50.0
+// @version      0.51.0
 // @description  Кнопка в OmniDesk сама находит клиента в amoCRM и заполняет карточку: ФИО, email, телефон, курс, дату поддержки и ссылку на Super User в админке Эдюсона
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -110,7 +110,7 @@
 
   /* ================================================ */
 
-  const VER = '0.50.0';
+  const VER = '0.51.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -254,6 +254,102 @@
   function superUserUrl(id) { return ADMIN_BASE + '/admin/super_users/' + id + '?language=ru'; }
 
   function userCardUrl(uid) { return ADMIN_BASE + '/admin/users/' + uid + '?language=ru'; }
+
+  /* ---------- ФИО клиента из админки Эдюсон ---------- */
+
+  // «Похоже на настоящее ФИО»: 2–4 слова, только буквы (кириллица/латиница), дефис ок, без цифр.
+  function adminNameLooksReal(s) {
+    const t = String(s || '').replace(/\s+/g, ' ').trim();
+    if (!t || /[0-9@()\/#]/.test(t)) return false;
+    const w = t.split(' ');
+    return w.length >= 2 && w.length <= 4 &&
+      w.every(function (x) { return /^[А-ЯЁа-яёA-Za-z][А-ЯЁа-яёA-Za-z-]*$/.test(x); });
+  }
+  function adminNameWords(s) {
+    return String(s || '').replace(/\s+/g, ' ').trim().split(' ')
+      .filter(function (w) { return w.length >= 2 && /[А-ЯЁа-яёA-Za-z]/.test(w); });
+  }
+  function hasPatronymic(s) {
+    return /(?:ович|евич|овна|евна|ична|инична|оглы|кызы|улы|уулу)\b/i.test(String(s || ''));
+  }
+  // Карточка юзера /admin/users/<id>: <h1> = «Фамилия Имя [Отчество]».
+  function parseAdminUserName(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const h1 = ((doc.querySelector('h1') || {}).textContent || '').replace(/\s+/g, ' ').trim();
+    return adminNameLooksReal(h1) ? h1 : '';
+  }
+  // Страница Super User: таблица Sub Users (колонки First Name / Last Name).
+  // Строку выбираем по совпадению почты/телефона клиента, иначе первую с полным именем. → «Фамилия Имя».
+  function parseSuperUserSubName(html, emails, phones) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const digits = function (s) { return String(s || '').replace(/\D/g, '').slice(-10); };
+    const wantE = (emails || []).map(function (e) { return String(e).toLowerCase().trim(); }).filter(Boolean);
+    const wantP = (phones || []).map(digits).filter(Boolean);
+    let tbl = null;
+    doc.querySelectorAll('table').forEach(function (t) {
+      const head = ((t.querySelector('tr') || {}).textContent || '').toLowerCase();
+      if (head.indexOf('first name') !== -1 && head.indexOf('last name') !== -1) tbl = t;
+    });
+    if (!tbl) return '';
+    const heads = [].map.call(tbl.querySelectorAll('tr')[0].querySelectorAll('th,td'),
+      function (x) { return x.textContent.trim().toLowerCase(); });
+    const iF = heads.indexOf('first name'), iL = heads.indexOf('last name');
+    const iE = heads.indexOf('email'), iP = heads.indexOf('phone');
+    if (iF < 0 || iL < 0) return '';
+    const rows = [].slice.call(tbl.querySelectorAll('tr'), 1).map(function (tr) {
+      return [].map.call(tr.querySelectorAll('td'), function (td) { return td.textContent.trim(); });
+    });
+    const compose = function (r) {
+      const first = (r[iF] || '').replace(/\s+/g, ' ').trim();
+      const last = (r[iL] || '').replace(/\s+/g, ' ').trim();
+      return (last && first) ? last + ' ' + first : '';
+    };
+    let match = rows.find(function (r) {
+      return (iE >= 0 && wantE.indexOf((r[iE] || '').toLowerCase()) !== -1) ||
+             (iP >= 0 && wantP.indexOf(digits(r[iP])) !== -1);
+    });
+    const fio = (match && compose(match)) || (rows.map(compose).find(Boolean) || '');
+    return adminNameLooksReal(fio) ? fio : '';
+  }
+
+  // Полное ФИО клиента из админки Эдюсон. Использует те же ссылки, что и заполнение поля «АДМИНКА»
+  // (мемоизированный lookupAdminLinks), поэтому лишних поисков не делает.
+  async function lookupAdminFio(data, seed) {
+    if (!ADMIN_LOOKUP) return '';
+    let r;
+    try { r = await getAdminLinks(data); }
+    catch (e) { return ''; }
+    const links = (r && r.links) || [];
+    const emails = (data.emails || []).concat((seed && seed.emails) || []);
+    const phones = (data.phones || []).concat((seed && seed.phones) || []);
+    for (const l of links.slice(0, 4)) {
+      try {
+        const html = await gmFetchText(l.url);
+        if (adminLooksLikeLogin(html)) return '';
+        const fio = /\/admin\/super_users\//.test(l.url)
+          ? parseSuperUserSubName(html, emails, phones)
+          : parseAdminUserName(html);
+        if (fio) return fio;
+      } catch (e) { if (e.message === 'NOAUTH') return ''; }
+    }
+    return '';
+  }
+
+  // Мемоизация lookupAdminLinks по объекту data — чтобы магнит не искал в админке дважды
+  // (один раз для ФИО, второй раз для поля «АДМИНКА»). WeakMap: в GM-хранилище ничего лишнего.
+  const _adminLinksCache = new WeakMap();
+  function getAdminLinks(data) {
+    if (!_adminLinksCache.has(data)) _adminLinksCache.set(data, lookupAdminLinks(data));
+    return _adminLinksCache.get(data);
+  }
+  // Выбор между именем из амо и из админки: берём то, где больше слов;
+  // при равенстве — где есть отчество; иначе оставляем амо.
+  function fullerName(amoName, adminName) {
+    const a = adminNameWords(amoName).length, b = adminNameWords(adminName).length;
+    if (b > a) return adminName;
+    if (b === a && b >= 2 && hasPatronymic(adminName) && !hasPatronymic(amoName)) return adminName;
+    return amoName || adminName;
+  }
 
   // «Login link» на карточке юзера (/admin/users/<id>) — вход без пароля.
   // Это по сути пароль: не логируем, не храним, только в буфер / ПКМ→инкогнито.
@@ -575,7 +671,7 @@
       return;
     }
     let r;
-    try { r = await lookupAdminLinks(data); }
+    try { r = await getAdminLinks(data); }
     catch (e) { miss.push(RU.admin + ' — ошибка: ' + e.message); return; }
 
     if (r.links.length) {
@@ -1422,6 +1518,17 @@
         data.name = nameFio;
       }
     }
+    // ФИО должно быть полное: сравниваем имя из амо с ФИО из админки Эдюсон, берём где больше слов.
+    try {
+      const adminFio = await lookupAdminFio(data, seed);
+      if (adminFio) {
+        const better = fullerName(data.name || '', adminFio);
+        if (better && better !== data.name) {
+          note = (note ? note + '; ' : '') + 'ФИО взяла из админки Эдюсон (полнее)';
+          data.name = fioOrder(better) || better;
+        }
+      }
+    } catch (e) { /* админка не критична для имени */ }
     GM_setValue(STORE_KEY, data);
     GM_setValue(DEBUG_KEY, { version: VER, url: location.href, amoId: amoId, seed: seed, data: data, note: note, ts: Date.now() });
     console.log(TAG, 'данные из амо:', data);
