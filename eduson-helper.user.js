@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.53.0
+// @version      0.54.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -111,7 +111,7 @@
 
   /* ================================================ */
 
-  const VER = '0.53.0';
+  const VER = '0.54.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -2694,7 +2694,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.53.0'; // синхр. с Хэлпером
+  const VER = '0.54.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -2765,7 +2765,8 @@
       kw: ['психолог', 'психотерап', ' hr', 'hr-', 'hr:', 'эйчар', 'управлению персоналом', 'управление персоналом',
            'подбор персонала', 'рекрут', 'рекрутер', 'адаптац персонал', 'обучение и развитие', 't&d', 'методист',
            'методолог', 'образовательн программ', 'продюсер онлайн', 'продюсер курс', 'онлайн-репетитор',
-           'репетитор', 'развитие персонала', 'кадровое делопроизводств', 'бизнес-ассистент', 'ассистент руковод',
+           'репетитор', 'развитие персонала', 'обучению персонала', 'обучения персонала', 'обучение персонала',
+           'кадровое делопроизводств', 'кадровое дело', 'бизнес-ассистент', 'ассистент руковод',
            'mini-mba', 'мини-mba', 'коуч', 'наставник']
     },
     'Отраслевое управление': {
@@ -2970,7 +2971,10 @@
     };
     const mop = fieldVal(/^ур\s*моп$/i) || fieldVal(/первый\s*менеджер/i) || fieldVal(/менеджер\s*кц/i);
     if (mop) return { name: mop, sure: true, err: '' };
-    // запасной — ответственный за сделку
+    // менее надёжно: кто получил лид (у закрытой сделки часто он же и продал)
+    const maybe = fieldVal(/лид\s*получил/i) || fieldVal(/^менеджер$/i);
+    if (maybe) return { name: maybe, sure: false, err: '' };
+    // запасной — ответственный за сделку (эндпоинт /users/ у куратора обычно закрыт — это ок)
     const uid = l && l.responsible_user_id;
     if (uid) {
       try {
@@ -2991,6 +2995,31 @@
       }
     }
     return best;
+  }
+
+  // Поле «Кластер» самой сделки в амо (короткий код) → наш кластер. Надёжнее, чем угадывать по курсу.
+  const AMO_CLUSTER_MAP = {
+    'hr': 'HR и психология',
+    'it': 'IT и Аналитика', 'аналитика': 'IT и Аналитика',
+    'финансы': 'Финансы',
+    'маркетинг': 'Маркетинг и дизайн', 'дизайн': 'Маркетинг и дизайн', 'маркетинг и дизайн': 'Маркетинг и дизайн',
+    'менеджмент': 'Менеджмент',
+    'бухгалтерия': 'Бухгалтерия', 'бухучет': 'Бухгалтерия',
+    'мпп': 'МПП (маркетплейсы, проекты, продакт)',
+    'ресейл': 'Ресейл',
+    'детские курсы': 'Детские курсы', 'детские': 'Детские курсы',
+    'отраслевое управление': 'Отраслевое управление', 'отраслевое': 'Отраслевое управление'
+  };
+  async function clusterFromAmoDeal(dealNum) {
+    if (!dealNum) return null;
+    let l;
+    try { l = await gmFetch('https://eduson.amocrm.ru/api/v4/leads/' + dealNum); }
+    catch (e) { return null; }
+    const cf = (l && l.custom_fields_values) || [];
+    const f = cf.find(function (x) { return /^кластер$/i.test(x.field_name || ''); });
+    const raw = f && f.values && f.values[0] && String(f.values[0].value || '').toLowerCase().replace(/ё/g, 'е').trim();
+    if (!raw) return null;
+    return AMO_CLUSTER_MAP[raw] || null;
   }
 
   /* ==================== ПОДСТАНОВКА В ПИНГ ==================== */
@@ -3163,15 +3192,29 @@
     // --- Кластер (только для 'leadcontent') ---
     let clusterSel = null;
     if (ping.suggest === 'leadcontent') {
-      const cluster = detectCluster(readCourse());
       const crs = readCourse();
-      body.appendChild(elt('div', fieldLabel, 'Кластер' + (cluster ? '' : ' — курс не распознан, выбери')));
+      const byCourse = detectCluster(crs);
+      const clLabel = elt('div', fieldLabel, 'Кластер' + (byCourse ? '' : ' — курс не распознан, выбери'));
+      body.appendChild(clLabel);
       clusterSel = elt('select', inputCss);
       clusterSel.appendChild(new Option('— выбери кластер —', ''));
       CLUSTER_NAMES.forEach(function (n) { clusterSel.appendChild(new Option(n, n)); });
-      clusterSel.value = cluster || '';
+      clusterSel.value = byCourse || '';
       body.appendChild(clusterSel);
       if (crs) body.appendChild(elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;margin-top:2px;', 'курс: ' + crs));
+      // надёжнее — поле «Кластер» самой сделки в амо; подтянется чуть позже,
+      // но только если куратор к этому моменту ещё не выбрал что-то руками.
+      const clInitial = byCourse || '';
+      const deal = amoDealNum();
+      if (deal) {
+        clusterFromAmoDeal(deal).then(function (fromDeal) {
+          if (fromDeal && fromDeal !== clusterSel.value && clusterSel.value === clInitial) {
+            clusterSel.value = fromDeal;
+            clLabel.textContent = 'Кластер — из сделки в амо';
+            if (clusterSel.onchange) clusterSel.onchange();
+          }
+        });
+      }
     }
 
     // --- МОП (только для 'paymanual') — подсказка кому писать, в текст пинга НЕ идёт ---
@@ -3189,7 +3232,7 @@
         fetchMopName(deal).then(function (r) {
           if (r.name) {
             mopInput.value = r.name;
-            mopNote.textContent = r.sure ? 'из сообщения о продаже в амо' : 'ответственный за сделку в амо — проверь, тот ли это МОП';
+            mopNote.textContent = r.sure ? 'из поля «УР МОП» сделки в амо' : 'по данным амо (получил лид / ответственный) — проверь, тот ли это МОП';
             recompute();
           } else if (r.err === 'NOAUTH') {
             mopNote.textContent = 'амо не пустило (' + deal + '). Открой eduson.amocrm.ru в соседней вкладке, войди, вернись и открой пинг заново. Если не помогает — впиши МОП сам.';
