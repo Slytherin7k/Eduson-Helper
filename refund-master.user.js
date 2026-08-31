@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.22.0
+// @version      1.23.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -462,16 +462,19 @@
         const sdoc = new DOMParser().parseFromString(await gmFetchText(sLink.getAttribute('href')), 'text/html');
 
         // Ссылка на учебный план курса (.../assignments/<N>) — там точный процент.
-        // Если курсов несколько — берём карточку по совпадению названия, иначе «текущую», иначе первую.
+        // Если курсов несколько — карточку берём ТОЛЬКО по совпадению названия;
+        // без совпадения не угадываем (вернём '' — куратор впишет %, лучше пусто, чем чужой курс).
         const cards = [...sdoc.querySelectorAll('.inline-course')];
+        const multi = cards.length > 1;
         let planUrl = '';
         if (cards.length) {
           let card = courseName ? cards.find(c => courseHit(courseName, c.textContent)) : null;
-          if (!card) card = sdoc.querySelector('.inline-course--current') || cards[0];
+          if (!card && !(courseName && multi)) card = sdoc.querySelector('.inline-course--current') || cards[0];
           const a = card && card.querySelector('a[href*="/assignments/"]');
           planUrl = a && a.getAttribute('href');
+          if (!planUrl && courseName && multi) continue; // несколько курсов, совпадения нет — не гадаем
         }
-        if (!planUrl) {
+        if (!planUrl && !(courseName && multi)) {
           const a2 = sdoc.querySelector('a[href*="/assignments/"]');
           planUrl = a2 && a2.getAttribute('href');
         }
@@ -522,32 +525,68 @@
     return '';
   }
 
-  async function pickBestLead(base, leadIds, contactIds) {
-    let best = null;
-    const consider = (l) => {
-      if (!isWon(l)) return;
-      if (!best) { best = l; return; }
-      const p = +l.price || 0, bp = +best.price || 0;
-      if ((p > 0) !== (bp > 0)) { if (p > 0) best = l; return; }
-      if ((l.closed_at || 0) > (best.closed_at || 0)) best = l;
-    };
-    for (const id of leadIds) {
-      try { consider(await gmFetch(base + '/api/v4/leads/' + id + '?with=contacts')); }
-      catch (e) { if (e.message === 'NOAUTH') throw e; }
-    }
-    if (!best || !(+best.price > 0)) {
-      for (const cid of contactIds) {
+  // Одна сделка -> компактное описание купленного курса для панели.
+  function dealSummary(lead) {
+    const d = { id: String(lead.id), course: '', cluster: '', payType: '', amount: '', purchaseDate: '', closedAt: lead.closed_at || 0, price: +lead.price || 0 };
+    readDealFields(lead, d);
+    d.purchaseDate = fmtTs(lead.closed_at || 0);
+    return d;
+  }
+
+  // ВСЕ выигранные сделки клиента с ненулевым бюджетом = купленные курсы.
+  // Берём сделки из виджета карточки И все сделки контакта(ов) — в виджете часто не все.
+  // Возвращает { deals:[...], lead:<полный объект сделки-по-умолчанию> }.
+  async function gatherWonDeals(base, leadIds, contactIds) {
+    const leadSet = new Set((leadIds || []).map(String));
+    const contactSet = new Set((contactIds || []).map(String));
+    const fetched = {};
+    const expandContacts = async () => {
+      for (const cid of [...contactSet].slice(0, 4)) {
         try {
           const c = await gmFetch(base + '/api/v4/contacts/' + cid + '?with=leads');
-          const lids = (((c._embedded || {}).leads) || []).map(x => x.id).slice(0, 10);
-          for (const lid of lids) {
-            try { consider(await gmFetch(base + '/api/v4/leads/' + lid + '?with=contacts')); }
-            catch (e) { if (e.message === 'NOAUTH') throw e; }
-          }
+          (((c._embedded || {}).leads) || []).slice(0, 15).forEach(l => leadSet.add(String(l.id)));
         } catch (e) { if (e.message === 'NOAUTH') throw e; }
       }
-    }
-    return best;
+    };
+    const fetchLeads = async () => {
+      for (const id of [...leadSet].slice(0, 25)) {
+        if (fetched[id]) continue;
+        try {
+          const l = await gmFetch(base + '/api/v4/leads/' + id + '?with=contacts');
+          fetched[id] = l || {};
+          (((l && l._embedded || {}).contacts) || []).forEach(c => contactSet.add(String(c.id)));
+        } catch (e) { if (e.message === 'NOAUTH') throw e; fetched[id] = {}; }
+      }
+    };
+    await expandContacts();
+    await fetchLeads();
+    await expandContacts(); // у найденных сделок могли всплыть новые контакты
+    await fetchLeads();
+    const won = Object.keys(fetched).map(k => fetched[k]).filter(l => l && l.id && isWon(l));
+    let pool = won.filter(l => +l.price > 0);
+    if (!pool.length) pool = won; // все нулевые — берём как есть
+    // по умолчанию: свежее по дате покупки, при равенстве — крупнее бюджет
+    pool.sort((a, b) => (b.closed_at || 0) - (a.closed_at || 0) || (+b.price || 0) - (+a.price || 0));
+    return { deals: pool.map(dealSummary), lead: pool[0] || null };
+  }
+
+  // МОП + «пройдено, %» для конкретной сделки/курса (нужно при смене курса в панели).
+  async function fetchDealExtras(dealId, courseName, seedEmail, seedPhone) {
+    const base = 'https://' + AMO_SUBDOMAIN + '.amocrm.ru';
+    const out = { mop: '', mopFromNote: false, progress: '' };
+    try {
+      const seller = await findSeller(base, dealId);
+      if (seller) { out.mop = seller; out.mopFromNote = true; }
+      else {
+        const l = await gmFetch(base + '/api/v4/leads/' + dealId);
+        out.mop = await fetchUserName(base, l && l.responsible_user_id);
+      }
+    } catch (e) { /* МОП не критичен */ }
+    try {
+      const pct = await fetchProgressPct(courseName, seedEmail, seedPhone);
+      if (pct !== '') out.progress = pct;
+    } catch (e) { /* процент впишут руками */ }
+    return out;
   }
 
   async function collectRefundData() {
@@ -555,6 +594,7 @@
     const out = {
       amoId: '', name: '', nameSource: '', course: '', cluster: '', payType: '', mop: '', mopFromNote: false, producer: '',
       amount: '', purchaseDate: '', progress: '', amoLink: '', omniLink: location.href.split('#')[0], foundBy: '',
+      deals: [], dealId: '',
     };
     const omniName = grabNameFromOmniCard();
     const seedEmail = omniCardField(2), seedPhone = omniCardField(16);
@@ -563,7 +603,8 @@
     let lead = null;
     if (refs.leads.length || refs.contacts.length) {
       out.foundBy = 'по виджету amoCRM в карточке';
-      lead = await pickBestLead(base, refs.leads, refs.contacts);
+      const g = await gatherWonDeals(base, refs.leads, refs.contacts);
+      lead = g.lead; out.deals = g.deals;
     }
     if (!lead) {
       const seed = grabSeedFromPage();
@@ -576,11 +617,12 @@
       const res = await gmFetch(base + '/api/v4/contacts?query=' + encodeURIComponent(seed) + '&with=leads');
       const contact = (((res._embedded || {}).contacts) || [])[0];
       if (contact) {
-        const lids = (((contact._embedded || {}).leads) || []).map(l => l.id).slice(0, 10);
-        lead = await pickBestLead(base, lids, [contact.id]);
+        const g = await gatherWonDeals(base, [], [contact.id]);
+        lead = g.lead; out.deals = g.deals;
       }
     }
     if (lead) {
+      out.dealId = String(lead.id);
       out.amoId = String(lead.id);
       readDealFields(lead, out);
       out.purchaseDate = fmtTs(lead.closed_at || 0);
@@ -596,6 +638,9 @@
         catch (e) { /* имя не критично */ }
       }
       if (!(+lead.price > 0)) out.foundBy += ' — ВНИМАНИЕ: у сделки нулевой бюджет, проверь сумму и форму оплаты';
+      if ((out.deals || []).length > 1) {
+        out.foundBy += ' — КУПЛЕНО ' + out.deals.length + ' КУРСОВ, выбери в панели, на какой возврат';
+      }
     }
     // ФИО клиента: сначала карточка OmniDesk, потом амо, потом (если только имя) админка Эдюсон.
     try {
@@ -712,14 +757,17 @@
       amoLink: '', omniLink: location.href.split('#')[0], purchaseDate: '',
       producer: '', rowNumber: pick('rowNumber', GM_getValue('rm_row') || ''),
       rgTag: pick('rgTag', GM_getValue('rm_rg') || ''),
+      deals: [], dealId: pick('dealId', ''),
     };
     const inputs = {};
+    const seedEmail = omniCardField(2) || grabSeedFromPage();
+    const seedPhone = omniCardField(16);
     let saveT = 0;
     const saveCase = () => {
       clearTimeout(saveT);
       saveT = setTimeout(() => {
         const keep = {};
-        ['curator', 'status', 'claimDate', 'progress', 'reason', 'clientComment', 'result', 'agreedSum', 'rowNumber', 'rgTag']
+        ['curator', 'status', 'claimDate', 'progress', 'reason', 'clientComment', 'result', 'agreedSum', 'rowNumber', 'rgTag', 'dealId']
           .forEach(k => { keep[k] = T[k]; });
         try { GM_setValue(CASE_KEY, JSON.stringify(keep)); } catch (e) { /* ignore */ }
       }, 300);
@@ -933,6 +981,16 @@
     amoHdr.appendChild(bEdit);
     amoCard.appendChild(amoHdr);
     amoCard.appendChild(amoSummary);
+
+    // Выбор курса — виден, только если клиент купил несколько курсов (несколько выигранных сделок)
+    const dealPick = el('div', 'display:none;margin:8px 0 2px;padding:9px 11px;background:#FEF3C7;border:1px solid #FCD34D;border-radius:12px;');
+    dealPick.appendChild(el('div', 'font-size:10.5px;font-weight:800;color:#92400E;margin-bottom:6px;line-height:1.35;',
+      '🎓 У клиента несколько купленных курсов — выбери, на какой просят возврат:'));
+    const dealSelect = el('select', S.input);
+    dealSelect.style.cssText += 'font-weight:700;background:#fff;';
+    dealPick.appendChild(dealSelect);
+    amoCard.appendChild(dealPick);
+
     const amoFields = el('div', 'display:none;margin-top:4px;');
     bEdit.onclick = () => {
       const open = amoFields.style.display === 'none';
@@ -956,6 +1014,55 @@
     } });
     mkField(amoFields, 'accessDate', 'Дата выдачи доступа (= покупка)', 'auto', { ph: 'дд.мм.гггг', onChange: () => { renderAmoCard(); onDate(); } });
     mkField(amoFields, 'mop', 'МОП — кто продал курс', 'auto', { onChange: amoChg });
+
+    // Применить выбранный курс (сделку): поля из амо + при refetch — заново % и МОП.
+    const applyDeal = (d, opts) => {
+      opts = opts || {};
+      const setF = (k, v) => { T[k] = v || ''; const f = inputs[k]; if (f && f._fill) f._fill(T[k]); else if (f) f.value = T[k]; };
+      setF('course', d.course); setF('payType', d.payType); setF('amount', d.amount); setF('cluster', d.cluster);
+      if (d.purchaseDate) { T.accessDate = d.purchaseDate; if (inputs.accessDate) inputs.accessDate.value = d.purchaseDate; }
+      T.amoLink = 'https://' + AMO_SUBDOMAIN + '.amocrm.ru/leads/detail/' + d.id;
+      T.producer = PRODUCERS[T.cluster] || '';
+      if (inputs.producer) inputs.producer.value = T.producer;
+      renderAmoCard(); updateScenario();
+      if (!opts.refetch) return;
+      T.progress = ''; if (inputs.progress) inputs.progress.value = '';
+      T.mop = ''; T.mopFromNote = false; if (inputs.mop) inputs.mop.value = '';
+      renderAmoCard();
+      statusBox.textContent = 'Курс: ' + (d.course || '?') + ' — подтягиваю % и МОП…';
+      statusBox.style.color = '#374151';
+      fetchDealExtras(d.id, d.course, seedEmail, seedPhone).then(x => {
+        if (x.progress !== '') { T.progress = x.progress; if (inputs.progress) inputs.progress.value = x.progress; }
+        if (x.mop) { T.mop = x.mop; T.mopFromNote = x.mopFromNote; if (inputs.mop) inputs.mop.value = x.mop; }
+        saveCase(); renderAmoCard();
+        statusBox.textContent = '✓ Курс: ' + (d.course || '?') +
+          (x.progress !== '' ? ' · пройдено ' + x.progress + '%' : ' · % не нашёлся — впиши руками') +
+          (x.mop ? ' · МОП ' + x.mop : '');
+        statusBox.style.color = x.progress !== '' ? '#15803D' : '#B45309';
+      }).catch(() => {
+        statusBox.textContent = '⚠️ Не подтянула % / МОП для нового курса — впиши руками.';
+        statusBox.style.color = '#B45309';
+      });
+    };
+    const renderDealPick = () => {
+      const ds = T.deals || [];
+      if (ds.length < 2) { dealPick.style.display = 'none'; return; }
+      dealPick.style.display = 'block';
+      dealSelect.innerHTML = '';
+      ds.forEach(d => {
+        const amt = String(d.amount || '').replace(/\D/g, '');
+        const label = (d.course || 'курс?') + '  ·  ' + (amt ? (+amt).toLocaleString('ru-RU') + ' ₽' : '—') +
+          (d.purchaseDate ? '  ·  ' + d.purchaseDate : '');
+        const o = el('option', null, label); o.value = d.id; dealSelect.appendChild(o);
+      });
+      dealSelect.value = ds.some(d => d.id === T.dealId) ? T.dealId : ds[0].id;
+    };
+    dealSelect.addEventListener('change', () => {
+      const d = (T.deals || []).find(x => x.id === dealSelect.value);
+      if (!d) return;
+      T.dealId = d.id; saveCase();
+      applyDeal(d, { refetch: true });
+    });
 
     // 3) Строка в таблице возвратов
     tableBlock = mkBlock(colL, 'Строка в таблице возвратов');
@@ -1250,6 +1357,17 @@
         if (d.progress !== '') { T.progress = d.progress; if (inputs.progress) inputs.progress.value = d.progress; saveCase(); }
         T.producer = d.producer || PRODUCERS[T.cluster] || '';
         if (inputs.producer) inputs.producer.value = T.producer;
+
+        // купленные курсы
+        T.deals = d.deals || [];
+        const savedDeal = T.deals.find(x => x.id === T.dealId);
+        if (savedDeal && savedDeal.id !== d.dealId) {
+          applyDeal(savedDeal, { refetch: true }); // куратор ранее выбрал другой курс — вернём его
+        } else {
+          T.dealId = d.dealId || (T.deals[0] && T.deals[0].id) || '';
+        }
+        renderDealPick();
+
         syncAgreed(); renderAmoCard(); updateScenario();
 
         const what = [];
@@ -1266,18 +1384,26 @@
         lastAmoDetail =
           'Нашла ' + (d.foundBy || '') + (d.amoLink ? '\nСделка ' + d.amoId : '') + '\n' +
           (d.name ? 'ФИО «' + d.name + '»' + (d.nameSource ? ' — ' + d.nameSource : '') + '\n' : '') +
+          ((T.deals || []).length > 1
+            ? 'Купленные курсы (' + T.deals.length + '):\n' + T.deals.map(x =>
+                '  ' + (x.id === T.dealId ? '● ' : '○ ') + (x.course || 'курс?') +
+                (x.amount ? ' — ' + x.amount + ' ₽' : '') + (x.purchaseDate ? ' — ' + x.purchaseDate : '')).join('\n') +
+              '\n(выбор — в жёлтой плашке «на какой возврат»)\n'
+            : '') +
           'Подтянуто: ' + (what.length ? what.join(', ') : 'почти ничего — проверь руками') +
           (d.mop
             ? '\nМОП: ' + d.mop + (d.mopFromNote ? ' (из сообщения о продаже)' : ' (ОТВЕТСТВЕННЫЙ сделки — проверь!)')
             : '\nМОП не нашла — впиши руками, кто продал курс.') +
           (what.length < 6 ? '\nПусто? Открой карточку клиента в OmniDesk (виджет amoCRM) и нажми 🔄' : '');
         // в панели — только короткая строка
+        const manyCourses = (T.deals || []).length > 1;
+        const coursesNote = manyCourses ? ' · 🎓 курсов ' + T.deals.length + ' — ПРОВЕРЬ ВЫБОР' : '';
         if (!what.length) {
           statusBox.textContent = '⚠️ Из амо почти ничего — проверь карточку в OmniDesk, детали в «ℹ️»';
           statusBox.style.color = '#DC2626';
-        } else if (what.length < 6 || !mopSure) {
+        } else if (what.length < 6 || !mopSure || manyCourses) {
           statusBox.textContent = '⚠️ Из амо' + (d.amoId ? ' (сделка ' + d.amoId + ')' : '') +
-            (!mopSure ? ' · МОП проверь' : ' · часть полей пуста') + ' — детали в «ℹ️»';
+            (!mopSure ? ' · МОП проверь' : (!manyCourses ? ' · часть полей пуста' : '')) + coursesNote + ' — детали в «ℹ️»';
           statusBox.style.color = '#B45309';
         } else {
           statusBox.textContent = '✓ Данные из амо' + (d.amoId ? ' · сделка ' + d.amoId : '') + ' — детали в «ℹ️»';
@@ -1366,7 +1492,7 @@
   }
 
   if (location.hostname.endsWith('omnidesk.ru')) {
-    console.log(TAG, 'запущен, версия ' + '1.22.0');
+    console.log(TAG, 'запущен, версия ' + '1.23.0');
     removeLauncher();
     ensureMenuItem();
     setInterval(function () { removeLauncher(); ensureMenuItem(); }, 2000);
