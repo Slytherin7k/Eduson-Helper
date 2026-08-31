@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.31.0
+// @version      1.32.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -132,7 +132,10 @@
   }
 
   // GET, отдаёт текст (HTML) — для страниц админки Эдюсон.
-  function gmFetchText(url) {
+  // На один прогон сбора (прогрев / «🔄 амо») кэшируем ответы по URL: страницу студента в
+  // админке (~1.3 МБ) раньше тянули дважды — за ФИО и за ссылкой на кабинет. Теперь один раз.
+  let _rmPageCache = null;
+  function _gmFetchTextImpl(url) {
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
         method: 'GET', url: url, timeout: 15000,
@@ -146,6 +149,14 @@
         ontimeout: function () { reject(new Error('долго нет ответа')); },
       });
     });
+  }
+  function gmFetchText(url) {
+    if (!_rmPageCache) return _gmFetchTextImpl(url);
+    if (_rmPageCache.has(url)) return _rmPageCache.get(url);
+    const p = _gmFetchTextImpl(url);
+    _rmPageCache.set(url, p);
+    p.catch(() => { if (_rmPageCache && _rmPageCache.get(url) === p) _rmPageCache.delete(url); });
+    return p;
   }
 
   /* ---------- поиск свободной строки в гугл-таблице возвратов ---------- */
@@ -1267,7 +1278,10 @@
       rowNote.style.display = 'block';
       rowNote.style.color = ACC_DK;
       rowNote.textContent = 'Смотрю таблицу возвратов…';
-      findNextFreeRow().then(r => {
+      // авто-режим: если прогрев уже нашёл строку — берём оттуда, без ~28 запросов к таблице
+      const warmRow = (mode === 'auto' && _rmWarm.caseId === rmCaseId() && _rmWarm.rowInfo
+        && _rmWarm.ts && Date.now() - _rmWarm.ts < 600000) ? _rmWarm.rowInfo : null;
+      (warmRow ? Promise.resolve(warmRow) : findNextFreeRow()).then(r => {
         if (r.next) {
           const changed = had && had !== String(r.next);
           T.rowNumber = String(r.next);
@@ -1596,11 +1610,13 @@
     renderAmoCard();
     updateScenario();
 
-    // автосбор из амо
-    const refreshFromAmo = function () {
-      statusBox.textContent = 'Собираю данные из амо…';
+    // автосбор из амо. force=true (кнопка «🔄 амо») — всегда свежий сбор, мимо прогрева.
+    const refreshFromAmo = function (force) {
+      statusBox.textContent = (!force && _rmWarm.running && _rmWarm.caseId === rmCaseId())
+        ? 'Дособираю данные из амо…' : 'Собираю данные из амо…';
       statusBox.style.color = '#374151';
-      collectRefundData().then(d => {
+      getWarmData(force).then(d => {
+        if (!d) throw new Error('пустой сбор');
         T.amoLink = d.amoLink; T.omniLink = d.omniLink; T.purchaseDate = d.purchaseDate; T.mopFromNote = d.mopFromNote;
         const setF = (k, v) => { if (v) { T[k] = v; if (inputs[k] && inputs[k]._fill) inputs[k]._fill(v); else if (inputs[k]) inputs[k].value = v; } };
         setF('name', d.name); setF('course', d.course); setF('cluster', d.cluster);
@@ -1671,12 +1687,70 @@
       }).catch(e => {
         statusBox.textContent = e.message === 'NOAUTH'
           ? 'Амо не пустило 😕 Открой-обнови вкладку амо в этом браузере и нажми «🔄 амо».'
-          : 'Ошибка амо: ' + e.message;
+          : (e.message === 'пустой сбор'
+            ? 'Из амо ничего не собралось — открой карточку клиента в OmniDesk (виджет amoCRM) и нажми «🔄 амо».'
+            : 'Ошибка амо: ' + e.message);
         statusBox.style.color = '#DC2626';
       });
     };
-    bRefresh.onclick = refreshFromAmo;
+    bRefresh.onclick = () => refreshFromAmo(true);
     refreshFromAmo();
+  }
+
+  /* ---------- фоновый прогрев (как в Хэлпере) ---------- */
+  // При открытии чата в фоне собираем данные из амо + ищем свободную строку, чтобы клик
+  // по «🌀 Возврат-мастер» открывал панель уже готовой. Выключить — RM_WARM_ON_LOAD = false.
+  const RM_WARM_ON_LOAD = true;
+  const rmCaseId = () => (location.pathname.match(/(\d{2,4}-\d{5,})/) || [])[1] || '';
+  let _rmWarm = { caseId: '', ts: 0, running: false, data: null, rowInfo: null };
+  let _rmWarmedCase = '';
+
+  function withPageCache(fn) {
+    if (_rmPageCache) return Promise.resolve().then(fn); // уже есть активный кэш (идёт прогрев)
+    _rmPageCache = new Map();
+    return Promise.resolve().then(fn).then(
+      v => { _rmPageCache = null; return v; },
+      e => { _rmPageCache = null; throw e; }
+    );
+  }
+
+  async function prewarm() {
+    if (!RM_WARM_ON_LOAD || !location.hostname.endsWith('omnidesk.ru')) return;
+    const cid = rmCaseId();
+    if (!cid || cid === _rmWarmedCase) return;
+    // сайдбар/виджет амо ещё не подгрузился — подождём следующего тика
+    const refs = grabAmoRefs();
+    if (!omniCardField(2) && !omniCardField(16) && !refs.leads.length && !refs.contacts.length && !grabSeedFromPage()) return;
+    _rmWarmedCase = cid;
+    _rmWarm = { caseId: cid, ts: 0, running: true, data: null, rowInfo: null };
+    _rmPageCache = new Map();
+    try {
+      const [data, rowInfo] = await Promise.all([
+        collectRefundData().catch(() => null),
+        findNextFreeRow().catch(() => null),
+      ]);
+      if (rmCaseId() !== cid) return; // куратор ушёл на другой чат
+      _rmWarm.data = data;
+      _rmWarm.rowInfo = (rowInfo && rowInfo.next) ? rowInfo : null;
+      _rmWarm.ts = Date.now();
+    } catch (e) { /* тихо — при клике будет полный сбор */ }
+    finally { _rmPageCache = null; if (_rmWarm.caseId === cid) _rmWarm.running = false; }
+  }
+
+  // Данные для панели: из свежего прогрева, либо ждём идущий прогрев, либо собираем сами.
+  function getWarmData(force) {
+    const cid = rmCaseId();
+    const fresh = _rmWarm.caseId === cid && _rmWarm.ts && Date.now() - _rmWarm.ts < 600000;
+    if (!force && fresh && _rmWarm.data) return Promise.resolve(_rmWarm.data);
+    if (!force && _rmWarm.running && _rmWarm.caseId === cid) {
+      return new Promise(res => {
+        let n = 0;
+        const iv = setInterval(() => {
+          if (!_rmWarm.running || _rmWarm.caseId !== cid || n++ > 80) { clearInterval(iv); res(null); }
+        }, 150);
+      }).then(() => (_rmWarm.data && _rmWarm.caseId === cid) ? _rmWarm.data : withPageCache(collectRefundData));
+    }
+    return withPageCache(collectRefundData);
   }
 
   /* ---------- запуск ---------- */
@@ -1751,9 +1825,13 @@
   }
 
   if (location.hostname.endsWith('omnidesk.ru')) {
-    console.log(TAG, 'запущен, версия ' + '1.31.0');
+    console.log(TAG, 'запущен, версия ' + '1.32.0');
     removeLauncher();
     ensureMenuItem();
-    setInterval(function () { removeLauncher(); ensureMenuItem(); }, 2000);
+    setInterval(function () {
+      removeLauncher();
+      ensureMenuItem();
+      try { prewarm(); } catch (e) { /* прогрев не критичен */ }
+    }, 2000);
   }
 })();
