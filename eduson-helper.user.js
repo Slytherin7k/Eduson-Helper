@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.69.0
+// @version      0.70.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.69.0';
+  const VER = '0.70.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -2619,6 +2619,7 @@
     if (old) old.remove();
     const box = document.createElement('div');
     box.id = 'eduson-loginlink-box';
+    box.dataset.caseId = omniCaseId();
     box.style.cssText = 'position:fixed;z-index:2147483647;width:280px;max-width:92vw;background:#fff;color:#1F2937;' +
       'padding:9px 24px 9px 11px;border:1px solid #E5E7EB;border-radius:12px;font-family:' + HP_FONT + ';' +
       'box-shadow:0 12px 34px rgba(15,23,42,.28);border-left:4px solid #0284C7;';
@@ -2668,22 +2669,14 @@
     const x = document.createElement('span');
     x.textContent = '✕';
     x.style.cssText = 'position:absolute;top:5px;right:8px;cursor:pointer;color:#9CA3AF;font-size:12px;line-height:1;';
-    x.onclick = function () { close(); };
+    x.onclick = function () { box.remove(); };
     box.appendChild(x);
     document.documentElement.appendChild(box);
 
-    function close() {
-      box.remove();
-      document.removeEventListener('mousedown', onOutside, true);
-    }
-    function onOutside(e) {
-      if (box.contains(e.target)) return;
-      if (kbtn && kbtn.contains(e.target)) return; // повторный клик по ключу обрабатывается сам
-      close();
-    }
-    // Закрытие по клику вне окна — но не в тот же тик, что открытие.
-    setTimeout(function () { document.addEventListener('mousedown', onOutside, true); }, 0);
-    setTimeout(close, 120000);
+    // Окно НЕ закрывается по клику мимо (Наталья: пропадало сразу, приходилось жать ключ заново).
+    // Закрыть — крестиком или повторным кликом по ключу. Логин-линки этой карточки кэшируются
+    // в памяти (не на диск): повторный клик по ключу открывает их мгновенно.
+    setTimeout(function () { if (box.isConnected) box.remove(); }, 600000); // страховка: 10 минут
   }
 
   function readCourseTarget() {
@@ -2696,9 +2689,30 @@
   }
 
   let loginLinkBusy = false;
+  // Логин-линки последней карточки — в памяти (НЕ на диск, НЕ в консоль). Чтобы не гонять
+  // ключ по несколько раз на одном кейсе: повторный клик открывает их сразу.
+  let _loginLinkCache = { caseId: '', links: null, note: '' };
+  function omniCaseId() { return (location.pathname.match(/(\d{2,4}-\d{5,})/) || [])[1] || ''; }
+
   async function copyLoginLink() {
+    // Повторный клик по ключу — если окно открыто, просто закрыть.
+    const openBox = document.getElementById('eduson-loginlink-box');
+    if (openBox) { openBox.remove(); return; }
     if (loginLinkBusy) return;
+
+    const caseId = omniCaseId();
+    // Уже искали на этой карточке — показываем из памяти, в админку не идём.
+    if (caseId && _loginLinkCache.caseId === caseId && _loginLinkCache.links && _loginLinkCache.links.length) {
+      showLoginLinks(_loginLinkCache.links, _loginLinkCache.note);
+      return;
+    }
+
     loginLinkBusy = true;
+    // Показать + запомнить по карточке.
+    const present = function (links, note) {
+      _loginLinkCache = { caseId: caseId, links: links, note: note || '' };
+      showLoginLinks(links, note);
+    };
     try {
       toast('Ищу логин-линк в админке Эдюсон…', 'info', 6000);
 
@@ -2726,7 +2740,7 @@
         return;
       }
       if (links.length === 1) {
-        showLoginLinks(links);
+        present(links);
         return;
       }
       // Несколько курсов: показываем ВСЕ логин-линки. Если по курсу обращения
@@ -2736,9 +2750,9 @@
       if (best) {
         best._matched = true;
         const ordered = [best].concat(links.filter(function (l) { return l !== best; }));
-        showLoginLinks(ordered, '★ — курс обращения; если нужен другой, бери его');
+        present(ordered, '★ — курс обращения; если нужен другой, бери его');
       } else {
-        showLoginLinks(links);
+        present(links);
       }
     } catch (e) {
       toast('Ошибка при поиске логин-линка: ' + e.message, 'error');
@@ -2772,6 +2786,9 @@
   // возвращаем на место. Высота 34px = высота строки → кнопки по центру, ничего не торчит.
   function ensureHeaderButtons() {
     if (!IS_OMNI) return;
+    // Перешли на другой кейс (OmniDesk — SPA) — убираем окно логин-линка от прошлой карточки.
+    const lb = document.getElementById('eduson-loginlink-box');
+    if (lb && lb.dataset.caseId && lb.dataset.caseId !== omniCaseId()) lb.remove();
     const bar = document.querySelector('.request-content-title-act');
     if (!bar) {
       const ex = document.getElementById('eduson-hdr-btns');
@@ -2874,7 +2891,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.69.0'; // синхр. с Хэлпером
+  const VER = '0.70.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
