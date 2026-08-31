@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.76.2
+// @version      0.76.3
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.76.2';
+  const VER = '0.76.3';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3051,7 +3051,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.76.2'; // синхр. с Хэлпером
+  const VER = '0.76.3'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4598,14 +4598,12 @@
     catch (e) { return null; }
     if (looksLikeAdminLogin(html)) return null;
     const norm = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
-    const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    // Дату НЕ сверяем: журнал админки в своей таймзоне (UTC), у браузера — местная, на границе
+    // суток строки не совпадали. Курс числится завершённым в журнале — значит прогресс подтянут.
     const out = {};
     ids.forEach(function (id) {
       const n = names[id];
-      out[id] = !!n && (
-        norm.indexOf('course_completed ' + n + ' ' + today) !== -1 ||
-        norm.indexOf('completed ' + n + ' ' + today) !== -1
-      );
+      out[id] = !!n && norm.indexOf('course_completed ' + n) !== -1;
     });
     return out;
   }
