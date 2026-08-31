@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.73.0
+// @version      0.74.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.73.0';
+  const VER = '0.74.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -1602,20 +1602,42 @@
     });
   }
   /* ---------- режим 2: кнопка в OmniDesk ---------- */
+  // Данные, собранные заранее (фоном при открытии чата), чтобы клик по 🧲 вставлял мгновенно.
+  let _warmData = { caseId: '', data: null, note: '', ts: 0, running: false };
+
   async function smartFillOmni() {
+    const cid = omniCaseId();
+    // Фоновый сбор по этому чату ещё идёт — подождём его (обычно пара секунд), клик будет мгновенным.
+    if (_warmData.running && _warmData.caseId === cid) {
+      const MR0 = iconRing('eduson-magnet-btn'); if (MR0) MR0.osc();
+      for (let i = 0; i < 60 && _warmData.running && _warmData.caseId === cid; i++) {
+        await new Promise(function (r) { setTimeout(r, 150); });
+      }
+    }
+    // Есть свежий фоновый сбор — вставляем сразу, без похода в амо.
+    if (_warmData.caseId === cid && _warmData.data && Date.now() - _warmData.ts < 600000) {
+      const MR = iconRing('eduson-magnet-btn');
+      const d = _warmData.data;
+      GM_setValue(STORE_KEY, d);
+      await fillInputsFromData(d, 'Нашлось в амо' + (_warmData.note ? '\n(' + _warmData.note + ')' : ''));
+      if (MR) MR.done();
+      return;
+    }
     _admCache = new Map();
-    try { await smartFillOmniInner(); }
+    try { await smartFillOmniInner({}); }
     catch (e) { console.error(TAG, e); const r = iconRing('eduson-magnet-btn'); if (r) r.fail(); }
     finally { _admCache = null; }
   }
-  async function smartFillOmniInner() {
+  async function smartFillOmniInner(opts) {
+    opts = opts || {};
+    const warm = !!opts.warm;
     const base = 'https://' + AMO_SUBDOMAIN + '.amocrm.ru';
     const api = function (path) { return gmFetch(base + path); };
     const seed = grabContactSeed();
     const amoId = grabAmoIdFromPage();
-    console.log(TAG, 'amo-номер:', amoId || '—', '| телефоны:', seed.phones, '| email:', seed.emails);
+    if (!warm) console.log(TAG, 'amo-номер:', amoId || '—', '| телефоны:', seed.phones, '| email:', seed.emails);
     let data = null, err = null, note = '';
-    const MR = iconRing('eduson-magnet-btn');
+    const MR = warm ? null : iconRing('eduson-magnet-btn');
     if (MR) MR.osc();
     if (amoId) {
       try { data = await fetchClientById(amoId, seed, base); }
@@ -1632,6 +1654,7 @@
         // (бывает: на одной сделке разные люди с общей почтой — сам выбирать нельзя)
         const matchCount = candidates.filter(function (c) { return c._matchEmail || c._matchPhone; }).length;
         if (candidates.length > 1 && (matchCount > 1 || (chosen._score - (second ? second._score : 0)) < 4)) {
+          if (warm) return;                 // неоднозначно — фоном не решаем, спросим при клике
           chosen = await chooseCandidate(candidates, seed);
         }
         if (chosen) {
@@ -1653,6 +1676,7 @@
       }
     }
     if (err) {
+      if (warm) return;
       if (MR) MR.fail();
       if (err.message === 'CANCELLED') { if (MR) MR.hide(); toast('Хорошо, никого не выбираю 🙂', 'info'); return; }
       console.error(TAG, 'ошибка:', err);
@@ -1710,6 +1734,7 @@
       } catch (e) { /* админка недоступна — оставляем как есть */ }
     }
     if (!data || (!data.name && !data.emails.length && !data.phones.length && !data.course && !data.support)) {
+      if (warm) return;
       GM_setValue(DEBUG_KEY, { version: VER, url: location.href, amoId: amoId, seed: seed, result: 'ничего не нашлось', ts: Date.now() });
       if (MR) MR.fail();
       toast('В амо ничего не нашлось 😕', 'warn');
@@ -1738,11 +1763,63 @@
       }
     } catch (e) { /* админка не критична для имени */ }
     GM_setValue(STORE_KEY, data);
+    if (warm) {
+      // Фоновый сбор при открытии чата: только запоминаем, карточку НЕ трогаем.
+      const wcid = opts.caseId || omniCaseId();
+      if (omniCaseId() !== wcid) return;   // куратор уже ушёл на другой чат — не кэшируем чужое
+      _warmData = { caseId: wcid, data: data, note: note, ts: Date.now(), running: false };
+      const wr = iconRing('eduson-magnet-btn'); if (wr) { wr.set(1); setTimeout(function () { wr.done(); }, 60); } // короткий зелёный «готово»
+      return;
+    }
     GM_setValue(DEBUG_KEY, { version: VER, url: location.href, amoId: amoId, seed: seed, data: data, note: note, ts: Date.now() });
     console.log(TAG, 'данные из амо:', data);
     if (MR) MR.done();
     await fillInputsFromData(data, 'Нашлось в амо' + (note ? '\n(' + note + ')' : ''));
   }
+
+  // Фоновый прогрев при открытии чата: собираем данные для магнита и логин-линка заранее,
+  // чтобы клик по кнопке срабатывал мгновенно. Карточку НЕ трогаем. Один проход по админке
+  // (общий _admCache) на обе задачи. Курс/уроки прогревает свой модуль «Пинги и теги».
+  const WARM_ON_LOAD = true; // фоновый прогрев данных при открытии чата (магнит/логин-линк). Выключить — false.
+  let _warmedCase = '';
+  async function warmUp() {
+    if (!WARM_ON_LOAD || !IS_OMNI) return;
+    const cid = omniCaseId();
+    if (!cid || cid === _warmedCase) return;
+    const seed = grabContactSeed();
+    if (!seed.emails.length && !seed.phones.length && !grabAmoIdFromPage()) return; // сайдбар ещё не подгрузился
+    _warmedCase = cid;
+    _warmData = { caseId: cid, data: null, note: '', ts: 0, running: true };
+    _admCache = new Map();
+    try {
+      await smartFillOmniInner({ warm: true, caseId: cid });
+
+      // логин-линки — тем же кэшем страниц админки
+      if (omniCaseId() === cid && !(_loginLinkCache.caseId === cid && _loginLinkCache.links && _loginLinkCache.links.length)) {
+        let res = await lookupLoginLinks();
+        if (res.error === 'ADMINKA_EMPTY') {
+          const st = GM_getValue(STORE_KEY) || {};
+          const amoId = grabAmoIdFromPage() || st.amoLeadId || st.amoContactId || st.cardAmoId || '';
+          if (amoId) res = await lookupLoginLinksByAmoId(amoId);
+        }
+        const links = (res && res.links) || [];
+        if (links.length && omniCaseId() === cid) {
+          let ordered = links, lnote = '';
+          const best = pickLoginLinkByCourse(links, readCourseTarget());
+          if (best && links.length > 1) {
+            best._matched = true;
+            ordered = [best].concat(links.filter(function (l) { return l !== best; }));
+            lnote = '★ — курс обращения; если нужен другой, бери его';
+          }
+          _loginLinkCache = { caseId: cid, links: ordered, note: lnote };
+          const kr = iconRing('eduson-loginlink-btn'); if (kr) { kr.set(1); setTimeout(function () { kr.done(); }, 60); }
+        }
+      }
+    } catch (e) {
+      // не получилось (напр. не залогинена в амо) — молча; при клике магнита будет полный проход с сообщением
+    } finally { _admCache = null; if (_warmData.caseId === cid) _warmData.running = false; }
+  }
+
   /* ---------- заполнение формы OmniDesk ---------- */
   function isVisible(el) { return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length); }
   function controlFromLabelEl(lab) {
@@ -2901,6 +2978,8 @@
     }
     // всегда последним ребёнком шапки — не даём кнопкам «уехать»
     if (bar.lastElementChild !== wrap) bar.appendChild(wrap);
+    // фоновый прогрев данных для этого чата (сам ничего не заполняет)
+    try { warmUp(); } catch (e) {}
   }
   function mkBtn(text, big) {
     const b = document.createElement('button');
@@ -2972,7 +3051,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.73.0'; // синхр. с Хэлпером
+  const VER = '0.74.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3504,7 +3583,8 @@
       };
       return b;
     };
-    lessonCache = null; _lectCache = {}; // списки уроков — свои у каждого студента, обновляем при открытии
+    // список уроков — свой у каждого студента; сбрасываем только при смене чата (иначе теряем прогрев)
+    if (lessonCache && lessonCache.caseId !== ((location.pathname.match(/(\d{2,4}-\d{5,})/) || [])[1] || '')) { lessonCache = null; _lectCache = {}; }
     const tPing = mkTab('Пинги', renderPings);
     const tTag = mkTab('Теги', renderTags);
     const tDoc = mkTab('Документ', renderDoc);
@@ -4183,9 +4263,11 @@
     return null;
   }
 
-  let lessonCache = null; // { domain, lessons:[{id,name}], planName, plans, note }
+  let lessonCache = null; // { caseId, domain, lessons:[{id,name}], planName, plans, note, planKey, deep, deepDone }
+  const _lessonCaseId = function () { return (location.pathname.match(/(\d{2,4}-\d{5,})/) || [])[1] || ''; };
   async function loadLessons() {
-    if (lessonCache) return lessonCache;
+    const cid = _lessonCaseId();
+    if (lessonCache && lessonCache.caseId === cid) return lessonCache;
     const ids = adminUserSuperIds();
     if (!ids.users.length && !ids.supers.length) throw new Error('в карточке нет ссылки на админку — нажми сначала магнит 🧲');
     const u = readUser();
@@ -4232,7 +4314,7 @@
     } catch (e) { /* нет кэша */ }
 
     lessonCache = {
-      domain: domain, lessons: lessons, planName: picked.name, plans: plans, note: note,
+      caseId: cid, domain: domain, lessons: lessons, planName: picked.name, plans: plans, note: note,
       planKey: picked.url, deep: deep, deepDone: deepDone
     };
     return lessonCache;
@@ -4472,11 +4554,23 @@
     if (bar.lastElementChild !== wrap) bar.appendChild(wrap);
   }
 
+  // Фоновый прогрев списка уроков курса при открытии чата — чтобы вкладка «Урок» открывалась сразу.
+  const WARM_LESSONS_ON_LOAD = true; // фоновый прогрев списка уроков курса при открытии чата
+  let _lessonWarmedCase = '';
+  function warmLessons() {
+    if (!WARM_LESSONS_ON_LOAD) return;
+    const cid = (location.pathname.match(/(\d{2,4}-\d{5,})/) || [])[1] || '';
+    if (!cid || cid === _lessonWarmedCase) return;
+    if (!adminLinksInCard().length) return;      // ссылок на админку в карточке ещё нет
+    _lessonWarmedCase = cid;
+    try { loadLessons().catch(function () {}); } catch (e) {}
+  }
+
   console.log(TAG, 'запущен, версия ' + VER, '| host:', location.hostname);
   // На eduson.amocrm.ru скрипт нужен только ради разрешения @connect (чтения сделки) — UI не строим.
   if (ON_OMNI) {
     ensureButton();
-    setInterval(ensureButton, 1500);
+    setInterval(function () { ensureButton(); try { warmLessons(); } catch (e) {} }, 1500);
   }
   })();
 
