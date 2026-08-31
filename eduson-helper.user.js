@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.76.5
+// @version      0.77.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.76.5';
+  const VER = '0.77.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3056,7 +3056,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.76.5'; // синхр. с Хэлпером
+  const VER = '0.77.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4512,15 +4512,97 @@
     });
   }
 
-  /* ==================== ВКЛАДКА «ПРОГРЕСС_80» ====================
-     Клиент прошёл урок, а прогресс завис (обычно на ~80%). Куратор вставляет ссылки
-     на уроки — скрипт находит студента в админке (тот же путь, что логин-линк / «Урок»)
-     и по каждому курсу шлёт тот же запрос, что кнопка «Завершить курс»
-     (POST /admin/users/<uid>/create_course_diploma, course_id=<id>). Прогресс → 100%.
-     Скорость: страница юзера в админке ~1.3 МБ (19к курсов в выпадашке), поэтому токен
-     берём с лёгкой /careers (9 КБ), названия курсов — с /admin/courses/<id> (параллельно),
-     POST шлём без ожидания редиректа (redirect:manual) и все сразу (Promise.all).
-     Сверку с журналом убрали (v0.76.4): POST надёжен, а лишний запрос тормозил и путал. */
+  /* ==================== ВКЛАДКА «ПРОГРЕСС_80» — БЫСТРЫЙ НАБОР ====================
+     Студент прислал СКРИНШОТ ошибки с названием курса (реже — ссылку). Прогресс завис
+     (обычно на ~80%). Куратор выбирает курс по названию и завершает его студенту из
+     обращения — тем же запросом, что кнопка «Завершить курс» в админке
+     (POST /admin/users/<uid>/create_course_diploma, course_id=<id>).
+     «Гибрид»: 3 кнопки на частые типы (🎁 анкета-подарок · 💼 «Работа мечты» · 📊 презентации)
+     + поиск по библиотеке (снизу — курсы не из кнопок, потом из кнопок). Внизу — запасное
+     поле «вставить ссылку/ID». Студент/токен — resolveStudentUid + fetchAdminMeta (лёгкие).
+     Библиотека COURSE_LIB — из выгрузки Натальи (2 мес жалоб), дополняется строками.
+     🎁 разрешается: список курсов студента из прогретой вкладки «Урок» (lessonCache) →
+     курс с «Заполните анкету»; иначе домен из lessonCache → GIFT_MAP по программе. */
+
+  // ID → название, из личной выгрузки Натальи. c: 'career' / 'present' — за кнопкой-блоком;
+  // 'other' — в поиске (f:1 — частый, выше в списке). Добавлять новые строки сюда.
+  const COURSE_LIB = [
+    { id: 5554, n: 'Как получить работу мечты', c: 'career', f: 1 },
+    { id: 5557, n: 'Как составить резюме', c: 'career', f: 1 },
+    { id: 5553, n: 'Как составить сопроводительное письмо и портфолио', c: 'career', f: 1 },
+    { id: 5556, n: 'Как успешно пройти ассессмент', c: 'career', f: 1 },
+    { id: 5552, n: 'Как активно участвовать в собеседовании', c: 'career', f: 1 },
+    { id: 5581, n: 'Как принять оффер и начать работать', c: 'career', f: 1 },
+    { id: 4289, n: 'Как создать структуру презентации', c: 'present', f: 1 },
+    { id: 4350, n: 'Как сделать заголовки в презентации', c: 'present', f: 0 },
+    { id: 4446, n: 'Как оформить текст в презентации', c: 'present', f: 0 },
+    { id: 4527, n: 'Как оформить изображения в презентации', c: 'present', f: 0 },
+    { id: 4210, n: 'Как работать с текстом в PowerPoint', c: 'present', f: 0 },
+    { id: 3879, n: 'Как вовлечь сотрудников: кейсы Blizzard и Riot Games', c: 'other', f: 1 },
+    { id: 5581, n: 'Как принять оффер и начать работать', c: 'other', f: 1 },
+    { id: 5554, n: 'Как получить работу мечты', c: 'other', f: 1 },
+    { id: 5557, n: 'Как составить резюме', c: 'other', f: 1 },
+    { id: 3428, n: 'Как проанализировать проблемную ситуацию для принятия решения', c: 'other', f: 1 },
+    { id: 13192, n: 'Как работать с формами и таблицами в HTML', c: 'other', f: 1 },
+    { id: 5022, n: 'Тайм-менеджмент: диаграмма Ганта в Excel', c: 'other', f: 1 },
+    { id: 5145, n: 'Тайм-менеджмент: метод автофокуса', c: 'other', f: 0 },
+    { id: 17552, n: 'Саммари «Идеальный руководитель» (И. Адизес)', c: 'other', f: 1 },
+    { id: 17839, n: 'Как работают нейросети', c: 'other', f: 1 },
+    { id: 21298, n: 'Анатомия промпта — от сырого к рабочему', c: 'other', f: 0 },
+    { id: 21122, n: 'Как писать и редактировать тексты с Алисой', c: 'other', f: 0 },
+    { id: 12711, n: 'Как использовать LinkedIn для построения карьеры', c: 'other', f: 0 },
+    { id: 7378, n: 'Саммари «Пиши, сокращай» (М. Ильяхов)', c: 'other', f: 0 },
+    { id: 6380, n: 'Как общаться на IT-темы на английском', c: 'other', f: 0 },
+    { id: 11791, n: 'Практический кейс: SCRUM и Kanban', c: 'other', f: 0 },
+    { id: 11052, n: 'Практический кейс: сформируйте рейтинг заказов', c: 'other', f: 0 },
+    { id: 11273, n: 'Практический кейс: введение в маркетинг, каналы и аналитика', c: 'other', f: 0 },
+    { id: 12252, n: 'Практический кейс: как обсудить перенос сроков с заказчиком', c: 'other', f: 0 },
+    { id: 16287, n: 'Какие навыки добавить в резюме после модуля «Как проектировать интеграции»', c: 'other', f: 0 },
+    { id: 13844, n: 'Как инвесторы оценивают проекты', c: 'other', f: 0 },
+    { id: 15923, n: 'Как учесть когнитивную архитектуру при создании программы', c: 'other', f: 0 },
+    { id: 16161, n: 'Как организовать операционные процессы и персонал в ресторане', c: 'other', f: 0 },
+    { id: 21140, n: 'Как добавить карточку товара на OZON', c: 'other', f: 0 },
+    { id: 11259, n: 'Тест. Финансовый результат', c: 'other', f: 0 },
+    { id: 8308, n: 'Тест: повышение мотивации и вовлечения сотрудников через обучение', c: 'other', f: 0 },
+    { id: 4833, n: 'Серия курсов по русскому языку', c: 'other', f: 0 },
+    { id: 4514, n: 'Как сформировать эффективную команду', c: 'other', f: 0 },
+    { id: 4547, n: 'Как правильно давать обратную связь', c: 'other', f: 0 },
+    { id: 58, n: 'Как построить команду мечты', c: 'other', f: 0 },
+    { id: 111, n: 'Подход Адизеса: эффективные стили менеджмента', c: 'other', f: 0 }
+  ];
+  const GIFT_NAME = 'Заполните анкету, чтобы получить подарок';
+  // домен программы (subdomain без .eduson.tv) → ID курса-анкеты. Дополняется по мере.
+  const GIFT_MAP = {
+    'academy-neural-networks-in-practice': 18585,
+    'academy-neural-networks-pro': 18586,
+    'academy-graphic-designer': 18781,
+    'ai-designer': 18582,
+    'academy-interior-designer': 18783,
+    'interior-designer-self': 18784,
+    'academy-ai-for-lawyers': 19877,
+    'academy-marketing-director': 20834,
+    'product-marketing-manager': 20889
+  };
+
+  // Курс-анкета студента: сперва из прогретого списка курсов (вкладка «Урок»),
+  // потом по домену программы (карта). Возвращает {id,name} | null.
+  async function resolveGiftCourse() {
+    const cid = (location.pathname.match(/(\d{2,4}-\d{5,})/) || [])[1] || '';
+    const tryCache = function () {
+      if (!lessonCache || lessonCache.caseId !== cid) return null;
+      if (lessonCache.lessons) {
+        const hit = lessonCache.lessons.find(function (l) { return /заполните анкету|получить подар/i.test(l.name || ''); });
+        if (hit) return { id: hit.id, name: hit.name };
+      }
+      const m = (lessonCache.domain || '').match(/^https?:\/\/([\w-]+)\.eduson\.tv/);
+      if (m && GIFT_MAP[m[1]]) return { id: GIFT_MAP[m[1]], name: GIFT_NAME };
+      return null;
+    };
+    let g = tryCache();
+    if (g) return g;
+    try { await loadLessons(); } catch (e) { /* не вышло — вернём null */ }
+    return tryCache();
+  }
 
   // Из текста достаём ID курсов: и из ссылок /ru/courses/<id>, и голые числа (по одному в строке).
   function parseCourseIds(text) {
@@ -4602,105 +4684,171 @@
 
   function renderProgress80(body) {
     body.appendChild(elt('div', 'font-weight:800;font-size:13px;margin-bottom:4px;', 'Подтянуть прогресс по урокам'));
-    body.appendChild(elt('div', 'font-size:10.5px;color:#6B7280;font-weight:600;line-height:1.5;margin-bottom:6px;',
-      'Вставь ссылки на уроки (можно всё сообщение студента разом). Проверь студента и список курсов, сними лишние галочки — и «Завершить». Прогресс по курсу станет 100%.'));
+    body.appendChild(elt('div', 'font-size:10px;color:#6B7280;font-weight:600;line-height:1.45;margin-bottom:6px;',
+      'Выбери курс по названию со скриншота студента. Курс завершится студенту из обращения — прогресс станет 100%.'));
 
-    const ta = elt('textarea', inputCss + 'min-height:66px;resize:vertical;');
-    ta.placeholder = 'https://academy-….eduson.tv/ru/courses/14532?...\n…или просто ID, по одному в строке';
-    body.appendChild(ta);
+    const status = elt('div', 'font-size:11.5px;font-weight:700;color:#9CA3AF;', 'Ищу студента в админке…');
+    body.appendChild(status);
+    const bar = miniBar(); bar.osc(); body.appendChild(bar.el);
+    const main = elt('div', '');
+    body.appendChild(main);
 
-    const parseBtn = elt('div', 'margin-top:7px;text-align:center;cursor:pointer;font-weight:800;font-size:12px;padding:8px 0;border-radius:999px;background:' + ACC + ';color:#fff;', 'Разобрать');
-    body.appendChild(parseBtn);
+    let uid = '', token = '', student = '';
 
-    const area = elt('div', 'margin-top:9px;');
-    body.appendChild(area);
+    resolveStudentUid().then(function (u) { uid = u; return fetchAdminMeta(u); }).then(function (meta) {
+      bar.done(); setTimeout(function () { if (bar.el.parentNode) bar.el.remove(); }, 400);
+      status.style.display = 'none';
+      token = meta.token; student = meta.studentName || readUser().name || '?';
+      if (!token) { main.appendChild(elt('div', 'font-size:11.5px;color:#B45309;font-weight:700;', 'Не нашла токен в админке — открой админку в соседней вкладке, войди, и открой панель заново.')); return; }
+      buildUI();
+    }).catch(function (e) {
+      bar.fail(); status.style.display = ''; status.style.color = '#B45309';
+      status.textContent = (e && e.message === 'NOAUTH')
+        ? 'Не пустило на www.eduson.tv. Открой админку в соседней вкладке, войди и попробуй снова.'
+        : 'Не получилось: ' + ((e && e.message) || 'ошибка') + '.';
+    });
 
-    parseBtn.onclick = function () {
-      const ids = parseCourseIds(ta.value);
-      area.innerHTML = '';
-      if (!ids.length) { area.appendChild(elt('div', 'font-size:11.5px;color:#B45309;font-weight:700;', 'Не нашла ни одной ссылки на курс или ID.')); return; }
-
-      const status = elt('div', 'font-size:11.5px;font-weight:700;color:#9CA3AF;', 'Ищу студента в админке…');
-      area.appendChild(status);
-      const bar = miniBar(); bar.osc(); area.appendChild(bar.el);
-
-      let uid = '';
-      resolveStudentUid().then(function (u) { uid = u; return fetchAdminMeta(u); }).then(function (meta) {
-        bar.done(); setTimeout(function () { if (bar.el.parentNode) bar.el.remove(); }, 400);
-        status.style.display = 'none';
-        if (!meta.token) { area.appendChild(elt('div', 'font-size:11.5px;color:#B45309;font-weight:700;', 'Не нашла токен в админке — обнови вкладку админки (войди) и попробуй снова.')); return; }
-
-        const names = {}; // id → название (подтягиваются параллельно)
-        area.appendChild(elt('div', 'font-size:12.5px;font-weight:800;color:#111827;margin-bottom:1px;', 'Студент: ' + (meta.studentName || readUser().name || '?')));
-        area.appendChild(elt('div', 'font-size:10px;color:#9CA3AF;font-weight:700;margin-bottom:7px;', 'ID в админке ' + uid + ' · проверь, что это тот студент'));
-
-        const cbs = [], nameEl = {};
-        ids.forEach(function (id) {
-          const row = elt('label', 'display:flex;gap:7px;align-items:flex-start;padding:6px 0;border-top:1px solid #F3F4F6;cursor:pointer;font-size:11.5px;font-weight:600;color:#111827;line-height:1.35;');
-          const cb = elt('input', 'margin-top:2px;flex:0 0 auto;'); cb.type = 'checkbox'; cb.checked = true; cb.dataset.id = id;
-          const txt = elt('div', 'flex:1;color:#9CA3AF;', id + ' — загружаю название…');
-          row.appendChild(cb); row.appendChild(txt);
-          area.appendChild(row); cbs.push(cb); nameEl[id] = txt;
-          fetchCourseName(id).then(function (nm) {
-            names[id] = nm;
-            txt.textContent = id + ' — ' + (nm || '⚠️ название не нашлось, проверь ID');
-            txt.style.color = nm ? '#111827' : '#B45309';
-          });
-        });
-
-        const go = elt('div', 'margin-top:11px;text-align:center;cursor:pointer;font-weight:800;font-size:12px;padding:9px 0;border-radius:999px;background:#16A34A;color:#fff;', 'Завершить отмеченные');
-        area.appendChild(go);
-        const log = elt('div', 'margin-top:8px;font-size:11px;font-weight:700;line-height:1.65;white-space:pre-wrap;');
-        area.appendChild(log);
-
-        let running = false;
-        go.onclick = function () {
-          if (running) return;
-          const chosen = cbs.filter(function (c) { return c.checked; }).map(function (c) { return c.dataset.id; });
-          if (!chosen.length) { toast('Ничего не отмечено'); return; }
-          running = true;
-          go.style.pointerEvents = 'none'; go.style.opacity = '.55'; go.textContent = 'Завершаю…';
-          log.innerHTML = '';
-          const lines = {}, state = {}; // state: 'sent' | 'noauth' | 'err'
-          chosen.forEach(function (id) { const l = elt('div', 'color:#6B7280;', '… ' + id + ' — отправляю'); log.appendChild(l); lines[id] = l; });
-          const setLine = function (id, t, c) { lines[id].textContent = t; lines[id].style.color = c; };
-          const nm = function (id) { return names[id] ? ' — ' + names[id] : ''; };
-
-          // все курсы — параллельно (запросы независимы), чтобы не ждать по очереди
-          Promise.all(chosen.map(function (id) {
-            return gmPostForm(EDU_ADMIN + '/admin/users/' + uid + '/create_course_diploma?language=ru', {
-              authenticity_token: meta.token, course_id: id, commit: 'Завершить курс'
-            }).then(function (r) {
-              if (r.noauth) { state[id] = 'noauth'; setLine(id, '✗ ' + id + ' — не пустило в админку', '#B91C1C'); }
-              else if (r.csrf) { state[id] = 'err'; setLine(id, '✗ ' + id + ' — токен устарел, открой панель заново', '#B91C1C'); }
-              else if (r.ok || r.maybe) { state[id] = 'sent'; setLine(id, '✓ ' + id + nm(id) + ' — отправлено', '#16A34A'); }
-              else { state[id] = 'err'; setLine(id, '✗ ' + id + ' — не отправилось (код ' + (r.code || '?') + ')', '#B91C1C'); }
-            });
-          })).then(afterBatch);
-
-          function afterBatch() {
-            const sent = chosen.filter(function (id) { return state[id] === 'sent'; });
-            const errN = chosen.length - sent.length;
-            go.textContent = errN ? ('Готово: ' + sent.length + ', ошибок ' + errN) : ('Готово: ' + sent.length);
-            go.style.background = errN ? '#B45309' : '#0284C7';
-            go.style.pointerEvents = ''; go.style.opacity = '';
-            running = false;
-            toast(errN ? ('Готово ' + sent.length + ', ошибок ' + errN) : ('Завершено курсов: ' + sent.length));
-            if (sent.length) {
-              log.appendChild(elt('div', 'margin-top:6px;font-size:10.5px;color:#6B7280;font-weight:700;line-height:1.5;',
-                'Запрос ушёл в админку. Прогресс у студента обновляется за пару минут — если не подтянулось, пусть обновит страницу.'));
-            }
-          }
-        };
-      }).catch(function (e) {
-        bar.fail();
-        status.style.display = '';
-        status.style.color = '#B45309';
-        status.textContent = (e && e.message === 'NOAUTH')
-          ? 'Не пустило на www.eduson.tv. Открой админку в соседней вкладке, войди и попробуй снова.'
-          : 'Не получилось: ' + ((e && e.message) || 'ошибка') + '.';
+    /* ---------- отправка ---------- */
+    function doComplete(logEl, id, name) {
+      const line = elt('div', 'color:#6B7280;font-weight:700;', '… ' + id + (name ? (' «' + name + '»') : '') + ' — отправляю');
+      logEl.appendChild(line);
+      gmPostForm(EDU_ADMIN + '/admin/users/' + uid + '/create_course_diploma?language=ru', {
+        authenticity_token: token, course_id: id, commit: 'Завершить курс'
+      }).then(function (r) {
+        if (r.noauth) { line.textContent = '✗ ' + id + ' — не пустило в админку'; line.style.color = '#B91C1C'; }
+        else if (r.csrf) { line.textContent = '✗ ' + id + ' — токен устарел, открой панель заново'; line.style.color = '#B91C1C'; }
+        else if (r.ok || r.maybe) { line.textContent = '✓ ' + id + (name ? (' «' + name + '»') : '') + ' — завершено'; line.style.color = '#16A34A'; toast('Курс завершён'); }
+        else { line.textContent = '✗ ' + id + ' — не отправилось (код ' + (r.code || '?') + ')'; line.style.color = '#B91C1C'; }
       });
+    }
+
+    const S = {
+      stu: 'font-size:12.5px;font-weight:800;color:#111827;margin-bottom:1px;',
+      sid: 'font-size:10px;color:#9CA3AF;font-weight:700;margin-bottom:8px;',
+      qbtn: 'display:flex;align-items:center;gap:8px;padding:7px 10px;border:1.5px solid ' + ACC_BD + ';border-radius:9px;cursor:pointer;font-size:11.5px;font-weight:800;color:#0F172A;background:#fff;',
+      or: 'font-size:9.5px;font-weight:700;color:#9CA3AF;margin:9px 0 2px;',
+      list: 'margin-top:5px;max-height:170px;overflow-y:auto;border:1px solid #EEF2F5;border-radius:9px;',
+      row: 'padding:6px 10px;border-bottom:1px solid #F3F4F6;cursor:pointer;font-size:11px;font-weight:700;color:#111827;line-height:1.3;',
+      back: 'font-size:10.5px;font-weight:800;color:' + ACC + ';cursor:pointer;margin:2px 0 4px;',
+      go: 'margin-top:9px;text-align:center;cursor:pointer;font-weight:800;font-size:11.5px;padding:8px 0;border-radius:999px;background:#16A34A;color:#fff;',
+      log: 'margin-top:8px;font-size:10.5px;font-weight:700;line-height:1.6;white-space:pre-wrap;',
+      more: 'font-size:10px;font-weight:800;color:#9CA3AF;cursor:pointer;margin-top:9px;'
     };
+
+    function buildUI() {
+      main.innerHTML = '';
+      main.appendChild(elt('div', S.stu, 'Студент: ' + student));
+      main.appendChild(elt('div', S.sid, 'ID в админке ' + uid + ' · проверь, что это тот студент'));
+
+      const log = elt('div', S.log);
+
+      // 3 кнопки
+      const box = elt('div', 'display:flex;flex-direction:column;gap:5px;margin-top:2px;');
+      const mkQ = function (em, label, small, fn) {
+        const b = elt('div', S.qbtn);
+        b.appendChild(elt('span', 'font-size:13px;flex:0 0 auto;', em));
+        b.appendChild(elt('span', 'flex:1;', label));
+        if (small) b.appendChild(elt('span', 'font-size:9px;font-weight:800;color:#9CA3AF;', small));
+        b.onmouseenter = function () { b.style.background = '#F0F9FF'; };
+        b.onmouseleave = function () { b.style.background = '#fff'; };
+        b.onclick = fn;
+        return b;
+      };
+      box.appendChild(mkQ('🎁', 'Анкета-подарок', '1 клик', function () {
+        log.appendChild(elt('div', 'color:#6B7280;font-weight:700;', '🎁 ищу курс-анкету у студента…'));
+        resolveGiftCourse().then(function (g) {
+          if (g && g.id) doComplete(log, g.id, g.name || GIFT_NAME);
+          else log.appendChild(elt('div', 'color:#B45309;font-weight:700;',
+            'Не нашла анкету автоматически. Открой вкладку «Урок» (прогреется) и попробуй снова, либо вставь ссылку ниже.'));
+        });
+      }));
+      box.appendChild(mkQ('💼', 'Блок «Работа мечты»', '6', function () { blockView('career', 'Блок «Работа мечты»'); }));
+      box.appendChild(mkQ('📊', 'Презентации', '5', function () { blockView('present', 'Презентации'); }));
+      main.appendChild(box);
+
+      // поиск
+      main.appendChild(elt('div', S.or, '…или найди курс:'));
+      const search = elt('input', inputCss + 'padding:7px 10px;');
+      search.type = 'search'; search.placeholder = 'название курса с экрана…';
+      const list = elt('div', S.list);
+      main.appendChild(search); main.appendChild(list);
+
+      const grp = function (x) { return x.c === 'other' ? 0 : x.c === 'career' ? 1 : 2; };
+      const ordered = COURSE_LIB.slice().sort(function (a, b) { return grp(a) - grp(b) || (b.f - a.f) || a.n.localeCompare(b.n); });
+      const seen = {};
+      const uniq = ordered.filter(function (x) { const k = x.id + '|' + x.c; if (seen[k]) return false; seen[k] = 1; return true; });
+
+      const courseRow = function (x) {
+        const r = elt('div', S.row);
+        if (x.f) { const b = elt('span', 'float:right;font-size:8.5px;font-weight:800;color:#15803D;background:#E9F6EE;border-radius:5px;padding:1px 5px;', 'частый'); r.appendChild(b); }
+        r.appendChild(document.createTextNode(x.n));
+        r.appendChild(elt('div', 'font-size:9.5px;color:#6B7280;font-weight:600;', x.id === '__gift' ? 'найду нужный' : String(x.id)));
+        r.onclick = function () {
+          if (x.id === '__gift') {
+            log.appendChild(elt('div', 'color:#6B7280;font-weight:700;', '🎁 ищу курс-анкету у студента…'));
+            resolveGiftCourse().then(function (g) {
+              if (g && g.id) doComplete(log, g.id, g.name || GIFT_NAME);
+              else log.appendChild(elt('div', 'color:#B45309;font-weight:700;', 'Не нашла анкету — открой вкладку «Урок» (прогреется) и попробуй снова, либо вставь ссылку ниже.'));
+            });
+          } else doComplete(log, x.id, x.n);
+        };
+        return r;
+      };
+
+      const drawList = function () {
+        const q = docNorm(search.value.trim());
+        let rows;
+        if (!q) rows = uniq.slice();
+        else {
+          const w = q.split(/\s+/).filter(Boolean);
+          const m = function (name) { const h = docNorm(name); return w.every(function (t) { return h.indexOf(t) !== -1; }); };
+          rows = uniq.filter(function (x) { return m(x.n); });
+          if (m(GIFT_NAME)) rows.unshift({ id: '__gift', n: GIFT_NAME, c: 'gift', f: 1 });
+        }
+        list.innerHTML = '';
+        if (!rows.length) { list.appendChild(elt('div', 'padding:10px;font-size:10.5px;color:#9CA3AF;font-weight:700;text-align:center;', 'не нашла — проверь написание или вставь ссылку ниже')); return; }
+        rows.slice(0, 60).forEach(function (x) { list.appendChild(courseRow(x)); });
+      };
+      search.addEventListener('input', drawList);
+      drawList();
+
+      // запасное: вставить ссылку/ID
+      const more = elt('div', S.more, '▸ вставить ссылку или ID');
+      const moreBox = elt('div', 'display:none;margin-top:5px;');
+      more.onclick = function () {
+        const open = moreBox.style.display !== 'none';
+        moreBox.style.display = open ? 'none' : 'block';
+        more.textContent = (open ? '▸' : '▾') + ' вставить ссылку или ID';
+      };
+      const fbTa = elt('textarea', inputCss + 'min-height:48px;resize:vertical;');
+      fbTa.placeholder = 'https://…/ru/courses/12345?...  или  12345, по одному в строке';
+      const fbGo = elt('div', S.go, 'Завершить');
+      fbGo.onclick = function () {
+        const ids = parseCourseIds(fbTa.value);
+        if (!ids.length) { toast('Не нашла ссылку на курс или ID'); return; }
+        ids.forEach(function (id) { const nm = (COURSE_LIB.find(function (c) { return String(c.id) === String(id); }) || {}).n || ''; doComplete(log, id, nm); });
+      };
+      moreBox.appendChild(fbTa); moreBox.appendChild(fbGo);
+      main.appendChild(more); main.appendChild(moreBox);
+      main.appendChild(log);
+    }
+
+    function blockView(cat, ttl) {
+      main.innerHTML = '';
+      const back = elt('div', S.back, '‹ назад'); back.onclick = buildUI;
+      main.appendChild(back);
+      main.appendChild(elt('div', S.stu, ttl));
+      main.appendChild(elt('div', S.sid, student + ' · ID ' + uid));
+      const log = elt('div', S.log);
+      const rows = COURSE_LIB.filter(function (x) { return x.c === cat; });
+      const list = elt('div', S.list);
+      rows.forEach(function (x) { const r = elt('div', S.row, x.n); r.onclick = function () { doComplete(log, x.id, x.n); }; list.appendChild(r); });
+      main.appendChild(list);
+      const all = elt('div', S.go, 'Завершить весь блок (' + rows.length + ')');
+      all.onclick = function () { rows.forEach(function (x) { doComplete(log, x.id, x.n); }); };
+      main.appendChild(all);
+      main.appendChild(log);
+    }
   }
 
   /* ==================== КНОПКА В ШАПКЕ ==================== */
