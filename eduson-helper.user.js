@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.76.4
+// @version      0.76.5
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.76.4';
+  const VER = '0.76.5';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -1098,7 +1098,7 @@
              admin: [], isSuper: false, supportMonths: 0, noPurchase: false,
              source: source, ts: Date.now() };
   }
-  async function assembleDataInto(contact, data, api) {
+  async function assembleDataInto(contact, data, api, warm) {
     data.amoContactId = data.amoContactId || contact.id || 0;
     data.name = data.name || String(contact.name || '').trim() ||
       [contact.first_name, contact.last_name].filter(Boolean).join(' ').trim();
@@ -1134,7 +1134,10 @@
       return data;
     }
     let useLead = wonLeads[0];
-    if (wonLeads.length > 1) useLead = await chooseDeal(wonLeads);
+    if (wonLeads.length > 1) {
+      if (warm) throw new Error('WARM_STOP'); // фоном не выбираем — окно покажем при клике
+      useLead = await chooseDeal(wonLeads);
+    }
     if (useLead === '__CANCEL__') throw new Error('CANCELLED');
     if (useLead) {
       data.amoLeadId = useLead.id || data.amoLeadId;
@@ -1276,7 +1279,7 @@
     return '';
   }
   /* ---------- поиск клиента в амо ---------- */
-  async function fetchClientById(id, seed, base) {
+  async function fetchClientById(id, seed, base, warm) {
     const api = function (path) { return gmFetch(base + path); };
     let lead = null;
     try {
@@ -1303,6 +1306,7 @@
       if (contacts.length === 1) {
         chosen = contacts[0];
       } else if (contacts.length > 1) {
+        if (warm) throw new Error('WARM_STOP'); // фоном не выбираем — окно покажем при клике
         contacts[0]._preferred = true;
         chosen = await chooseCandidate(contacts, seed);
         if (!chosen) throw new Error('CANCELLED');
@@ -1325,6 +1329,7 @@
         wonLeads.sort((a, b) => (b.closed_at || 0) - (a.closed_at || 0));
         let useLead = wonLeads[0];
         if (wonLeads.length > 1) {
+          if (warm) throw new Error('WARM_STOP'); // фоном не выбираем — окно покажем при клике
           useLead = await chooseDeal(wonLeads);
         }
         if (useLead === '__CANCEL__') throw new Error('CANCELLED');
@@ -1362,7 +1367,7 @@
       const c = await api('/api/v4/contacts/' + id + '?with=leads');
       if (c && c.id) {
         const d = newClientData(base + '/contacts/detail/' + c.id);
-        await assembleDataInto(c, d, api);
+        await assembleDataInto(c, d, api, warm);
         return d;
       }
     } catch (e) { if (e.message === 'NOAUTH') throw e; }
@@ -1640,7 +1645,7 @@
     const MR = warm ? null : iconRing('eduson-magnet-btn');
     if (MR) MR.osc();
     if (amoId) {
-      try { data = await fetchClientById(amoId, seed, base); }
+      try { data = await fetchClientById(amoId, seed, base, warm); }
       catch (e) { err = e; }
     }
     if (!err && !data && (seed.phones.length || seed.emails.length)) {
@@ -1660,7 +1665,7 @@
         if (chosen) {
           const d = newClientData(base + '/contacts/detail/' + chosen.id);
           try {
-            await assembleDataInto(chosen, d, api);
+            await assembleDataInto(chosen, d, api, warm);
             (chosen._mergeExtra || []).forEach(function (x) { mergeContactExtras(x, d); });
             data = d;
             if (candidates.length > 1) {
@@ -1709,13 +1714,13 @@
         } else if (adm && adm.contact) {
           const d2 = newClientData(base + '/contacts/detail/' + adm.contact.id);
           try {
-            await assembleDataInto(adm.contact, d2, api);
+            await assembleDataInto(adm.contact, d2, api, warm);
             if (!d2.noPurchase && d2.course && d2.course !== 'не покупал') {
               if (data && data.name) d2.name = data.name;
               data = d2;
               viaAdmin = true;
             }
-          } catch (e) { /* NOAUTH или иное — оставляем что было */ }
+          } catch (e) { if (e && e.message === 'WARM_STOP') return; /* NOAUTH или иное — оставляем что было */ }
         }
         if (viaAdmin) {
           note = (note ? note + '; ' : '') + 'сделку нашла через админку Эдюсон (возможно, курс купили другому человеку)';
@@ -3051,7 +3056,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.76.4'; // синхр. с Хэлпером
+  const VER = '0.76.5'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
