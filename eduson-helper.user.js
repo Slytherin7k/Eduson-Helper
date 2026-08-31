@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.59.0
+// @version      0.60.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -112,7 +112,7 @@
 
   /* ================================================ */
 
-  const VER = '0.59.0';
+  const VER = '0.60.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -2835,7 +2835,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.59.0'; // синхр. с Хэлпером
+  const VER = '0.60.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3699,12 +3699,16 @@
     body.appendChild(status);
     const result = elt('div', 'margin-top:8px;');
     body.appendChild(result);
-    const selLabel = elt('div', fieldLabel, 'Курс — можно выбрать другой для проверки');
-    selLabel.style.display = 'none';
-    const sel = elt('select', inputCss);
-    sel.style.display = 'none';
-    body.appendChild(selLabel);
-    body.appendChild(sel);
+    const searchLabel = elt('div', fieldLabel, 'Другой курс — печатай название');
+    searchLabel.style.display = 'none';
+    const search = elt('input', inputCss);
+    search.type = 'search';
+    search.placeholder = 'напр. финансовый аналитик';
+    search.style.display = 'none';
+    const listBox = elt('div', 'margin-top:4px;max-height:220px;overflow:auto;border:1px solid #EEF2F5;border-radius:9px;display:none;');
+    body.appendChild(searchLabel);
+    body.appendChild(search);
+    body.appendChild(listBox);
     const legend = elt('div', 'margin-top:12px;font-size:10.5px;color:#9CA3AF;font-weight:600;line-height:1.6;white-space:pre-wrap;',
       'ДПП — диплом о профессиональной переподготовке\nУПК — удостоверение о повышении квалификации');
     body.appendChild(legend);
@@ -3713,7 +3717,7 @@
       result.innerHTML = '';
       if (!it) {
         result.appendChild(elt('div', 'font-weight:800;font-size:13px;color:#B45309;', 'Курс в таблице не нашла'));
-        result.appendChild(elt('div', 'font-size:11.5px;color:#6B7280;font-weight:600;margin-top:3px;', 'Выбери курс из списка ниже.'));
+        result.appendChild(elt('div', 'font-size:11.5px;color:#6B7280;font-weight:600;margin-top:3px;', 'Найди курс через поиск ниже.'));
         return;
       }
       const card = elt('div', 'border:1px solid ' + ACC_BD + ';background:#F0F9FF;border-radius:12px;padding:10px 12px;');
@@ -3727,26 +3731,43 @@
 
     loadDocMap().then(function (map) {
       status.style.display = 'none';
-      selLabel.style.display = '';
-      sel.style.display = '';
-      let group = null, lastSection = null;
-      map.list.forEach(function (it) {
-        if (it.section !== lastSection) {
-          group = document.createElement('optgroup');
-          group.label = it.section || '—';
-          sel.appendChild(group);
-          lastSection = it.section;
+      searchLabel.style.display = '';
+      search.style.display = '';
+
+      function drawList() {
+        const terms = docNorm(search.value).split(' ').filter(Boolean);
+        listBox.innerHTML = '';
+        if (!terms.length) { listBox.style.display = 'none'; return; }
+        const hits = map.list.filter(function (it) {
+          const hay = docNorm(it.course) + ' ' + docNorm(it.section);
+          return terms.every(function (t) { return hay.indexOf(t) !== -1; });
+        }).slice(0, 60);
+        if (!hits.length) {
+          listBox.appendChild(elt('div', 'padding:9px 11px;font-size:11.5px;color:#9CA3AF;font-weight:700;', 'Ничего не найдено'));
+        } else {
+          hits.forEach(function (it) {
+            const row = elt('div', 'padding:7px 11px;cursor:pointer;border-bottom:1px solid #F3F4F6;');
+            row.appendChild(elt('div', 'font-size:12px;font-weight:700;color:#111827;line-height:1.3;', it.course));
+            row.appendChild(elt('div', 'font-size:10.5px;color:#6B7280;font-weight:600;margin-top:1px;',
+              (it.doc || 'документ не указан') + (it.section ? '  ·  ' + it.section : '')));
+            row.onmouseenter = function () { row.style.background = '#F0F9FF'; };
+            row.onmouseleave = function () { row.style.background = 'transparent'; };
+            row.onclick = function () {
+              showItem(it, null);
+              search.value = '';
+              listBox.style.display = 'none';
+            };
+            listBox.appendChild(row);
+          });
         }
-        (group || sel).appendChild(new Option(it.course + '  →  ' + (it.doc || '?'), it.course));
-      });
-      sel.onchange = function () {
-        showItem(map.byNorm[docNorm(sel.value)] || map.list.find(function (x) { return x.course === sel.value; }), null);
-      };
+        listBox.style.display = 'block';
+      }
+      search.addEventListener('input', drawList);
+      search.addEventListener('focus', function () { if (search.value.trim()) drawList(); });
 
       const crs = readCourse();
       const m = matchDocCourse(map, crs);
       if (m) {
-        sel.value = m.item.course;
         showItem(m.item, m.exact
           ? 'курс из карточки: ' + crs
           : 'курс из карточки: ' + crs + ' — сопоставила по близости, проверь');
@@ -3754,7 +3775,7 @@
         showItem(null);
         if (crs) {
           status.style.display = ''; status.style.color = '#B45309';
-          status.textContent = 'В карточке курс «' + crs + '» — в таблице не нашла, выбери вручную.';
+          status.textContent = 'В карточке курс «' + crs + '» — в таблице не нашла, найди через поиск.';
         }
       }
     }).catch(function (e) {
