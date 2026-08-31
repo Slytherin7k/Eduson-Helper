@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.62.0
+// @version      0.63.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -108,11 +108,15 @@
     [/javascript|js[\s-]?разработ/i, 'JavaScript-разработчик', 12],
     [/\bjava\b/i, 'Java', 12],
     [/sql/i, 'SQL', 12],
+
+    // Аналитика / Data Science (в amo часто «Data scientist», в омнике — «Специалист Data Science»)
+    [/(data.?scien|специалист data).*(pro|про)\b/i, 'Специалист Data Science. Тариф PRO', 12],
+    [/data.?scien|специалист data|дата.?сай[еэ]нс/i, 'Специалист Data Science', 12],
   ];
 
   /* ================================================ */
 
-  const VER = '0.62.0';
+  const VER = '0.63.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -1772,7 +1776,11 @@
       const oSig = courseSig(t);
       if (!oSig.length) return;
       const oSet = {}; oSig.forEach(function (w) { oSet[w] = 1; });
-      let common = 0; tSig.forEach(function (w) { if (oSet[w]) common++; });
+      let common = 0, commonReal = 0;
+      tSig.forEach(function (w) { if (oSet[w]) { common++; if (!tariffKey(w)) commonReal++; } });
+      // общее только по тарифному слову («Базовый», «PRO») — совпадение мнимое, пропускаем:
+      // так «Data scientist: тариф Базовый» больше не цепляет «HR-менеджер. Базовый курс».
+      if (commonReal === 0) return;
       const targetCov = common / tSig.length;   // сколько слов amo нашлось в варианте
       const optCov = common / oSig.length;      // насколько вариант «про то же»
 
@@ -2835,7 +2843,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.62.0'; // синхр. с Хэлпером
+  const VER = '0.63.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
