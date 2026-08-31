@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.65.0
+// @version      0.66.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.65.0';
+  const VER = '0.66.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -2843,7 +2843,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.65.0'; // синхр. с Хэлпером
+  const VER = '0.66.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3021,15 +3021,16 @@
   //   {тег} {метка+ссылка} {моп} {цитата} {имя} {email} {телефон} — подставляются.
   const PINGS = [
     { id: 'question', title: 'Завис вопрос', suggest: 'leadcontent', linkKind: 'notion', linkLabel: 'Вопрос',
-      text: '{тег}\nПривет! Подвис вопрос от студента — посмотри, пожалуйста.\n{ссылка}' },
+      text: '{тег}\nПривет! Подвис вопрос от студента — посмотри, пожалуйста.\n{ссылка}',
+      textNoResp: '{тег}\nПривет! Подвис вопрос от студента, ответственного нет — посмотри, пожалуйста.\n{ссылка}' },
     { id: 'dz', title: 'Зависла проверка ДЗ', suggest: 'dz', linkKind: 'homework', linkLabel: 'Карточка ДЗ',
       text: '{тег}\nПривет! Подвисла проверка ДЗ — посмотри, пожалуйста.\n{ссылка}' },
     { id: 'sending', title: 'Задержка отправки диплома', suggest: 'diploma', linkKind: 'asana', linkLabel: 'Задача в Асане',
       text: '{тег}\nПривет! Подвисла отправка диплома, задержка уже большая — возьми, пожалуйста, в ближайшую очередь.\n{ссылка}' },
     { id: 'payment', title: 'Вопрос по оплате / подарочному курсу', suggest: 'paymanual', linkKind: 'amo', linkLabel: 'Сделка',
       text: '{тег}\nПривет! Студент написал в амо по оплате / подарочному курсу — свяжись с ним, пожалуйста.\n{ссылка}' },
-    { id: 'lead', title: 'Новый лид', suggest: 'none', linkKind: 'amo', linkLabel: 'Сделка',
-      text: '✳️ НОВЫЙ ЛИД ✳️\nВозьмите в работу, пожалуйста.\n\nСообщение клиента:\n«{цитата}»\n\n{имя}\n{email}\n{телефон}\n{ссылка}' }
+    { id: 'lead', title: 'Новый лид', suggest: 'none', linkKind: 'none',
+      text: '✳️ НОВЫЙ ЛИД ✳️\nВозьмите в работу, пожалуйста.\n\nСообщение клиента:\n«{цитата}»\n\n{имя}\n{email}\n{телефон}' }
   ];
 
   /* ==================== ЧТЕНИЕ КОНТЕКСТА ==================== */
@@ -3219,17 +3220,19 @@
   }
 
   // Возвращает { plain, html } — html-версия делает слово-метку кликабельной (для вставки в Telegram Desktop).
-  function pingFill(ping, tag, link, mop) {
+  function pingFill(ping, tag, link, mop, noResp) {
     const u = readUser();
     const quote = ping.id === 'lead' ? (firstClientMsg() || lastClientMsg()) : lastClientMsg();
     const lbl = ping.linkLabel || 'Ссылка';
+    // «Завис вопрос» без ответственного — отдельный текст (см. ping.textNoResp).
+    const baseText = (noResp && ping.textNoResp) ? ping.textNoResp : ping.text;
     const linkPlain = link ? (lbl + ': ' + link) : (lbl + ': {вставь ссылку}');
     const linkHtml = link
       ? ('<a href="' + escapeHtml(link) + '">' + escapeHtml(lbl) + '</a>')
       : (escapeHtml(lbl) + ': {вставь ссылку}');
 
     function build(linkPart) {
-      return ping.text
+      return baseText
         .replace('{тег}', tag || '{тег}')
         .replace('{ссылка}', linkPart)
         .replace('{моп}', mop || '{имя МОП}')
@@ -3481,13 +3484,16 @@
       body.appendChild(manualInput);
     }
 
-    // --- Ссылка ---
-    const lm = LINK_META[ping.linkKind] || LINK_META.notion;
-    body.appendChild(elt('div', fieldLabel, lm.label));
-    const linkInput = elt('input', inputCss);
-    linkInput.placeholder = lm.ph;
-    linkInput.value = autoLink(ping.linkKind);
-    body.appendChild(linkInput);
+    // --- Ссылка (для «Новый лид» ссылки нет — linkKind 'none') ---
+    let linkInput = null;
+    if (ping.linkKind && ping.linkKind !== 'none') {
+      const lm = LINK_META[ping.linkKind] || LINK_META.notion;
+      body.appendChild(elt('div', fieldLabel, lm.label));
+      linkInput = elt('input', inputCss);
+      linkInput.placeholder = lm.ph;
+      linkInput.value = autoLink(ping.linkKind);
+      body.appendChild(linkInput);
+    }
 
     // --- Превью ---
     body.appendChild(elt('div', fieldLabel, 'Текст пинга'));
@@ -3517,7 +3523,8 @@
       return manualInput.value.trim();
     }
     function recompute() {
-      const r = pingFill(ping, chosenTag(), linkInput.value.trim(), mopInput ? mopInput.value.trim() : '');
+      const noResp = !!(respSel && respSel.value === 'lead');
+      const r = pingFill(ping, chosenTag(), linkInput ? linkInput.value.trim() : '', mopInput ? mopInput.value.trim() : '', noResp);
       ta.value = r.plain;
       lastHtml = r.html;
     }
@@ -3555,7 +3562,7 @@
       applyMopTag(mopInput.value.trim());
       recompute();
     };
-    linkInput.oninput = recompute;
+    if (linkInput) linkInput.oninput = recompute;
     ta.oninput = function () { lastHtml = ''; };
 
     const copyB = elt('div', 'margin-top:9px;text-align:center;background:' + ACC + ';color:#fff;font-weight:800;font-size:12px;padding:9px 0;border-radius:12px;cursor:pointer;', '📋 Копировать');
