@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.26.0
+// @version      1.27.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -132,7 +132,9 @@
   const SHEET_MAX_ROW = 100000;
 
   function sheetQuery(extra) {
-    return gmFetchText(SHEET_CSV_URL + '&' + extra);
+    // gviz кэширует ответы по URL на несколько минут — добавляем метку, чтобы при
+    // нажатии «найти» считать по свежей таблице (обновление страницы Sheets на это не влияет).
+    return gmFetchText(SHEET_CSV_URL + '&' + extra + '&_cb=' + Date.now());
   }
   function looksLikeLoginPage(t) {
     return /<!doctype|<html|<head|accounts\.google\.com/i.test(String(t).slice(0, 400));
@@ -174,9 +176,22 @@
         };
         return step(lo, hi - 1, lo - 1).then(lastRow => {
           if (lastRow < 2) return { error: 'не разобрала структуру таблицы' };
-          return countAfrom(lastRow + 1).then(below => ({
-            next: lastRow + 1, lastData: lastRow, total: total, strayBelow: below,
-          }));
+          // Плотный блок мог перерасти узел сетки (напр. 3680): дописанные ПОДРЯД строки
+          // ниже узла двоичный поиск не видит (он ограничен hi-1). Прирастим блок его
+          // непрерывным хвостом — строками сразу за lastRow, идущими без пропусков.
+          return countAfrom(lastRow + 1).then(below => {
+            const grow = (a, b, best) => {
+              if (a > b || below <= 0) return Promise.resolve(best);
+              const m = (a + b) >> 1;
+              // строки lastRow+1..m все заполнены? заполнено в них = below - count(m+1..)
+              return countAfrom(m + 1).then(fAfter =>
+                (below - fAfter === m - lastRow) ? grow(m + 1, b, m) : grow(a, m - 1, best));
+            };
+            return grow(lastRow + 1, lastRow + below, lastRow).then(blockEnd =>
+              countAfrom(blockEnd + 1).then(stray => ({
+                next: blockEnd + 1, lastData: blockEnd, total: total, strayBelow: stray,
+              })));
+          });
         });
       });
     }).catch(e => ({
@@ -1530,7 +1545,7 @@
   }
 
   if (location.hostname.endsWith('omnidesk.ru')) {
-    console.log(TAG, 'запущен, версия ' + '1.26.0');
+    console.log(TAG, 'запущен, версия ' + '1.27.0');
     removeLauncher();
     ensureMenuItem();
     setInterval(function () { removeLauncher(); ensureMenuItem(); }, 2000);
