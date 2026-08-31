@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.25.0
+// @version      1.26.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -454,6 +454,18 @@
     }
 
     const okUrl = u => u && /^https?:\/\/[^/]*eduson\.tv\//i.test(u);
+    // Общий процент «Пройдено» — из шапки блока «План обучения» кабинета/плана.
+    // Единственная .progress-scale на странице статистики = агрегат по всей программе.
+    const readScale = root => {
+      const v = root && root.querySelector('.progress-scale__value, .progress-scale');
+      let m = v && (v.textContent || '').match(/(\d{1,3})\s*%/);
+      if (!m) {
+        const bar = root && root.querySelector('.progress-scale__bar');
+        const w = bar && (bar.getAttribute('style') || '').match(/width:\s*(\d{1,3})/);
+        if (w) m = [null, w[1]];
+      }
+      return m ? String(Math.min(100, Math.max(0, +m[1]))) : '';
+    };
     for (const uid of ids.slice(0, 4)) {
       try {
         const adoc = new DOMParser().parseFromString(await gmFetchText(A + '/admin/users/' + uid + '?language=ru'), 'text/html');
@@ -462,17 +474,21 @@
         const sdoc = new DOMParser().parseFromString(await gmFetchText(sLink.getAttribute('href')), 'text/html');
 
         // Ссылка на учебный план курса (.../assignments/<N>) — там точный процент.
-        // Если курсов несколько — карточку берём ТОЛЬКО по совпадению названия;
-        // без совпадения не угадываем (вернём '' — куратор впишет %, лучше пусто, чем чужой курс).
+        // Сначала ищем карточку по совпадению названия. Название из амо часто на другом
+        // языке, чем на платформе («Product Manager в IT» ↔ «Менеджер продукта в ИТ»),
+        // поэтому при нескольких курсах и без совпадения берём ФЛАГМАНСКИЙ курс плана —
+        // самый крупный по числу уроков («… из N»). Мелкие курсы (Excel, Тайм-менеджмент,
+        // «Как получить работу мечты») идут бонусом к любой программе.
         const cards = [...sdoc.querySelectorAll('.inline-course')];
         const multi = cards.length > 1;
+        const weight = c => { const m = (c.textContent || '').match(/из\s+(\d+)/); return m ? +m[1] : 0; };
         let planUrl = '';
         if (cards.length) {
           let card = courseName ? cards.find(c => courseHit(courseName, c.textContent)) : null;
+          if (!card && courseName && multi) card = cards.slice().sort((a, b) => weight(b) - weight(a))[0];
           if (!card && !(courseName && multi)) card = sdoc.querySelector('.inline-course--current') || cards[0];
           const a = card && card.querySelector('a[href*="/assignments/"]');
           planUrl = a && a.getAttribute('href');
-          if (!planUrl && courseName && multi) continue; // несколько курсов, совпадения нет — не гадаем
         }
         if (!planUrl && !(courseName && multi)) {
           const a2 = sdoc.querySelector('a[href*="/assignments/"]');
@@ -495,6 +511,9 @@
         }
         if (!m) m = planHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').match(/(\d{1,3})\s*%\s+\d+\s+курс/i);
         if (m) return String(Math.min(100, Math.max(0, +m[1])));
+        // на странице плана процент не нашёлся — берём общий со страницы статистики
+        const ov = readScale(sdoc);
+        if (ov !== '') return ov;
       } catch (e) { if (e.message === 'NOAUTH') return ''; }
     }
     return '';
@@ -1511,7 +1530,7 @@
   }
 
   if (location.hostname.endsWith('omnidesk.ru')) {
-    console.log(TAG, 'запущен, версия ' + '1.25.0');
+    console.log(TAG, 'запущен, версия ' + '1.26.0');
     removeLauncher();
     ensureMenuItem();
     setInterval(function () { removeLauncher(); ensureMenuItem(); }, 2000);
