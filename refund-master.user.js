@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.29.0
+// @version      1.30.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -36,6 +36,13 @@
     '/gviz/tq?tqx=out:csv&gid=' + SHEET_GID;
   const CALC_URL = 'https://docs.google.com/spreadsheets/d/11GNvwRy-fJwL2zg1KZbGouXzy5XXvJBlKXvtCHdgFfg/edit';
   const CUTOFF_DATE = new Date(2026, 6, 29); // 29.07.2026 — с этой даты сумму считают в калькуляторе
+
+  // Таблица длительности программ (курс → академ.часы + срок в днях). Публичная, gviz-CSV.
+  // Столбцы: A Наименование программы | B Кол-во академ. часов | C Срок освоения, дней | D Тип диплома.
+  // Питает два поля калькулятора: ак.ч. (C6) и дней (C7).
+  const DURATION_SHEET_ID = '1p0Yo4ikx_AegiJitKjgAiYN7ydpHcENIjT-3Xppkon4';
+  const DURATION_CSV_URL = 'https://docs.google.com/spreadsheets/d/' + DURATION_SHEET_ID +
+    '/gviz/tq?tqx=out:csv&gid=0';
 
   // Столбцы основной таблицы: A Куратор|B ФИО|C Статус|D Дата заявки|E Дата доступа|F =D-E|
   // G Пройдено|H Кластер|I Продукт|J Форма оплаты|K Причина|L Сумма оплаты|M макс.возврат(формула)|
@@ -221,6 +228,97 @@
       error: (e && e.message === 'NOAUTH') ? 'Google не пустил — нужен вход'
         : (e && e.message) || 'сеть или куки не пустили',
     }));
+  }
+
+  /* ---------- длительность курса из таблицы (для калькулятора) ---------- */
+  //
+  // Читаем публичную gviz-CSV таблицу «длительность программ» и по названию курса
+  // (из амо) находим строку → отдаём академ.часы (B) и срок в днях (C).
+  // Матч: точное совпадение → пересечение слов с учётом тарифа (ПРО/Мастер/Базовый…).
+  // Ничего не роняем: не нашли / таблица недоступна — куратор впишет вручную.
+
+  function parseCsvRows(text) {
+    const rows = [];
+    let row = [], cur = '', q = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (q) {
+        if (ch === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; }
+        else cur += ch;
+      } else if (ch === '"') { q = true; }
+      else if (ch === ',') { row.push(cur); cur = ''; }
+      else if (ch === '\n') { row.push(cur); rows.push(row); row = []; cur = ''; }
+      else if (ch !== '\r') { cur += ch; }
+    }
+    if (cur !== '' || row.length) { row.push(cur); rows.push(row); }
+    return rows;
+  }
+
+  // нормализация: нижний регистр, ё→е, только буквы/цифры; отдельно — фолд латиница↔кириллица
+  // по безопасным «двойникам» (a c e o p x y), чтобы «1C» = «1С».
+  const durBase = s => String(s || '').toLowerCase().replace(/ё/g, 'е')
+    .replace(/[^a-zа-я0-9]+/g, ' ').trim();
+  const DUR_FOLD = { a: 'а', c: 'с', e: 'е', o: 'о', p: 'р', x: 'х', y: 'у' };
+  const durFold = s => s.replace(/[aceopxy]/g, c => DUR_FOLD[c]);
+  // тариф курса одним словом (считаем ДО фолда — иначе «pro» ломается)
+  function durTariff(base) {
+    const t = ' ' + base + ' ';
+    if (/ пр[оo] |pro/.test(t)) return 'pro';
+    if (/ мастер |master/.test(t)) return 'master';
+    if (/ премиум |premium/.test(t)) return 'premium';
+    if (/ эксперт |expert/.test(t)) return 'expert';
+    if (/ оптимальн/.test(t)) return 'opt';
+    if (/ базов|начальн| старт |base|start/.test(t)) return 'base';
+    return '';
+  }
+  const DUR_STOP = /^(про|рrо|мастер|master|премиум|premium|эксперт|expert|базовый|базовая|базовое|начальный|тариф|курс|для|при)$/;
+  const durToks = fold => fold.split(' ').filter(w => w.length >= 3 && !DUR_STOP.test(w));
+
+  // rows: [{name,hours,days}] — уже без шапки. Возвращает {hours,days,name,exact,dupes} | null.
+  function pickDuration(courseName, rows) {
+    const wantBase = durBase(courseName);
+    if (!wantBase) return null;
+    const wantTar = durTariff(wantBase);
+    const wantFold = durFold(wantBase);
+    const wantToks = durToks(wantFold);
+    if (!wantToks.length) return null;
+    let best = null, bestScore = 0;
+    rows.forEach(r => {
+      const nBase = durBase(r.name);
+      if (!nBase) return;
+      const nFold = durFold(nBase);
+      let score;
+      if (nFold === wantFold) {
+        score = 1000;
+      } else {
+        const toks = nFold.split(' ').filter(Boolean);
+        const common = wantToks.filter(w => toks.indexOf(w) !== -1);
+        if (common.length < 2 && !(common.length === 1 && wantToks.length === 1)) return;
+        score = common.length * 10;
+        if (nFold.indexOf(wantFold) !== -1 || wantFold.indexOf(nFold) !== -1) score += 15;
+        score += Math.round(common.length / Math.max(wantToks.length, toks.length) * 10);
+        const nTar = durTariff(nBase);
+        if (wantTar && nTar) score += (wantTar === nTar) ? 8 : -14;
+        score -= Math.min(6, Math.abs(toks.length - wantToks.length));
+      }
+      if (score > bestScore) { bestScore = score; best = r; }
+    });
+    if (!best || bestScore < 14) return null;
+    const bn = durFold(durBase(best.name));
+    const dupes = rows.filter(r => durFold(durBase(r.name)) === bn).length;
+    return { hours: String(best.hours || '').trim(), days: String(best.days || '').trim(),
+      name: best.name, exact: bestScore >= 1000, dupes: dupes };
+  }
+
+  function fetchCourseDuration(courseName) {
+    return gmFetchText(DURATION_CSV_URL + '&_cb=' + Date.now()).then(text => {
+      if (looksLikeLoginPage(text)) throw new Error('нужен вход в Google');
+      const rows = parseCsvRows(text).slice(1)
+        .map(r => ({ name: (r[0] || '').trim(), hours: (r[1] || '').trim(), days: (r[2] || '').trim() }))
+        .filter(r => r.name && (r.hours || r.days));
+      if (!rows.length) throw new Error('таблица длительности пустая');
+      return pickDuration(courseName, rows);
+    });
   }
 
   function fmtTs(ts) {
@@ -815,7 +913,11 @@
       producer: '', rowNumber: pick('rowNumber', GM_getValue('rm_row') || ''),
       rgTag: pick('rgTag', GM_getValue('rm_rg') || ''),
       deals: [], dealId: pick('dealId', ''),
+      calcHours: pick('calcHours', ''), calcDays: pick('calcDays', ''),
     };
+    // калькулятор: если по кейсу уже сохранены ак.ч./дни — считаем, что куратор их проверил,
+    // и не перетираем автоподстановкой из таблицы.
+    T.calcDurTouched = !!(cs.calcHours || cs.calcDays);
     const inputs = {};
     const seedEmail = omniCardField(2) || grabSeedFromPage();
     const seedPhone = omniCardField(16);
@@ -824,7 +926,7 @@
       clearTimeout(saveT);
       saveT = setTimeout(() => {
         const keep = {};
-        ['curator', 'status', 'claimDate', 'progress', 'reason', 'clientComment', 'result', 'agreedSum', 'rowNumber', 'rgTag', 'dealId']
+        ['curator', 'status', 'claimDate', 'progress', 'reason', 'clientComment', 'result', 'agreedSum', 'rowNumber', 'rgTag', 'dealId', 'calcHours', 'calcDays']
           .forEach(k => { keep[k] = T[k]; });
         try { GM_setValue(CASE_KEY, JSON.stringify(keep)); } catch (e) { /* ignore */ }
       }, 300);
@@ -1094,6 +1196,7 @@
       T.progress = ''; if (inputs.progress) inputs.progress.value = '';
       T.mop = ''; T.mopFromNote = false; if (inputs.mop) inputs.mop.value = '';
       renderAmoCard();
+      loadCalcDuration(d.course, true); // курс сменился — заново ак.ч./дни для калькулятора
       statusBox.textContent = 'Курс: ' + (d.course || '?') + ' — подтягиваю % и МОП…';
       statusBox.style.color = '#374151';
       fetchDealExtras(d.id, d.course, seedEmail, seedPhone).then(x => {
@@ -1251,7 +1354,69 @@
     const bCalcOpen = el('button', S.btnAlt, '📗 Открыть калькулятор (своя вкладка)');
     bCalcOpen.onclick = () => { try { window.open(CALC_URL, '_blank'); } catch (e) { copy(CALC_URL, 'Ссылка на калькулятор в буфере ✓'); } };
     calcBlock.appendChild(bCalcOpen);
-    const calcCol = comm => [num(T.amount), '', '', clean(T.accessDate), clean(T.claimDate), comm, ''].join('\n');
+
+    // Длительность курса (ак.ч. C6 + дней C7) — подставляется из таблицы длительности, редактируется.
+    const durWrap = el('div', 'margin:8px 0 2px;padding:9px 11px;background:#F0F9FF;border:1px solid ' + ACC_BD + ';border-radius:12px;');
+    durWrap.appendChild(el('div', 'font-size:10.5px;font-weight:800;color:' + ACC_DK + ';margin-bottom:6px;line-height:1.35;',
+      '⏳ Длительность курса — подставится из таблицы, проверь:'));
+    const durRow = el('div', 'display:flex;gap:8px;');
+    const mkDur = (key, label) => {
+      const w = el('div', 'flex:1 1 0;min-width:0;');
+      w.appendChild(el('div', 'font-size:10px;color:#374151;font-weight:600;margin-bottom:3px;', label));
+      const inp = el('input', S.input);
+      inp.style.cssText += 'text-align:center;font-weight:700;';
+      inp.placeholder = '—';
+      inp.value = T[key] || '';
+      inp.addEventListener('input', () => {
+        T[key] = inp.value.replace(/[^\d]/g, ''); inp.value = T[key];
+        T.calcDurTouched = true; inp.style.background = ''; saveCase();
+      });
+      inputs[key] = inp;
+      w.appendChild(inp);
+      return w;
+    };
+    durRow.appendChild(mkDur('calcHours', 'Академ. часы (C6)'));
+    durRow.appendChild(mkDur('calcDays', 'Срок, дней (C7)'));
+    durWrap.appendChild(durRow);
+    const durNote = el('div', 'font-size:9.5px;color:#6B7280;margin-top:5px;line-height:1.4;', '');
+    durWrap.appendChild(durNote);
+    calcBlock.appendChild(durWrap);
+
+    // Подтягиваем ак.ч./дни по названию курса. force=true — при смене курса (сбрасываем «проверено»).
+    let calcDurLoading = false;
+    const loadCalcDuration = (courseName, force) => {
+      const c = String(courseName || T.course || '').trim();
+      if (!c || calcDurLoading) return;
+      if (force) T.calcDurTouched = false;
+      if (T.calcDurTouched) return;
+      calcDurLoading = true;
+      durNote.style.color = ACC_DK;
+      durNote.textContent = 'Смотрю таблицу длительности курсов…';
+      fetchCourseDuration(c).then(r => {
+        if (r && (r.hours || r.days)) {
+          if (!T.calcDurTouched) {
+            T.calcHours = r.hours; T.calcDays = r.days;
+            if (inputs.calcHours) { inputs.calcHours.value = r.hours; inputs.calcHours.style.background = '#FEF9C3'; }
+            if (inputs.calcDays) { inputs.calcDays.value = r.days; inputs.calcDays.style.background = '#FEF9C3'; }
+            saveCase();
+          }
+          durNote.style.color = r.exact ? '#15803D' : '#B45309';
+          durNote.textContent = (r.exact ? '✓ «' : '⚠️ по близости — «') + r.name + '»: ' +
+            (r.hours || '?') + ' ак.ч., ' + (r.days || '?') + ' дн.' +
+            (r.dupes > 1 ? ' · в таблице несколько строк с этим курсом — сверь!' : '');
+        } else {
+          durNote.style.color = '#B45309';
+          durNote.textContent = '⚠️ Не нашла курс «' + c + '» в таблице длительности — впиши ак.ч. и дни вручную.';
+        }
+      }).catch(e => {
+        durNote.style.color = '#B45309';
+        durNote.textContent = '⚠️ Таблица длительности недоступна (' + ((e && e.message) || '?') + ') — впиши вручную.';
+      }).then(() => { calcDurLoading = false; });
+    };
+
+    // C5 сумма · C6 ак.ч. · C7 дней · C8 дата доступа · C9 дата обращения · C10 комиссия · C11 CPL(вручную)
+    const calcCol = comm => [num(T.amount), clean(T.calcHours), clean(T.calcDays),
+      clean(T.accessDate), clean(T.claimDate), comm, ''].join('\n');
     const bCalcPre = el('button', S.big, '📋 Предварительный расчёт → «Оплаченная сумма» (C5)');
     bCalcPre.onclick = () => copy(calcCol('=C5*0,05'),
       '✓ Предв. расчёт в буфере → «Оплаченная сумма» 1-го блока, Ctrl+V.');
@@ -1260,7 +1425,7 @@
       '✓ Оконч. расчёт в буфере → «Оплаченная сумма» 2-го блока, Ctrl+V.');
     calcBlock.appendChild(bCalcPre);
     calcBlock.appendChild(bCalcFin);
-    calcBlock.appendChild(el('div', S.hint, 'Значения: сумма · [ак.ч.] · [дней] · дата доступа · дата обращения · комиссия · [CPL]. Вручную впиши: длительность курса (ак.ч./дней) и CPL; в оконч. расчёте — ещё комиссию по факту. «Итого» посчитается само.'));
+    calcBlock.appendChild(el('div', S.hint, 'Значения: сумма · ак.ч. · дней · дата доступа · дата обращения · комиссия · [CPL]. Ак.ч. и дни подставляются из таблицы длительности (жёлтым — проверь). Вручную впиши: CPL; в оконч. расчёте — ещё комиссию по факту. «Итого» посчитается само.'));
 
     /* ============ ПРАВАЯ КОЛОНКА ============ */
 
@@ -1461,6 +1626,7 @@
         renderDealPick();
 
         syncAgreed(); renderAmoCard(); updateScenario();
+        loadCalcDuration(d.course); // ак.ч. + дни для калькулятора — по названию курса
 
         const what = [];
         if (d.name) what.push('ФИО');
@@ -1584,7 +1750,7 @@
   }
 
   if (location.hostname.endsWith('omnidesk.ru')) {
-    console.log(TAG, 'запущен, версия ' + '1.29.0');
+    console.log(TAG, 'запущен, версия ' + '1.30.0');
     removeLauncher();
     ensureMenuItem();
     setInterval(function () { removeLauncher(); ensureMenuItem(); }, 2000);
