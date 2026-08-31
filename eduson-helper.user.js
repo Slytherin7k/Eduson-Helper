@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.71.0
+// @version      0.72.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.71.0';
+  const VER = '0.72.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -433,38 +433,45 @@
   }
 
   // Возвращает { links: [{course, url}], error: null|'NOAUTH'|'ADMINKA_EMPTY'|текст }
-  async function lookupLoginLinks() {
+  // onProg(title) — необязательный колбэк для плашки-прогресса.
+  async function lookupLoginLinks(onProg) {
     const src = readAdminUrlsFromCard();
     if (!src.superIds.length && !src.userIds.length) {
       return { links: [], error: 'ADMINKA_EMPTY' };
     }
     let authError = false, lastErr = '';
     const userIds = src.userIds.slice();
+    const grab = function (url) { return gmFetchText(url).then(function (h) { return { h: h }; }, function (e) { return { err: e }; }); };
+    const noteErr = function (r) { if (r.err) { if (r.err.message === 'NOAUTH') authError = true; else lastErr = r.err.message; return true; } return false; };
 
-    // super_user → его sub-users (ТОЛЬКО из таблицы «Sub Users», не из меню/шапки страницы)
-    for (const sid of src.superIds.slice(0, 4)) {
-      try {
-        const page = await gmFetchText(superUserUrl(sid));
-        if (adminLooksLikeLogin(page)) { authError = true; continue; }
-        const doc = new DOMParser().parseFromString(page, 'text/html');
+    // super_user → его sub-users (все страницы супера — параллельно)
+    if (src.superIds.length) {
+      if (onProg) onProg('Открываю супер-аккаунт…');
+      const pages = await Promise.all(src.superIds.slice(0, 4).map(function (sid) { return grab(superUserUrl(sid)); }));
+      pages.forEach(function (r) {
+        if (noteErr(r)) return;
+        if (adminLooksLikeLogin(r.h)) { authError = true; return; }
+        const doc = new DOMParser().parseFromString(r.h, 'text/html');
         doc.querySelectorAll('table tr a[href*="/admin/users/"]').forEach(function (a) {
           const m = (a.getAttribute('href') || '').match(/\/admin\/users\/(\d+)/);
           if (m && userIds.indexOf(m[1]) === -1) userIds.push(m[1]);
         });
-      } catch (e) { if (e.message === 'NOAUTH') authError = true; else lastErr = e.message; }
+      });
     }
 
+    // карточки студента — тоже параллельно (это было самым долгим: до 8 больших страниц по очереди)
+    const ids = userIds.slice(0, 8);
+    if (onProg) onProg('Читаю карточки студента в админке' + (ids.length > 1 ? ' (' + ids.length + ')' : '') + '…');
+    const cards = await Promise.all(ids.map(function (uid) { return grab(userCardUrl(uid)); }));
     const links = [];
-    for (const uid of userIds.slice(0, 8)) {
-      try {
-        const card = await gmFetchText(userCardUrl(uid));
-        if (adminLooksLikeLogin(card)) { authError = true; continue; }
-        const ll = parseLoginLink(card);
-        if (ll && !/@eduson\.tv$/i.test(loginLinkEmail(ll)) && !links.some(function (x) { return x.url === ll; })) {
-          links.push({ course: parseUserCardCourse(card), url: ll });
-        }
-      } catch (e) { if (e.message === 'NOAUTH') authError = true; else lastErr = e.message; }
-    }
+    cards.forEach(function (r) {
+      if (noteErr(r)) return;
+      if (adminLooksLikeLogin(r.h)) { authError = true; return; }
+      const ll = parseLoginLink(r.h);
+      if (ll && !/@eduson\.tv$/i.test(loginLinkEmail(ll)) && !links.some(function (x) { return x.url === ll; })) {
+        links.push({ course: parseUserCardCourse(r.h), url: ll });
+      }
+    });
 
     if (!links.length) {
       return { links: [], error: authError ? 'NOAUTH' : (lastErr || 'на карточке(ах) в админке нет «Login link»') };
@@ -1579,8 +1586,9 @@
     const amoId = grabAmoIdFromPage();
     console.log(TAG, 'amo-номер:', amoId || '—', '| телефоны:', seed.phones, '| email:', seed.emails);
     let data = null, err = null, note = '';
+    PB.open('🧲 Собираю данные из amoCRM…');
     if (amoId) {
-      toast('Виджу amo-номер ' + amoId + ' — иду в амо…', 'info', 6000);
+      PB.set('amoCRM · сделка ' + amoId + '…');
       try { data = await fetchClientById(amoId, seed, base); }
       catch (e) { err = e; }
     }
@@ -1588,7 +1596,7 @@
       const by = [];
       if (seed.phones.length) by.push('телефону ' + seed.phones.join(', '));
       if (seed.emails.length) by.push('email ' + seed.emails.join(', '));
-      toast('amo-номера нет — ищу по ' + by.join(' и ') + '…', 'info', 6000);
+      PB.set('Ищу в amoCRM по ' + by.join(' и ') + '…');
       let candidates = [];
       try { candidates = await searchAmoCandidates(seed, base); }
       catch (e) { err = e; }
@@ -1613,18 +1621,20 @@
             }
           } catch (e) { err = e; }
         } else {
+          PB.hide();
           toast('Хорошо, никого не выбираю 🙂', 'info');
           return;
         }
       }
     }
     if (err) {
-      if (err.message === 'CANCELLED') { toast('Хорошо, никого не выбираю 🙂', 'info'); return; }
+      if (err.message === 'CANCELLED') { PB.hide(); toast('Хорошо, никого не выбираю 🙂', 'info'); return; }
       console.error(TAG, 'ошибка:', err);
       if (err.message === 'NOAUTH') {
-        toast('Браузер не пустил меня в амо 😕\nОткрой амо в соседней вкладке, убедись что залогинена,\nи нажми магнит ещё раз.', 'warn', 12000);
+        PB.err('amoCRM не пустила');
+        toast('Открой амо в соседней вкладке, убедись что залогинена, и нажми магнит ещё раз.', 'warn', 12000);
       } else {
-        toast('Не получилось связаться с амо: ' + err.message, 'error');
+        PB.err('Ошибка amoCRM: ' + err.message);
       }
       return;
     }
@@ -1635,7 +1645,7 @@
     const noDealYet = !data || data.noPurchase || data.course === 'не покупал'
       || (!data.chosenDeal && !data.course);
     if (!err && noDealYet && (seed.emails.length || seed.phones.length)) {
-      toast('Оплаченной сделки в амо по клиенту не вижу — смотрю в админке Эдюсон…', 'info', 9000);
+      PB.set('Сделки в amoCRM нет — смотрю в админке Эдюсон…');
       try {
         const adm = await findDealViaAdmin(seed, api);
         let viaAdmin = false;
@@ -1677,7 +1687,7 @@
     }
     if (!data || (!data.name && !data.emails.length && !data.phones.length && !data.course && !data.support)) {
       GM_setValue(DEBUG_KEY, { version: VER, url: location.href, amoId: amoId, seed: seed, result: 'ничего не нашлось', ts: Date.now() });
-      toast('В амо ничего не нашлось 😕', 'warn');
+      PB.err('В amoCRM ничего не нашлось');
       return;
     }
     data.cardAmoId = amoId || '';
@@ -1691,6 +1701,7 @@
     // ФИО должно быть полное: сравниваем имя из амо с ФИО из админки Эдюсон, берём где больше слов.
     // Если сделку нашли через админку (курс купили другому) — имя обучающегося берём из админки
     // (по его почте), а НЕ из контакта покупателя в сделке.
+    PB.set('Сверяю ФИО и админку Эдюсон…');
     try {
       const adminFio = await lookupAdminFio(data, seed);
       if (adminFio) {
@@ -1705,7 +1716,9 @@
     GM_setValue(STORE_KEY, data);
     GM_setValue(DEBUG_KEY, { version: VER, url: location.href, amoId: amoId, seed: seed, data: data, note: note, ts: Date.now() });
     console.log(TAG, 'данные из амо:', data);
-    fillInputsFromData(data, 'Нашлось в амо' + (note ? '\n(' + note + ')' : ''));
+    PB.set('Заполняю карточку OmniDesk…');
+    await fillInputsFromData(data, 'Нашлось в амо' + (note ? '\n(' + note + ')' : ''));
+    PB.hide(); // дальше своё сообщение показывает fillInputsFromData
   }
   /* ---------- заполнение формы OmniDesk ---------- */
   function isVisible(el) { return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length); }
@@ -2714,31 +2727,36 @@
       showLoginLinks(links, note);
     };
     try {
-      toast('Ищу логин-линк в админке Эдюсон…', 'info', 6000);
+      PB.open('🔑 Ищу логин-линк в админке Эдюсон…');
 
       // Основной путь — по ссылке из поля «АДМИНКА» (её уже нашёл магнит), не свободным поиском.
-      let res = await lookupLoginLinks();
+      let res = await lookupLoginLinks(function (t) { PB.set(t); });
 
       // Запасной путь: поле АДМИНКА пустое → строгий поиск по amo-номеру (без свободного email).
       if (res.error === 'ADMINKA_EMPTY') {
         const st = GM_getValue(STORE_KEY) || {};
         const amoId = grabAmoIdFromPage() || st.amoLeadId || st.amoContactId || st.cardAmoId || '';
         if (!amoId) {
-          toast('Поле АДМИНКА пустое, amo-номера тоже нет.\nНажми сначала магнит 🧲 — он заполнит админку.', 'warn', 10000);
+          PB.err('Поле АДМИНКА пустое, amo-номера нет');
+          toast('Нажми сначала магнит 🧲 — он заполнит поле АДМИНКА.', 'warn', 10000);
           return;
         }
+        PB.set('Ищу по номеру amo…');
         res = await lookupLoginLinksByAmoId(amoId);
       }
 
       if (res.error === 'NOAUTH') {
-        toast('Админка не пустила 😕\nОткрой www.eduson.tv, залогинься и нажми ключ снова.', 'warn', 10000);
+        PB.err('Админка не пустила');
+        toast('Открой www.eduson.tv, залогинься и нажми ключ снова.', 'warn', 10000);
         return;
       }
       const links = res.links || [];
       if (!links.length) {
+        PB.err('Логин-линк не нашёлся');
         toast('Логин-линк не нашёлся: ' + (res.error || 'неизвестно') + '.', 'warn', 9000);
         return;
       }
+      PB.ok(links.length > 1 ? '🔑 Готово — ' + links.length + ' курса, выбери' : '🔑 Логин-линк готов');
       if (links.length === 1) {
         present(links);
         return;
@@ -2755,7 +2773,7 @@
         present(links);
       }
     } catch (e) {
-      toast('Ошибка при поиске логин-линка: ' + e.message, 'error');
+      PB.err('Ошибка: ' + e.message);
     } finally {
       loginLinkBusy = false;
     }
@@ -2837,6 +2855,92 @@
     };
     return b;
   }
+  // Плашка-прогресс внизу слева (одна на всё). Видно, что кнопка сработала, сколько ждать.
+  const PB = (function () {
+    const ID = 'eduson-progress';
+    let t0 = 0, tick = 0, osc = 0, phase = 0, sess = 0;
+    function box() {
+      let b = document.getElementById(ID);
+      if (b) return b;
+      b = document.createElement('div');
+      b.id = ID;
+      b.style.cssText = 'position:fixed;left:14px;bottom:14px;z-index:2147483647;width:300px;max-width:88vw;' +
+        'background:#fff;color:#1F2937;padding:11px 26px 12px 14px;border:1px solid #E5E7EB;border-radius:14px;' +
+        'font-family:' + HP_FONT + ';box-shadow:0 12px 36px rgba(15,23,42,.22);border-left:5px solid #0284C7;';
+      const t = document.createElement('div');
+      t.setAttribute('data-t', ''); t.style.cssText = 'font-size:12px;font-weight:800;line-height:1.4;margin-bottom:7px;white-space:pre-wrap;';
+      const track = document.createElement('div');
+      track.style.cssText = 'height:6px;background:#EEF2F7;border-radius:999px;overflow:hidden;';
+      const bar = document.createElement('div');
+      bar.setAttribute('data-bar', ''); bar.style.cssText = 'height:100%;width:15%;margin-left:0;background:#0284C7;border-radius:999px;transition:width .25s,margin-left .25s;';
+      track.appendChild(bar);
+      const s = document.createElement('div');
+      s.setAttribute('data-s', ''); s.style.cssText = 'font-size:10px;color:#9CA3AF;font-weight:700;margin-top:5px;';
+      const x = document.createElement('span');
+      x.textContent = '✕'; x.title = 'Закрыть (не останавливает скрипт)';
+      x.style.cssText = 'position:absolute;top:5px;right:9px;cursor:pointer;color:#9CA3AF;font-size:13px;line-height:1;padding:2px;';
+      x.onclick = function () { hide(); };
+      b.appendChild(t); b.appendChild(track); b.appendChild(s); b.appendChild(x);
+      document.documentElement.appendChild(b);
+      return b;
+    }
+    function bars(b) { return { bar: b.querySelector('[data-bar]'), t: b.querySelector('[data-t]'), s: b.querySelector('[data-s]') }; }
+    function stopTimers() { clearInterval(tick); clearInterval(osc); tick = 0; osc = 0; }
+    function startOsc(b) {
+      clearInterval(osc); phase = 0;
+      const bar = bars(b).bar;
+      osc = setInterval(function () {
+        phase = (phase + 1) % 40;
+        const p = phase < 20 ? phase : 40 - phase; // 0..20..0
+        bar.style.width = '32%';
+        bar.style.marginLeft = (p * 3.2) + '%';
+      }, 90);
+    }
+    function open(title) {
+      const b = box();
+      t0 = Date.now(); sess++;
+      b.style.borderLeftColor = '#0284C7';
+      const p = bars(b);
+      p.t.textContent = title || 'Работаю…';
+      p.bar.style.background = '#0284C7';
+      startOsc(b);
+      clearInterval(tick);
+      tick = setInterval(function () {
+        const bb = document.getElementById(ID); if (!bb) return;
+        bb.querySelector('[data-s]').textContent = ((Date.now() - t0) / 1000).toFixed(1) + ' с';
+      }, 150);
+      return b;
+    }
+    function set(title, done, total) {
+      const b = document.getElementById(ID); if (!b) { open(title); return; }
+      const p = bars(b);
+      if (title) p.t.textContent = title;
+      if (typeof done === 'number' && typeof total === 'number' && total > 0) {
+        clearInterval(osc); osc = 0;
+        p.bar.style.marginLeft = '0';
+        p.bar.style.width = Math.max(4, Math.min(100, done / total * 100)) + '%';
+        p.s.textContent = done + ' / ' + total + '  ·  ' + ((Date.now() - t0) / 1000).toFixed(0) + ' с';
+      } else if (!osc) {
+        startOsc(b);
+      }
+    }
+    function finish(title, colour, keepMs) {
+      const b = document.getElementById(ID); if (!b) return;
+      stopTimers();
+      b.style.borderLeftColor = colour;
+      const p = bars(b);
+      p.t.textContent = title;
+      p.bar.style.marginLeft = '0'; p.bar.style.width = '100%'; p.bar.style.background = colour;
+      p.s.textContent = 'за ' + ((Date.now() - t0) / 1000).toFixed(1) + ' с';
+      const mySess = sess;
+      setTimeout(function () { if (sess === mySess) { const x = document.getElementById(ID); if (x) x.remove(); } }, keepMs);
+    }
+    function ok(title) { finish(title || 'Готово', '#16A34A', 2500); }
+    function err(title) { finish(title || 'Не получилось', '#DC2626', 6000); }
+    function hide() { stopTimers(); const b = document.getElementById(ID); if (b) b.remove(); }
+    return { open: open, set: set, ok: ok, err: err, hide: hide };
+  })();
+
   function toast(msg, type, ms, onTap) {
     const colors = { ok: '#16A34A', warn: '#D97706', error: '#DC2626', info: '#0284C7' };
     const box = document.createElement('div');
@@ -2891,7 +2995,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.71.0'; // синхр. с Хэлпером
+  const VER = '0.72.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3334,6 +3438,24 @@
     if (css) e.style.cssText = css;
     if (text != null) e.textContent = text;
     return e;
+  }
+
+  // Тонкая полоса-прогресс. .osc() — бегунок (неизвестно сколько), .set(d,total) — точный %,
+  // .done() / .fail() — цвет + стоп. Вставлять .el в панель.
+  function miniBar() {
+    const el = elt('div', 'height:6px;background:#EEF2F7;border-radius:999px;overflow:hidden;margin:5px 0 2px;');
+    const fill = elt('div', 'height:100%;width:20%;margin-left:0;background:' + ACC + ';border-radius:999px;transition:width .25s,margin-left .2s;');
+    el.appendChild(fill);
+    let timer = 0, phase = 0;
+    const stop = function () { clearInterval(timer); timer = 0; };
+    return {
+      el: el,
+      osc: function () { stop(); phase = 0; fill.style.width = '30%'; timer = setInterval(function () { phase = (phase + 1) % 40; const p = phase < 20 ? phase : 40 - phase; fill.style.marginLeft = (p * 3.5) + '%'; }, 90); },
+      set: function (d, total) { stop(); fill.style.marginLeft = '0'; fill.style.width = Math.max(4, Math.min(100, total > 0 ? d / total * 100 : 0)) + '%'; },
+      done: function () { stop(); fill.style.marginLeft = '0'; fill.style.width = '100%'; fill.style.background = '#16A34A'; },
+      fail: function () { stop(); fill.style.marginLeft = '0'; fill.style.width = '100%'; fill.style.background = '#DC2626'; },
+      stop: stop
+    };
   }
 
   // Панель можно таскать за шапку; позиция запоминается (curatorPanelPos).
@@ -4130,6 +4252,8 @@
     body.appendChild(elt('div', 'font-weight:800;font-size:13px;margin-bottom:6px;', 'Ссылка на урок'));
     const status = elt('div', 'font-size:11.5px;font-weight:700;color:#9CA3AF;', 'Ищу курс студента на платформе…');
     body.appendChild(status);
+    const loadBar = miniBar(); loadBar.osc();
+    body.appendChild(loadBar.el);
 
     const searchLabel = elt('div', fieldLabel, 'Название урока');
     searchLabel.style.display = 'none';
@@ -4147,6 +4271,7 @@
     body.insertBefore(deepBtn, listBox);
 
     loadLessons().then(function (data) {
+      loadBar.done(); setTimeout(function () { if (loadBar.el.parentNode) loadBar.el.remove(); }, 400);
       status.style.display = 'none';
       searchLabel.style.display = ''; search.style.display = ''; deepBtn.style.display = 'block';
       searchLabel.textContent = 'Название урока · курс: ' + data.planName + ' · уроков: ' + data.lessons.length;
@@ -4221,9 +4346,14 @@
       }
       search.addEventListener('input', draw);
 
+      const deepBar = miniBar();
+      deepBar.el.style.display = 'none';
+      body.insertBefore(deepBar.el, listBox);
+
       const markDeepDone = function () {
         deepBtn.textContent = '✓ Вложенные уроки в поиске (' + deep.length + ')';
         deepBtn.style.background = '#DCFCE7'; deepBtn.style.cursor = 'default';
+        deepBar.done(); setTimeout(function () { deepBar.el.style.display = 'none'; }, 500);
       };
       if (deep) markDeepDone();
 
@@ -4231,9 +4361,10 @@
         if (deepLoading || deep) return;
         deepLoading = true;
         deepBtn.style.cursor = 'default';
+        deepBar.el.style.display = 'block'; deepBar.set(0, 1);
         const total = data.lessons.length;
         let done = 0; const acc = [];
-        deepBtn.textContent = 'Проверяю уроки… 0 / ' + total + ' (можно искать дальше)';
+        deepBtn.textContent = 'Проверяю уроки… 0 / ' + total + ' · поиск работает';
         const queue = data.lessons.slice();
         const worker = function () {
           const l = queue.shift();
@@ -4242,12 +4373,15 @@
             arr.forEach(function (lc) { acc.push({ name: lc.name, url: data.domain + lc.path, parent: l.name }); });
           }).catch(function () {}).then(function () {
             done++;
-            if (done % 5 === 0 || done === total) deepBtn.textContent = 'Проверяю уроки… ' + done + ' / ' + total + ' (можно искать дальше)';
+            if (done % 4 === 0 || done === total) {
+              deepBtn.textContent = 'Проверяю уроки… ' + done + ' / ' + total + ' · поиск работает';
+              deepBar.set(done, total);
+            }
             return worker();
           });
         };
         const workers = [];
-        for (let i = 0; i < 10; i++) workers.push(worker());
+        for (let i = 0; i < 12; i++) workers.push(worker());
         Promise.all(workers).then(function () {
           deep = acc; data.deep = acc; deepLoading = false;
           markDeepDone();
@@ -4259,6 +4393,7 @@
       hint.textContent = 'Клик по названию — ссылка на урок в буфере. «▾» у строки — вложенные уроки (лекции спикеров). Кнопка «Искать во вложенных» разово подгружает все лекции курса в поиск (~30–40 сек, поиск при этом работает). Работает, пока ты залогинена в www.eduson.tv.' +
         (others.length ? ' Другие курсы студента: ' + others.join('; ') + '.' : '');
     }).catch(function (e) {
+      loadBar.fail();
       status.style.color = '#B45309';
       status.textContent = (e && e.message === 'NOAUTH')
         ? 'Не пустило на www.eduson.tv. Открой админку в соседней вкладке, войди и открой панель заново.'
