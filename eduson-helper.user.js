@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.76.1
+// @version      0.76.2
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.76.1';
+  const VER = '0.76.2';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3051,7 +3051,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.76.1'; // синхр. с Хэлпером
+  const VER = '0.76.2'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4512,7 +4512,10 @@
      на уроки — скрипт находит студента в админке (тот же путь, что логин-линк / «Урок»)
      и по каждому курсу шлёт тот же запрос, что кнопка «Завершить курс»
      (POST /admin/users/<uid>/create_course_diploma, course_id=<id>). Прогресс → 100%.
-     Скрипт НИЧЕГО не делает без явного подтверждения (2 клика). */
+     Скорость: страница юзера в админке ~1.3 МБ (19к курсов в выпадашке), поэтому токен
+     берём с лёгкой /careers (9 КБ), названия курсов — с /admin/courses/<id> (параллельно),
+     POST шлём без ожидания редиректа (redirect:manual), а сверку с журналом делаем ОДНИМ
+     фоновым запросом уже после — куратор не ждёт. */
 
   // Из текста достаём ID курсов: и из ссылок /ru/courses/<id>, и голые числа (по одному в строке).
   function parseCourseIds(text) {
@@ -4528,32 +4531,52 @@
     return out;
   }
 
-  // POST формы админки через GM. Ответ страницы юзера большой (~1.3 МБ, список из 19к курсов) —
-  // ждать его долго, поэтому: таймаут щедрый, а сам факт «сработало/нет» перепроверяем отдельным
-  // запросом (verifyCompleted). Таймаут здесь — НЕ ошибка: запрос почти всегда доходит.
-  // Возвращает {ok, timeout, noauth, code}.
+  // POST формы админки. redirect:'manual' — НЕ тянем огромную (~1.3 МБ) страницу-редирект,
+  // берём только сам факт «запрос принят». Статус 0 = opaque-redirect (успех Rails).
+  // Возвращает {ok} / {noauth} / {csrf} / {maybe} (ушло, но подтверждения нет) / {ok:false,code}.
   function gmPostForm(url, params) {
     const data = Object.keys(params).map(function (k) {
       return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
     }).join('&');
     return new Promise(function (resolve) {
       GM_xmlhttpRequest({
-        method: 'POST', url: url, timeout: 45000,
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-          'X-Requested-With': 'XMLHttpRequest'
-        },
+        method: 'POST', url: url, timeout: 15000, redirect: 'manual',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
         data: data,
         onload: function (res) {
           const s = res.status;
           if (s === 401 || s === 403) resolve({ noauth: true });
-          else if (s >= 200 && s < 400) resolve({ ok: true, code: s });
+          else if (s === 422) resolve({ csrf: true });
+          else if (s === 0 || (s >= 200 && s < 400)) resolve({ ok: true, code: s });
           else resolve({ ok: false, code: s });
         },
-        onerror: function () { resolve({ ok: false, code: 0 }); },
-        ontimeout: function () { resolve({ timeout: true }); }
+        // при redirect:'manual' некоторые сборки VM отдают редирект как ошибку — считаем «ушло»
+        onerror: function () { resolve({ maybe: true }); },
+        ontimeout: function () { resolve({ maybe: true }); }
       });
     });
+  }
+
+  // Лёгкая страница ради CSRF-токена (сессионный — годится для любой формы админки) и ФИО студента.
+  async function fetchAdminMeta(uid) {
+    const html = await gmText(EDU_ADMIN + '/admin/users/' + uid + '/careers?language=ru');
+    if (looksLikeAdminLogin(html)) throw new Error('NOAUTH');
+    const tok = (html.match(/name="csrf-token"\s+content="([^"]+)"/) ||
+                 html.match(/content="([^"]+)"\s+name="csrf-token"/) || [])[1] || '';
+    let name = '';
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const bc = doc.querySelector('.breadcrumb');
+    if (bc) name = bc.textContent.replace(/\s+/g, ' ').replace(/^.*\bHome\b\s*\/\s*/i, '').trim();
+    if (!name) name = ((html.replace(/<[^>]+>/g, ' ').match(/Home\s*\/\s*([^<\n\/]{2,60}?)\s{2,}/) || [])[1] || '').trim();
+    return { token: tok, studentName: name };
+  }
+
+  // Название курса по id — /admin/courses/<id> (h1, ~126 КБ). '' если не вышло.
+  function fetchCourseName(id) {
+    return gmText(EDU_ADMIN + '/admin/courses/' + id + '?language=ru').then(function (html) {
+      const m = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+      return m ? m[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim() : '';
+    }).catch(function () { return ''; });
   }
 
   // Перепроверка: подтянулись ли курсы. GET страницы юзера один раз → ищем в журнале
@@ -4603,24 +4626,10 @@
     return userIds[0];
   }
 
-  // HTML страницы /admin/users/<uid> → { token, names:{id:название}, studentName }
-  function parseAdminUserForComplete(html) {
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-    let token = '';
-    const f = doc.querySelector('form[action*="create_course_diploma"]');
-    if (f) { const t = f.querySelector('input[name="authenticity_token"]'); if (t) token = t.value || ''; }
-    if (!token) { const meta = doc.querySelector('meta[name="csrf-token"]'); if (meta) token = meta.getAttribute('content') || ''; }
-    const names = {};
-    const sel = doc.querySelector('form[action*="create_course_diploma"] select[name="course[id]"]');
-    if (sel) sel.querySelectorAll('option').forEach(function (o) { if (o.value) names[o.value] = (o.textContent || '').trim(); });
-    const h1 = doc.querySelector('h1');
-    return { token: token, names: names, studentName: h1 ? h1.textContent.trim() : '' };
-  }
-
   function renderProgress80(body) {
     body.appendChild(elt('div', 'font-weight:800;font-size:13px;margin-bottom:4px;', 'Подтянуть прогресс по урокам'));
     body.appendChild(elt('div', 'font-size:10.5px;color:#6B7280;font-weight:600;line-height:1.5;margin-bottom:6px;',
-      'Вставь ссылки на уроки (можно всё сообщение студента разом). Скрипт завершит эти курсы студенту в админке — прогресс станет 100%. Отправку подтверждаешь ты.'));
+      'Вставь ссылки на уроки (можно всё сообщение студента разом). Проверь студента и список курсов, сними лишние галочки — и «Завершить». Прогресс по курсу станет 100%.'));
 
     const ta = elt('textarea', inputCss + 'min-height:66px;resize:vertical;');
     ta.placeholder = 'https://academy-….eduson.tv/ru/courses/14532?...\n…или просто ID, по одному в строке';
@@ -4641,30 +4650,28 @@
       area.appendChild(status);
       const bar = miniBar(); bar.osc(); area.appendChild(bar.el);
 
-      resolveStudentUid().then(function (uid) {
-        return gmText(EDU_ADMIN + '/admin/users/' + uid + '?language=ru').then(function (html) {
-          if (looksLikeAdminLogin(html)) throw new Error('NOAUTH');
-          return { uid: uid, info: parseAdminUserForComplete(html) };
-        });
-      }).then(function (r) {
+      let uid = '';
+      resolveStudentUid().then(function (u) { uid = u; return fetchAdminMeta(u); }).then(function (meta) {
         bar.done(); setTimeout(function () { if (bar.el.parentNode) bar.el.remove(); }, 400);
         status.style.display = 'none';
-        const info = r.info, uid = r.uid;
-        if (!info.token) { area.appendChild(elt('div', 'font-size:11.5px;color:#B45309;font-weight:700;', 'Не нашла токен на странице студента — обнови вкладку админки и попробуй снова.')); return; }
+        if (!meta.token) { area.appendChild(elt('div', 'font-size:11.5px;color:#B45309;font-weight:700;', 'Не нашла токен в админке — обнови вкладку админки (войди) и попробуй снова.')); return; }
 
-        area.appendChild(elt('div', 'font-size:12.5px;font-weight:800;color:#111827;margin-bottom:1px;', 'Студент: ' + (info.studentName || readUser().name || '?')));
-        area.appendChild(elt('div', 'font-size:10px;color:#9CA3AF;font-weight:700;margin-bottom:7px;', 'ID ' + uid + ' · проверь, что это тот студент'));
+        const names = {}; // id → название (подтягиваются параллельно)
+        area.appendChild(elt('div', 'font-size:12.5px;font-weight:800;color:#111827;margin-bottom:1px;', 'Студент: ' + (meta.studentName || readUser().name || '?')));
+        area.appendChild(elt('div', 'font-size:10px;color:#9CA3AF;font-weight:700;margin-bottom:7px;', 'ID в админке ' + uid + ' · проверь, что это тот студент'));
 
-        const cbs = [];
+        const cbs = [], nameEl = {};
         ids.forEach(function (id) {
-          const known = info.names[id];
           const row = elt('label', 'display:flex;gap:7px;align-items:flex-start;padding:6px 0;border-top:1px solid #F3F4F6;cursor:pointer;font-size:11.5px;font-weight:600;color:#111827;line-height:1.35;');
           const cb = elt('input', 'margin-top:2px;flex:0 0 auto;'); cb.type = 'checkbox'; cb.checked = true; cb.dataset.id = id;
-          const txt = elt('div', 'flex:1;', id + ' — ' + (known || '⚠️ курса нет в списке админки, проверь ID'));
-          if (!known) txt.style.color = '#B45309';
+          const txt = elt('div', 'flex:1;color:#9CA3AF;', id + ' — загружаю название…');
           row.appendChild(cb); row.appendChild(txt);
-          area.appendChild(row);
-          cbs.push(cb);
+          area.appendChild(row); cbs.push(cb); nameEl[id] = txt;
+          fetchCourseName(id).then(function (nm) {
+            names[id] = nm;
+            txt.textContent = id + ' — ' + (nm || '⚠️ название не нашлось, проверь ID');
+            txt.style.color = nm ? '#111827' : '#B45309';
+          });
         });
 
         const go = elt('div', 'margin-top:11px;text-align:center;cursor:pointer;font-weight:800;font-size:12px;padding:9px 0;border-radius:999px;background:#16A34A;color:#fff;', 'Завершить отмеченные');
@@ -4672,62 +4679,54 @@
         const log = elt('div', 'margin-top:8px;font-size:11px;font-weight:700;line-height:1.65;white-space:pre-wrap;');
         area.appendChild(log);
 
-        let armed = false, running = false;
+        let running = false;
         go.onclick = function () {
           if (running) return;
           const chosen = cbs.filter(function (c) { return c.checked; }).map(function (c) { return c.dataset.id; });
           if (!chosen.length) { toast('Ничего не отмечено'); return; }
-          if (!armed) {
-            armed = true;
-            go.textContent = 'Точно завершить ' + chosen.length + '? нажми ещё раз';
-            go.style.background = '#B91C1C';
-            setTimeout(function () { if (armed && !running) { armed = false; go.textContent = 'Завершить отмеченные'; go.style.background = '#16A34A'; } }, 4500);
-            return;
-          }
-          armed = false; running = true;
+          running = true;
           go.style.pointerEvents = 'none'; go.style.opacity = '.55'; go.textContent = 'Завершаю…';
           log.innerHTML = '';
-          const lines = {};        // id → элемент строки
-          const state = {};        // id → 'sent' | 'noauth' | 'err'
-          let i = 0;
+          const lines = {}, state = {}; // state: 'sent' | 'noauth' | 'err'
+          chosen.forEach(function (id) { const l = elt('div', 'color:#6B7280;', '… ' + id + ' — отправляю'); log.appendChild(l); lines[id] = l; });
+          const setLine = function (id, t, c) { lines[id].textContent = t; lines[id].style.color = c; };
+          const nm = function (id) { return names[id] ? ' — ' + names[id] : ''; };
 
-          const setLine = function (id, txt, color) { lines[id].textContent = txt; lines[id].style.color = color; };
-
-          function finish() {
-            // перепроверяем журнал одним запросом
-            go.textContent = 'Проверяю в админке…';
-            verifyCompleted(uid, chosen, info.names).then(function (res) {
-              let ok = 0, warn = 0;
-              chosen.forEach(function (id) {
-                if (state[id] === 'noauth') { setLine(id, '✗ ' + id + ' — не пустило в админку', '#B91C1C'); warn++; return; }
-                if (state[id] === 'err') { setLine(id, '✗ ' + id + ' — не отправилось, попробуй ещё раз', '#B91C1C'); warn++; return; }
-                if (res && res[id]) { setLine(id, '✓ ' + id + ' — завершён (проверено)', '#16A34A'); ok++; }
-                else if (res) { setLine(id, '⚠️ ' + id + ' — отправлено, но в журнале не вижу — проверь у студента', '#B45309'); warn++; }
-                else { setLine(id, '⏳ ' + id + ' — отправлено (журнал перепроверить не смогла)', '#B45309'); warn++; }
-              });
-              go.textContent = warn ? ('Готово: ' + ok + ', проверь ' + warn) : ('Готово: ' + ok);
-              go.style.background = warn ? '#B45309' : '#0284C7';
-              go.style.pointerEvents = ''; go.style.opacity = '';
-              running = false;
-              toast(warn ? ('Завершено ' + ok + ', проверь ' + warn) : ('Завершено курсов: ' + ok));
-            });
-          }
-
-          (function next() {
-            if (i >= chosen.length) { finish(); return; }
-            const id = chosen[i++];
-            const line = elt('div', 'color:#6B7280;', '… ' + id + ' — отправляю (админка отвечает не быстро)');
-            log.appendChild(line);
-            lines[id] = line;
-            gmPostForm(EDU_ADMIN + '/admin/users/' + uid + '/create_course_diploma?language=ru', {
-              authenticity_token: info.token, course_id: id, commit: 'Завершить курс'
+          // все курсы — параллельно (запросы независимы), чтобы не ждать по очереди
+          Promise.all(chosen.map(function (id) {
+            return gmPostForm(EDU_ADMIN + '/admin/users/' + uid + '/create_course_diploma?language=ru', {
+              authenticity_token: meta.token, course_id: id, commit: 'Завершить курс'
             }).then(function (r) {
               if (r.noauth) { state[id] = 'noauth'; setLine(id, '✗ ' + id + ' — не пустило в админку', '#B91C1C'); }
-              else if (r.ok || r.timeout) { state[id] = 'sent'; setLine(id, '⏳ ' + id + ' — отправлено, проверю в конце', '#6B7280'); }
+              else if (r.csrf) { state[id] = 'err'; setLine(id, '✗ ' + id + ' — токен устарел, открой панель заново', '#B91C1C'); }
+              else if (r.ok || r.maybe) { state[id] = 'sent'; setLine(id, '✓ ' + id + nm(id) + ' — отправлено', '#16A34A'); }
               else { state[id] = 'err'; setLine(id, '✗ ' + id + ' — не отправилось (код ' + (r.code || '?') + ')', '#B91C1C'); }
-              setTimeout(next, 700);
             });
-          })();
+          })).then(afterBatch);
+
+          function afterBatch() {
+            const sent = chosen.filter(function (id) { return state[id] === 'sent'; });
+            const errN = chosen.length - sent.length;
+            go.textContent = errN ? ('Отправлено: ' + sent.length + ', ошибок ' + errN) : ('Отправлено: ' + sent.length);
+            go.style.background = errN ? '#B45309' : '#16A34A';
+            go.style.pointerEvents = ''; go.style.opacity = '';
+            running = false;
+            toast(errN ? ('Отправлено ' + sent.length + ', ошибок ' + errN) : ('Отправлено курсов: ' + sent.length));
+            if (!sent.length) return;
+            // фоновая сверка с журналом админки — куратор не ждёт
+            const chk = elt('div', 'margin-top:6px;font-size:10.5px;color:#9CA3AF;font-weight:700;', '⏳ сверяю с журналом админки (можно не ждать)…');
+            log.appendChild(chk);
+            verifyCompleted(uid, sent, names).then(function (res) {
+              if (!res) { chk.textContent = '⚠️ журнал сверить не смогла — глянь у студента (скорее всего готово)'; chk.style.color = '#B45309'; return; }
+              let conf = 0, miss = 0;
+              sent.forEach(function (id) {
+                if (res[id]) { setLine(id, '✓ ' + id + nm(id) + ' — завершён (проверено)', '#16A34A'); conf++; }
+                else { setLine(id, '⚠️ ' + id + nm(id) + ' — отправлено, в журнале не вижу — проверь', '#B45309'); miss++; }
+              });
+              chk.textContent = miss ? ('Сверка: подтверждено ' + conf + ', проверь ' + miss) : ('Сверка: всё подтверждено');
+              chk.style.color = miss ? '#B45309' : '#16A34A';
+            });
+          }
         };
       }).catch(function (e) {
         bar.fail();
