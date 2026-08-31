@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.63.0
+// @version      0.64.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.63.0';
+  const VER = '0.64.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -2843,7 +2843,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.63.0'; // синхр. с Хэлпером
+  const VER = '0.64.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3776,7 +3776,6 @@
       const card = elt('div', 'border:1px solid ' + ACC_BD + ';background:#F0F9FF;border-radius:12px;padding:10px 12px;');
       card.appendChild(elt('div', 'font-size:11px;color:#6B7280;font-weight:700;line-height:1.35;', it.course));
       card.appendChild(elt('div', 'font-weight:900;font-size:17px;color:' + ACC_DEEP + ';margin-top:3px;', it.doc || 'документ не указан'));
-      if (DOC_FULL[it.doc]) card.appendChild(elt('div', 'font-size:12px;color:#374151;font-weight:600;margin-top:1px;', DOC_FULL[it.doc]));
       if (it.hours) card.appendChild(elt('div', 'font-size:11px;color:#9CA3AF;font-weight:600;margin-top:4px;', it.hours + ' ак. ч.'));
       if (note) card.appendChild(elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;margin-top:5px;line-height:1.4;', note));
       result.appendChild(card);
@@ -3821,9 +3820,7 @@
       const crs = readCourse();
       const m = matchDocCourse(map, crs);
       if (m) {
-        showItem(m.item, m.exact
-          ? 'курс из карточки: ' + crs
-          : 'курс из карточки: ' + crs + ' — сопоставила по близости, проверь');
+        showItem(m.item, m.exact ? '' : '⚠️ сопоставила по близости — проверь курс');
       } else {
         showItem(null);
         if (crs) {
