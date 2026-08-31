@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.76.0
+// @version      0.76.1
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.76.0';
+  const VER = '0.76.1';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3051,7 +3051,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.76.0'; // синхр. с Хэлпером
+  const VER = '0.76.1'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4528,25 +4528,63 @@
     return out;
   }
 
-  // POST формы админки через GM (следует за редиректом, отдаёт HTML результата).
+  // POST формы админки через GM. Ответ страницы юзера большой (~1.3 МБ, список из 19к курсов) —
+  // ждать его долго, поэтому: таймаут щедрый, а сам факт «сработало/нет» перепроверяем отдельным
+  // запросом (verifyCompleted). Таймаут здесь — НЕ ошибка: запрос почти всегда доходит.
+  // Возвращает {ok, timeout, noauth, code}.
   function gmPostForm(url, params) {
     const data = Object.keys(params).map(function (k) {
       return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
     }).join('&');
-    return new Promise(function (resolve, reject) {
+    return new Promise(function (resolve) {
       GM_xmlhttpRequest({
-        method: 'POST', url: url, timeout: 25000,
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+        method: 'POST', url: url, timeout: 45000,
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'X-Requested-With': 'XMLHttpRequest'
+        },
         data: data,
         onload: function (res) {
-          if (res.status >= 200 && res.status < 400) resolve(res.responseText || '');
-          else if (res.status === 401 || res.status === 403) reject(new Error('NOAUTH'));
-          else reject(new Error('код ' + res.status));
+          const s = res.status;
+          if (s === 401 || s === 403) resolve({ noauth: true });
+          else if (s >= 200 && s < 400) resolve({ ok: true, code: s });
+          else resolve({ ok: false, code: s });
         },
-        onerror: function () { reject(new Error('сеть')); },
-        ontimeout: function () { reject(new Error('долго не отвечает')); }
+        onerror: function () { resolve({ ok: false, code: 0 }); },
+        ontimeout: function () { resolve({ timeout: true }); }
       });
     });
+  }
+
+  // Перепроверка: подтянулись ли курсы. GET страницы юзера один раз → ищем в журнале
+  // «course_completed <название курса> <сегодня>». Возвращает {id: true|false} или null.
+  function gmGetBig(url) {
+    return new Promise(function (resolve, reject) {
+      GM_xmlhttpRequest({
+        method: 'GET', url: url, timeout: 40000,
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        onload: function (res) { (res.status === 200) ? resolve(res.responseText || '') : reject(new Error('код ' + res.status)); },
+        onerror: function () { reject(new Error('сеть')); },
+        ontimeout: function () { reject(new Error('таймаут')); }
+      });
+    });
+  }
+  async function verifyCompleted(uid, ids, names) {
+    let html = '';
+    try { html = await gmGetBig(EDU_ADMIN + '/admin/users/' + uid + '?language=ru'); }
+    catch (e) { return null; }
+    if (looksLikeAdminLogin(html)) return null;
+    const norm = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+    const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    const out = {};
+    ids.forEach(function (id) {
+      const n = names[id];
+      out[id] = !!n && (
+        norm.indexOf('course_completed ' + n + ' ' + today) !== -1 ||
+        norm.indexOf('completed ' + n + ' ' + today) !== -1
+      );
+    });
+    return out;
   }
 
   // uid обучающегося в админке Эдюсон (из поля АДМИНКА карточки; через супер-юзер — по email/тел).
@@ -4649,37 +4687,45 @@
           armed = false; running = true;
           go.style.pointerEvents = 'none'; go.style.opacity = '.55'; go.textContent = 'Завершаю…';
           log.innerHTML = '';
-          let token = info.token, done = 0, fail = 0, i = 0;
-          (function next() {
-            if (i >= chosen.length) {
-              go.textContent = fail ? ('Готово: ' + done + ', ошибок ' + fail) : ('Готово: ' + done);
-              go.style.background = fail ? '#B45309' : '#0284C7';
+          const lines = {};        // id → элемент строки
+          const state = {};        // id → 'sent' | 'noauth' | 'err'
+          let i = 0;
+
+          const setLine = function (id, txt, color) { lines[id].textContent = txt; lines[id].style.color = color; };
+
+          function finish() {
+            // перепроверяем журнал одним запросом
+            go.textContent = 'Проверяю в админке…';
+            verifyCompleted(uid, chosen, info.names).then(function (res) {
+              let ok = 0, warn = 0;
+              chosen.forEach(function (id) {
+                if (state[id] === 'noauth') { setLine(id, '✗ ' + id + ' — не пустило в админку', '#B91C1C'); warn++; return; }
+                if (state[id] === 'err') { setLine(id, '✗ ' + id + ' — не отправилось, попробуй ещё раз', '#B91C1C'); warn++; return; }
+                if (res && res[id]) { setLine(id, '✓ ' + id + ' — завершён (проверено)', '#16A34A'); ok++; }
+                else if (res) { setLine(id, '⚠️ ' + id + ' — отправлено, но в журнале не вижу — проверь у студента', '#B45309'); warn++; }
+                else { setLine(id, '⏳ ' + id + ' — отправлено (журнал перепроверить не смогла)', '#B45309'); warn++; }
+              });
+              go.textContent = warn ? ('Готово: ' + ok + ', проверь ' + warn) : ('Готово: ' + ok);
+              go.style.background = warn ? '#B45309' : '#0284C7';
               go.style.pointerEvents = ''; go.style.opacity = '';
               running = false;
-              toast(fail ? ('Завершено ' + done + ', ошибок ' + fail) : ('Завершено курсов: ' + done));
-              return;
-            }
+              toast(warn ? ('Завершено ' + ok + ', проверь ' + warn) : ('Завершено курсов: ' + ok));
+            });
+          }
+
+          (function next() {
+            if (i >= chosen.length) { finish(); return; }
             const id = chosen[i++];
-            const line = elt('div', 'color:#6B7280;', '… ' + id + ' — отправляю');
+            const line = elt('div', 'color:#6B7280;', '… ' + id + ' — отправляю (админка отвечает не быстро)');
             log.appendChild(line);
+            lines[id] = line;
             gmPostForm(EDU_ADMIN + '/admin/users/' + uid + '/create_course_diploma?language=ru', {
-              authenticity_token: token, course_id: id, commit: 'Завершить курс'
-            }).then(function (html) {
-              const doc = new DOMParser().parseFromString(html, 'text/html');
-              const flash = doc.querySelector('.flash_div, [class*="flash"], .alert');
-              const msg = flash ? flash.textContent.replace(/\s+/g, ' ').trim() : '';
-              const ok = /создан|готов|заверш|success|диплом/i.test(msg) || (!msg && !looksLikeAdminLogin(html));
-              line.textContent = (ok ? '✓ ' : '✗ ') + id + ' — ' + (msg || (ok ? 'готово' : 'без ответа админки'));
-              line.style.color = ok ? '#16A34A' : '#B91C1C';
-              if (ok) done++; else fail++;
-              const nt = doc.querySelector('form[action*="create_course_diploma"] input[name="authenticity_token"]');
-              if (nt && nt.value) token = nt.value;
-              setTimeout(next, 500);
-            }).catch(function (e) {
-              line.textContent = '✗ ' + id + ' — ' + ((e && e.message) === 'NOAUTH' ? 'не пустило в админку' : ((e && e.message) || 'ошибка'));
-              line.style.color = '#B91C1C';
-              fail++;
-              setTimeout(next, 500);
+              authenticity_token: info.token, course_id: id, commit: 'Завершить курс'
+            }).then(function (r) {
+              if (r.noauth) { state[id] = 'noauth'; setLine(id, '✗ ' + id + ' — не пустило в админку', '#B91C1C'); }
+              else if (r.ok || r.timeout) { state[id] = 'sent'; setLine(id, '⏳ ' + id + ' — отправлено, проверю в конце', '#6B7280'); }
+              else { state[id] = 'err'; setLine(id, '✗ ' + id + ' — не отправилось (код ' + (r.code || '?') + ')', '#B91C1C'); }
+              setTimeout(next, 700);
             });
           })();
         };
