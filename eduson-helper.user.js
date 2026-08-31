@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.70.0
+// @version      0.71.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.70.0';
+  const VER = '0.71.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -2891,7 +2891,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.70.0'; // синхр. с Хэлпером
+  const VER = '0.71.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4142,64 +4142,121 @@
     const hint = elt('div', 'margin-top:10px;font-size:10px;color:#9CA3AF;font-weight:600;line-height:1.5;', '');
     body.appendChild(hint);
 
+    // кнопка глубокого поиска (по вложенным лекциям) — между строкой поиска и списком
+    const deepBtn = elt('div', 'display:none;margin-top:6px;text-align:center;background:#F0F9FF;color:' + ACC + ';border:1px solid ' + ACC_BD + ';border-radius:10px;padding:7px 8px;font-size:11px;font-weight:800;cursor:pointer;line-height:1.35;', '🔍 Искать и во вложенных уроках (лекции спикеров)');
+    body.insertBefore(deepBtn, listBox);
+
     loadLessons().then(function (data) {
       status.style.display = 'none';
-      searchLabel.style.display = ''; search.style.display = '';
+      searchLabel.style.display = ''; search.style.display = ''; deepBtn.style.display = 'block';
       searchLabel.textContent = 'Название урока · курс: ' + data.planName + ' · уроков: ' + data.lessons.length;
       if (data.note) { status.style.display = ''; status.style.color = '#B45309'; status.textContent = '⚠️ ' + data.note; }
+
+      let deep = data.deep || null;   // [{name, url, parent}] — все вложенные лекции курса (кэш в lessonCache)
+      let deepLoading = false;
+
+      const nameDiv = function (name) { return elt('div', 'font-size:12px;font-weight:700;color:#111827;line-height:1.35;', name); };
+      const urlDiv = function (url) { return elt('div', 'font-size:10px;color:#6B7280;font-weight:600;margin-top:2px;word-break:break-all;', url); };
+
+      // Строка вложенной лекции (плоский результат глубокого поиска).
+      const lessonRow = function (name, url, parent) {
+        const wrap = elt('div', 'border-bottom:1px solid #F3F4F6;');
+        const main = elt('div', 'padding:8px 11px;cursor:pointer;');
+        main.appendChild(nameDiv(name));
+        if (parent) main.appendChild(elt('div', 'font-size:9.5px;color:#9CA3AF;font-weight:700;margin-top:1px;', 'в уроке: ' + parent));
+        main.appendChild(urlDiv(url));
+        main.onclick = function () { copyText(url); toast('Ссылка на урок скопирована:\n' + name); wrap.style.background = '#DCFCE7'; };
+        wrap.appendChild(main);
+        return wrap;
+      };
+
+      // Строка урока верхнего уровня + кнопка «▾» раскрытия вложенных лекций.
+      const courseRowWithExpand = function (l) {
+        const url = data.domain + '/ru/courses/' + l.id;
+        const wrap = elt('div', 'border-bottom:1px solid #F3F4F6;');
+        const row = elt('div', 'padding:8px 11px;display:flex;gap:8px;align-items:flex-start;');
+        const main = elt('div', 'flex:1;min-width:0;cursor:pointer;');
+        main.appendChild(nameDiv(l.name));
+        main.appendChild(urlDiv(url));
+        main.onclick = function () { copyText(url); toast('Ссылка на урок скопирована:\n' + l.name); wrap.style.background = '#DCFCE7'; };
+        const exp = elt('div', 'flex:0 0 auto;cursor:pointer;font-size:11px;font-weight:800;color:' + ACC + ';padding:2px 7px;border:1px solid ' + ACC_BD + ';border-radius:8px;line-height:1.4;', '▾');
+        exp.title = 'вложенные уроки';
+        const sub = elt('div', 'display:none;padding:2px 11px 8px 20px;');
+        exp.onclick = function () {
+          if (sub.style.display === 'block') { sub.style.display = 'none'; exp.textContent = '▾'; return; }
+          sub.style.display = 'block'; exp.textContent = '…';
+          fetchCourseLectures(data.domain, l.id).then(function (arr) {
+            exp.textContent = '▴'; sub.innerHTML = '';
+            if (!arr.length) { sub.appendChild(elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;padding:4px 0;', 'вложенных уроков нет — бери ссылку выше')); return; }
+            arr.forEach(function (lc) {
+              const lu = data.domain + lc.path;
+              const sr = elt('div', 'padding:6px 0;cursor:pointer;border-top:1px solid #F3F4F6;');
+              sr.appendChild(elt('div', 'font-size:11.5px;font-weight:700;color:#111827;line-height:1.3;', lc.name));
+              sr.appendChild(elt('div', 'font-size:9.5px;color:#6B7280;font-weight:600;margin-top:1px;word-break:break-all;', lu));
+              sr.onclick = function () { copyText(lu); toast('Ссылка на урок скопирована:\n' + lc.name); sr.style.background = '#DCFCE7'; };
+              sub.appendChild(sr);
+            });
+          }).catch(function () { exp.textContent = '▾'; sub.style.display = 'none'; toast('Не удалось открыть вложенные уроки'); });
+        };
+        row.appendChild(main); row.appendChild(exp);
+        wrap.appendChild(row); wrap.appendChild(sub);
+        return wrap;
+      };
 
       function draw() {
         const terms = docNorm(search.value).split(' ').filter(Boolean);
         listBox.innerHTML = '';
         if (!terms.length) { listBox.style.display = 'none'; return; }
-        const hits = data.lessons.filter(function (l) {
-          const hay = docNorm(l.name);
-          return terms.every(function (t) { return hay.indexOf(t) !== -1; });
-        }).slice(0, 60);
-        if (!hits.length) {
-          listBox.appendChild(elt('div', 'padding:9px 11px;font-size:11.5px;color:#9CA3AF;font-weight:700;', 'Ничего не найдено'));
+        const match = function (name) { const hay = docNorm(name); return terms.every(function (t) { return hay.indexOf(t) !== -1; }); };
+        const courseHits = data.lessons.filter(function (l) { return match(l.name); }).slice(0, 40);
+        const lectHits = deep ? deep.filter(function (x) { return match(x.name); }).slice(0, 40) : [];
+        if (!courseHits.length && !lectHits.length) {
+          listBox.appendChild(elt('div', 'padding:9px 11px;font-size:11.5px;color:#9CA3AF;font-weight:700;line-height:1.5;',
+            deep ? 'Ничего не найдено.' : 'Среди уроков не нашла. Лекции спикеров внутри уроков — нажми «Искать и во вложенных» над списком.'));
         } else {
-          hits.forEach(function (l) {
-            const url = data.domain + '/ru/courses/' + l.id;
-            const wrap = elt('div', 'border-bottom:1px solid #F3F4F6;');
-            const row = elt('div', 'padding:8px 11px;display:flex;gap:8px;align-items:flex-start;');
-            const main = elt('div', 'flex:1;min-width:0;cursor:pointer;');
-            main.appendChild(elt('div', 'font-size:12px;font-weight:700;color:#111827;line-height:1.35;', l.name));
-            main.appendChild(elt('div', 'font-size:10px;color:#6B7280;font-weight:600;margin-top:2px;word-break:break-all;', url));
-            main.onclick = function () { copyText(url); toast('Ссылка на урок скопирована:\n' + l.name); wrap.style.background = '#DCFCE7'; };
-            const exp = elt('div', 'flex:0 0 auto;cursor:pointer;font-size:11px;font-weight:800;color:' + ACC + ';padding:2px 7px;border:1px solid ' + ACC_BD + ';border-radius:8px;line-height:1.4;', '▾');
-            exp.title = 'вложенные уроки';
-            const sub = elt('div', 'display:none;padding:2px 11px 8px 20px;');
-            exp.onclick = function () {
-              if (sub.style.display === 'block') { sub.style.display = 'none'; exp.textContent = '▾'; return; }
-              sub.style.display = 'block'; exp.textContent = '…';
-              fetchCourseLectures(data.domain, l.id).then(function (arr) {
-                exp.textContent = '▴'; sub.innerHTML = '';
-                if (!arr.length) {
-                  sub.appendChild(elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;padding:4px 0;', 'вложенных уроков нет — бери ссылку выше'));
-                  return;
-                }
-                arr.forEach(function (lc) {
-                  const lu = data.domain + lc.path;
-                  const sr = elt('div', 'padding:6px 0;cursor:pointer;border-top:1px solid #F3F4F6;');
-                  sr.appendChild(elt('div', 'font-size:11.5px;font-weight:700;color:#111827;line-height:1.3;', lc.name));
-                  sr.appendChild(elt('div', 'font-size:9.5px;color:#6B7280;font-weight:600;margin-top:1px;word-break:break-all;', lu));
-                  sr.onclick = function () { copyText(lu); toast('Ссылка на урок скопирована:\n' + lc.name); sr.style.background = '#DCFCE7'; };
-                  sub.appendChild(sr);
-                });
-              }).catch(function () { exp.textContent = '▾'; sub.style.display = 'none'; toast('Не удалось открыть вложенные уроки'); });
-            };
-            row.appendChild(main); row.appendChild(exp);
-            wrap.appendChild(row); wrap.appendChild(sub);
-            listBox.appendChild(wrap);
-          });
+          courseHits.forEach(function (l) { listBox.appendChild(courseRowWithExpand(l)); });
+          lectHits.forEach(function (x) { listBox.appendChild(lessonRow(x.name, x.url, x.parent)); });
         }
         listBox.style.display = 'block';
       }
       search.addEventListener('input', draw);
 
+      const markDeepDone = function () {
+        deepBtn.textContent = '✓ Вложенные уроки в поиске (' + deep.length + ')';
+        deepBtn.style.background = '#DCFCE7'; deepBtn.style.cursor = 'default';
+      };
+      if (deep) markDeepDone();
+
+      deepBtn.onclick = function () {
+        if (deepLoading || deep) return;
+        deepLoading = true;
+        deepBtn.style.cursor = 'default';
+        const total = data.lessons.length;
+        let done = 0; const acc = [];
+        deepBtn.textContent = 'Проверяю уроки… 0 / ' + total + ' (можно искать дальше)';
+        const queue = data.lessons.slice();
+        const worker = function () {
+          const l = queue.shift();
+          if (!l) return Promise.resolve();
+          return fetchCourseLectures(data.domain, l.id).then(function (arr) {
+            arr.forEach(function (lc) { acc.push({ name: lc.name, url: data.domain + lc.path, parent: l.name }); });
+          }).catch(function () {}).then(function () {
+            done++;
+            if (done % 5 === 0 || done === total) deepBtn.textContent = 'Проверяю уроки… ' + done + ' / ' + total + ' (можно искать дальше)';
+            return worker();
+          });
+        };
+        const workers = [];
+        for (let i = 0; i < 10; i++) workers.push(worker());
+        Promise.all(workers).then(function () {
+          deep = acc; data.deep = acc; deepLoading = false;
+          markDeepDone();
+          draw();
+        });
+      };
+
       const others = (data.plans || []).map(function (p) { return p.name; }).filter(function (n) { return n !== data.planName; });
-      hint.textContent = 'Клик по названию — ссылка на урок в буфере. «▾» — раскрыть вложенные уроки (напр. отдельные лекции спикеров). Работает, пока ты залогинена в www.eduson.tv.' +
+      hint.textContent = 'Клик по названию — ссылка на урок в буфере. «▾» у строки — вложенные уроки (лекции спикеров). Кнопка «Искать во вложенных» разово подгружает все лекции курса в поиск (~30–40 сек, поиск при этом работает). Работает, пока ты залогинена в www.eduson.tv.' +
         (others.length ? ' Другие курсы студента: ' + others.join('; ') + '.' : '');
     }).catch(function (e) {
       status.style.color = '#B45309';
