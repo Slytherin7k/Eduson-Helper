@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.76.3
+// @version      0.76.4
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.76.3';
+  const VER = '0.76.4';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3051,7 +3051,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.76.3'; // синхр. с Хэлпером
+  const VER = '0.76.4'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3563,7 +3563,7 @@
     }
 
     const head = elt('div', 'display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;cursor:move;user-select:none;');
-    head.appendChild(elt('div', 'font-weight:800;font-size:12px;color:' + ACC + ';letter-spacing:.3px;', '⠿ Пинги и теги'));
+    head.appendChild(elt('div', 'font-weight:800;font-size:11.5px;color:' + ACC + ';letter-spacing:.1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;', '⠿ Здесь могла бы быть ваша реклама 😎'));
     const x = elt('span', 'cursor:pointer;color:#9CA3AF;font-size:15px;line-height:1;', '✕');
     x.onclick = togglePanel;
     head.appendChild(x);
@@ -4514,8 +4514,8 @@
      (POST /admin/users/<uid>/create_course_diploma, course_id=<id>). Прогресс → 100%.
      Скорость: страница юзера в админке ~1.3 МБ (19к курсов в выпадашке), поэтому токен
      берём с лёгкой /careers (9 КБ), названия курсов — с /admin/courses/<id> (параллельно),
-     POST шлём без ожидания редиректа (redirect:manual), а сверку с журналом делаем ОДНИМ
-     фоновым запросом уже после — куратор не ждёт. */
+     POST шлём без ожидания редиректа (redirect:manual) и все сразу (Promise.all).
+     Сверку с журналом убрали (v0.76.4): POST надёжен, а лишний запрос тормозил и путал. */
 
   // Из текста достаём ID курсов: и из ссылок /ru/courses/<id>, и голые числа (по одному в строке).
   function parseCourseIds(text) {
@@ -4577,35 +4577,6 @@
       const m = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
       return m ? m[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim() : '';
     }).catch(function () { return ''; });
-  }
-
-  // Перепроверка: подтянулись ли курсы. GET страницы юзера один раз → ищем в журнале
-  // «course_completed <название курса> <сегодня>». Возвращает {id: true|false} или null.
-  function gmGetBig(url) {
-    return new Promise(function (resolve, reject) {
-      GM_xmlhttpRequest({
-        method: 'GET', url: url, timeout: 40000,
-        headers: { 'X-Requested-With': 'XMLHttpRequest' },
-        onload: function (res) { (res.status === 200) ? resolve(res.responseText || '') : reject(new Error('код ' + res.status)); },
-        onerror: function () { reject(new Error('сеть')); },
-        ontimeout: function () { reject(new Error('таймаут')); }
-      });
-    });
-  }
-  async function verifyCompleted(uid, ids, names) {
-    let html = '';
-    try { html = await gmGetBig(EDU_ADMIN + '/admin/users/' + uid + '?language=ru'); }
-    catch (e) { return null; }
-    if (looksLikeAdminLogin(html)) return null;
-    const norm = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
-    // Дату НЕ сверяем: журнал админки в своей таймзоне (UTC), у браузера — местная, на границе
-    // суток строки не совпадали. Курс числится завершённым в журнале — значит прогресс подтянут.
-    const out = {};
-    ids.forEach(function (id) {
-      const n = names[id];
-      out[id] = !!n && norm.indexOf('course_completed ' + n) !== -1;
-    });
-    return out;
   }
 
   // uid обучающегося в админке Эдюсон (из поля АДМИНКА карточки; через супер-юзер — по email/тел).
@@ -4705,25 +4676,15 @@
           function afterBatch() {
             const sent = chosen.filter(function (id) { return state[id] === 'sent'; });
             const errN = chosen.length - sent.length;
-            go.textContent = errN ? ('Отправлено: ' + sent.length + ', ошибок ' + errN) : ('Отправлено: ' + sent.length);
-            go.style.background = errN ? '#B45309' : '#16A34A';
+            go.textContent = errN ? ('Готово: ' + sent.length + ', ошибок ' + errN) : ('Готово: ' + sent.length);
+            go.style.background = errN ? '#B45309' : '#0284C7';
             go.style.pointerEvents = ''; go.style.opacity = '';
             running = false;
-            toast(errN ? ('Отправлено ' + sent.length + ', ошибок ' + errN) : ('Отправлено курсов: ' + sent.length));
-            if (!sent.length) return;
-            // фоновая сверка с журналом админки — куратор не ждёт
-            const chk = elt('div', 'margin-top:6px;font-size:10.5px;color:#9CA3AF;font-weight:700;', '⏳ сверяю с журналом админки (можно не ждать)…');
-            log.appendChild(chk);
-            verifyCompleted(uid, sent, names).then(function (res) {
-              if (!res) { chk.textContent = '⚠️ журнал сверить не смогла — глянь у студента (скорее всего готово)'; chk.style.color = '#B45309'; return; }
-              let conf = 0, miss = 0;
-              sent.forEach(function (id) {
-                if (res[id]) { setLine(id, '✓ ' + id + nm(id) + ' — завершён (проверено)', '#16A34A'); conf++; }
-                else { setLine(id, '⚠️ ' + id + nm(id) + ' — отправлено, в журнале не вижу — проверь', '#B45309'); miss++; }
-              });
-              chk.textContent = miss ? ('Сверка: подтверждено ' + conf + ', проверь ' + miss) : ('Сверка: всё подтверждено');
-              chk.style.color = miss ? '#B45309' : '#16A34A';
-            });
+            toast(errN ? ('Готово ' + sent.length + ', ошибок ' + errN) : ('Завершено курсов: ' + sent.length));
+            if (sent.length) {
+              log.appendChild(elt('div', 'margin-top:6px;font-size:10.5px;color:#6B7280;font-weight:700;line-height:1.5;',
+                'Запрос ушёл в админку. Прогресс у студента обновляется за пару минут — если не подтянулось, пусть обновит страницу.'));
+            }
           }
         };
       }).catch(function (e) {
