@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.30.0
+// @version      1.31.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -1085,7 +1085,8 @@
       const post = !!(p && p >= CUTOFF_DATE);
       const needSum = sumMissing();
 
-      dateWarn.textContent = (p && c && c <= p) ? '⚠️ Дата заявки должна быть ПОЗЖЕ даты выдачи доступа.' : '';
+      // Возврат в день покупки — нормально (c == p); ругаемся только если заявка РАНЬШЕ выдачи доступа.
+      dateWarn.textContent = (p && c && c < p) ? '⚠️ Дата заявки раньше даты выдачи доступа — проверь даты.' : '';
       // поле «Согласованная сумма» видно только при результате «Возврат»
       if (sumWrap) sumWrap.style.display = (T.result === 'Возврат') ? 'block' : 'none';
       if (negBox) {
@@ -1750,7 +1751,7 @@
   }
 
   if (location.hostname.endsWith('omnidesk.ru')) {
-    console.log(TAG, 'запущен, версия ' + '1.30.0');
+    console.log(TAG, 'запущен, версия ' + '1.31.0');
     removeLauncher();
     ensureMenuItem();
     setInterval(function () { removeLauncher(); ensureMenuItem(); }, 2000);
