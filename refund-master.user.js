@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.24.0
+// @version      1.25.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -856,16 +856,16 @@
     /* ---- вспомогалки буфера ---- */
     const clean = v => String(v || '').replace(/\t|\n/g, ' ').trim();
     const num = v => clean(v).replace(/\s/g, '').replace('.', ',');
-    // Сумма возврата. Куратор ЯВНО выбирает: число ИЛИ «по оферте» (кнопкой/текстом).
-    // Просто пустое поле при результате «Возврат» — ошибка (guardSum блокирует копирование).
-    const isOffer = () => /^\s*по\s*оферте\s*$/i.test(String(T.agreedSum || ''));
-    const agreedRaw = () => (isOffer() ? '' : num(T.agreedSum));
-    // Для таблицы (столбец O): «0» при «Остаётся», число, «по оферте», иначе пусто.
-    const agreed = () => T.result === 'Остается' ? '0' : (isOffer() ? 'по оферте' : agreedRaw());
-    // Для сообщений и Асаны: «15000 ₽» / «По оферте» / «0».
+    // Сумма возврата — ВСЕГДА конкретное число, не равное нулю. «По оферте» суммой не считается.
+    // Пустое (или не число) поле при результате «Возврат» — ошибка (guardSum блокирует копирование).
+    const agreedRaw = () => num(T.agreedSum);
+    // Число суммы для проверок: NaN, если вписано не число.
+    const agreedNum = () => { const n = parseFloat(agreedRaw().replace(',', '.')); return isFinite(n) ? n : NaN; };
+    // Для таблицы (столбец O): «0» при «Остаётся», иначе число.
+    const agreed = () => T.result === 'Остается' ? '0' : agreedRaw();
+    // Для сообщений и Асаны: «15000 ₽» / «0».
     const agreedTxt = () => {
       if (T.result === 'Остается') return '0';
-      if (isOffer()) return 'По оферте';
       const a = agreedRaw();
       return a ? a + ' ₽' : '';
     };
@@ -916,8 +916,8 @@
     let sumWrap = null, errBox = null;
     const dateWarn = el('div', S.warn);
     const show = (elm, v) => { if (elm) elm.style.display = v ? 'block' : 'none'; };
-    // При результате «Возврат» сумма обязательна: либо число, либо явно «по оферте».
-    const sumMissing = () => T.result === 'Возврат' && !isOffer() && !agreedRaw();
+    // При результате «Возврат» сумма обязательна: конкретное число больше нуля.
+    const sumMissing = () => T.result === 'Возврат' && !(agreedNum() > 0);
     const updateScenario = () => {
       const p = parseRu(T.accessDate), c = parseRu(T.claimDate);
       const known = !!p;
@@ -1212,22 +1212,16 @@
     sumInput.addEventListener('input', () => { T.agreedSum = sumInput.value; saveCase(); updateScenario(); });
     inputs.agreedSum = sumInput;
     sumWrap.appendChild(sumInput);
-    const offerRow = el('div', 'display:flex;gap:7px;align-items:center;margin-top:6px;');
-    offerRow.appendChild(el('span', 'font-size:9.5px;color:#6B7280;font-weight:600;line-height:1.3;', 'Фиксированной суммы нет?'));
-    const offerBtn = el('button', 'background:#E0F2FE;border:1px solid #BAE6FD;color:#075985;border-radius:999px;padding:3px 11px;font-size:10px;font-weight:800;cursor:pointer;font-family:inherit;flex:0 0 auto;', 'по оферте');
-    offerBtn.onclick = () => { T.agreedSum = 'по оферте'; sumInput.value = 'по оферте'; saveCase(); updateScenario(); };
-    offerRow.appendChild(offerBtn);
-    sumWrap.appendChild(offerRow);
-    sumWrap.appendChild(el('div', 'font-size:9.5px;color:#6B7280;margin-top:4px;line-height:1.4;', 'Впиши число, либо нажми «по оферте». Пустым при «Возврате» оставлять нельзя.'));
+    sumWrap.appendChild(el('div', 'font-size:9.5px;color:#6B7280;margin-top:4px;line-height:1.4;', 'Впиши конкретную сумму (число больше нуля). Пустым при «Возврате» оставлять нельзя.'));
     negBox.appendChild(sumWrap);
 
     errBox = el('div', S.err + 'display:none;');
     colR.appendChild(errBox);
-    // При результате «Возврат» без суммы/«по оферте» — не даём копировать сообщения продакту и карточку Асаны.
+    // При результате «Возврат» без конкретной суммы — не даём копировать сообщения продакту и карточку Асаны.
     const guardSum = () => {
       if (!sumMissing()) { if (errBox) errBox.style.display = 'none'; return true; }
       if (errBox) {
-        errBox.textContent = '⚠️ Заполни «Сумму возврата»: впиши число или нажми «по оферте». Без этого сообщение продакту и карточку Асаны скопировать нельзя.';
+        errBox.textContent = '⚠️ Впиши «Сумму возврата» — конкретное число больше нуля. Без этого сообщение продакту и карточку Асаны скопировать нельзя.';
         errBox.style.display = 'block';
       }
       updateScenario();
@@ -1272,7 +1266,7 @@
         '6) Причина:',
         Q(clean(T.clientComment) || B('вставь текст клиента')),
         '7) ' + B('комментарий куратора — впиши'),
-        '8) Согласованная сумма: ' + agreedTxt() + ' FYI',
+        '8) По оферте: ' + agreedTxt() + ' FYI',
       ];
       copyMsg(lines.join('\n'), 'Сообщение для ТГ в буфере ✓ Жирным — что дописать.');
     };
@@ -1517,7 +1511,7 @@
   }
 
   if (location.hostname.endsWith('omnidesk.ru')) {
-    console.log(TAG, 'запущен, версия ' + '1.24.0');
+    console.log(TAG, 'запущен, версия ' + '1.25.0');
     removeLauncher();
     ensureMenuItem();
     setInterval(function () { removeLauncher(); ensureMenuItem(); }, 2000);
