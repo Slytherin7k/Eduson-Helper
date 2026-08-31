@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.78.0
+// @version      0.79.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.78.0';
+  const VER = '0.79.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3056,7 +3056,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.78.0'; // синхр. с Хэлпером
+  const VER = '0.79.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4518,9 +4518,11 @@
      обращения — тем же запросом, что кнопка «Завершить курс» в админке
      (POST /admin/users/<uid>/create_course_diploma, course_id=<id>).
      «Гибрид»: 3 кнопки на частые типы (🎁 анкета-подарок · 💼 «Работа мечты» · 📊 презентации)
-     + поиск по библиотеке (снизу — курсы не из кнопок, потом из кнопок). Внизу — запасное
-     поле «вставить ссылку/ID». Студент/токен — resolveStudentUid + fetchAdminMeta (лёгкие).
-     Библиотека COURSE_LIB — из выгрузки Натальи (2 мес жалоб), дополняется строками.
+     + поиск. Раскрытый список = ТОЛЬКО курсы из COURSE_LIB (выгрузка Натальи), по частоте
+     обращений, «избранное» за кнопками — в конец. При вводе поиск дополнительно находит курс,
+     которого НЕТ в списке, — по верхнеуровневым курсам ВЫБРАННОЙ программы студента (селектор
+     программ; по умолчанию — программа из графы «Курс» карточки; в супере бывает несколько).
+     Внизу — запасное поле «вставить ссылку/ID». Студент/токен — resolveStudentUid + fetchAdminMeta.
      🎁 разрешается: список курсов студента из прогретой вкладки «Урок» (lessonCache) →
      курс с «Заполните анкету»; иначе домен из lessonCache → GIFT_MAP по программе. */
 
@@ -4684,6 +4686,19 @@
     return userIds[0];
   }
 
+  // Список верхнеуровневых курсов конкретной программы студента (страница плана → [{id,name}]).
+  // Кэш по URL плана — переключение программы во вкладке «Прогресс_80» не качает одно и то же дважды.
+  const _planLessons = {};
+  function lessonsForPlan(planUrl) {
+    if (_planLessons[planUrl]) return Promise.resolve(_planLessons[planUrl]);
+    return gmText(planUrl).then(function (html) {
+      if (looksLikeAdminLogin(html)) throw new Error('NOAUTH');
+      const ls = lessonsFromPlan(html);
+      _planLessons[planUrl] = ls;
+      return ls;
+    });
+  }
+
   function renderProgress80(body) {
     body.appendChild(elt('div', 'font-weight:800;font-size:13px;margin-bottom:4px;', 'Подтянуть прогресс по урокам'));
     body.appendChild(elt('div', 'font-size:10px;color:#6B7280;font-weight:600;line-height:1.45;margin-bottom:6px;',
@@ -4768,39 +4783,69 @@
       box.appendChild(mkQ('📊', 'Презентации', '5', function () { blockView('present', 'Презентации'); }));
       main.appendChild(box);
 
-      // поиск — по библиотеке И по реальным курсам студента (те же данные, что вкладка «Урок»)
-      main.appendChild(elt('div', S.or, '…или найди курс (с экрана или из программы студента):'));
-      const search = elt('input', inputCss + 'padding:7px 10px;');
-      search.type = 'search'; search.placeholder = 'название курса с экрана…';
-      const list = elt('div', S.list);
-      main.appendChild(search); main.appendChild(list);
-
       // библиотека: дедуп по id; курсы за кнопками (career/present) — всегда в конце («избранное»)
       const btnCat = { career: 1, present: 1 };
       const seen = {};
       const lib = COURSE_LIB.filter(function (x) { if (seen[x.id]) return false; seen[x.id] = 1; return true; })
         .map(function (x) { return { id: x.id, n: x.n, f: x.f || 0, inBtn: !!btnCat[x.c] }; });
 
-      // реальные курсы студента с платформы — подтягиваем в фоне (обычно уже прогреты)
+      // выбор программы студента: по умолчанию — та, что в графе «Курс» карточки; можно
+      // переключить (в супер-юзере бывает несколько). Поиск «нет в списке» идёт по выбранной.
+      const planWrap = elt('div', 'margin:9px 0 2px;');
+      main.appendChild(planWrap);
+
+      // поиск — список = только курсы Натальи; при вводе находит и курс НЕ из списка
+      // (по верхнеуровневым курсам ВЫБРАННОЙ программы студента — как вкладка «Урок»).
+      main.appendChild(elt('div', S.or, '…или найди курс по названию с экрана студента:'));
+      const search = elt('input', inputCss + 'padding:7px 10px;');
+      search.type = 'search'; search.placeholder = 'название курса с экрана…';
+      const list = elt('div', S.list);
+      main.appendChild(search); main.appendChild(list);
+
+      // курсы ВЫБРАННОЙ программы (источник для совпадений «нет в списке»); в сам список не идут
       let stuCourses = [];
-      const stuHas = {};
-      loadLessons().then(function (d) {
-        (d.lessons || []).forEach(function (l) { stuHas[l.id] = 1; });
-        stuCourses = (d.lessons || []).filter(function (l) { return !seen[l.id]; })
-          .map(function (l) { return { id: l.id, n: l.name, f: 0, inBtn: false, stu: true }; });
+      const setStuFromPlan = function (planUrl) {
+        const ls = _planLessons[planUrl] || [];
+        stuCourses = ls.filter(function (l) { return !seen[l.id]; })
+          .map(function (l) { return { id: l.id, n: l.name, stu: true }; });
         drawList();
+      };
+      loadLessons().then(function (d) {
+        const plans = d.plans || [];
+        const curUrl = d.planKey || (plans[0] && plans[0].url) || '';
+        if (curUrl && !_planLessons[curUrl]) _planLessons[curUrl] = d.lessons || [];
+        setStuFromPlan(curUrl);
+        if (plans.length > 1) {
+          planWrap.appendChild(elt('div', fieldLabel, 'Программа студента (для поиска курса не из списка)'));
+          const sel = elt('select', inputCss + 'padding:6px 8px;');
+          plans.forEach(function (p) {
+            const o = elt('option', '', p.name); o.value = p.url;
+            if (p.url === curUrl) o.selected = true;
+            sel.appendChild(o);
+          });
+          const selNote = elt('div', 'font-size:9.5px;color:#9CA3AF;font-weight:700;margin-top:2px;', '');
+          sel.onchange = function () {
+            const u2 = sel.value;
+            if (_planLessons[u2]) { setStuFromPlan(u2); selNote.textContent = ''; return; }
+            selNote.textContent = 'загружаю курсы программы…';
+            lessonsForPlan(u2).then(function () { selNote.textContent = ''; setStuFromPlan(u2); })
+              .catch(function () { selNote.textContent = 'не вышло загрузить эту программу'; });
+          };
+          planWrap.appendChild(sel); planWrap.appendChild(selNote);
+        } else if (d.planName) {
+          planWrap.appendChild(elt('div', 'font-size:9.5px;color:#9CA3AF;font-weight:700;', 'Программа студента: ' + d.planName));
+        }
       }).catch(function () {});
 
-      // порядок в раскрытом списке: 0 — курсы самого студента, 1 — прочая библиотека (по частоте
-      // запросов), 2 — «избранное» за кнопками. Внутри группы — по частоте, затем по алфавиту.
-      const rank = function (x) { return x.inBtn ? 2 : (x.stu || stuHas[x.id]) ? 0 : 1; };
+      // порядок в списке: обычные курсы по частоте запросов, «избранное» за кнопками — в конец.
+      const rank = function (x) { return x.inBtn ? 2 : 1; };
       const sortRows = function (arr) {
-        return arr.slice().sort(function (a, b) { return rank(a) - rank(b) || (b.f - a.f) || a.n.localeCompare(b.n); });
+        return arr.slice().sort(function (a, b) { return rank(a) - rank(b) || ((b.f || 0) - (a.f || 0)) || a.n.localeCompare(b.n); });
       };
 
       const courseRow = function (x) {
         const r = elt('div', S.row);
-        if (x.stu || stuHas[x.id]) { const b = elt('span', 'float:right;font-size:8.5px;font-weight:800;color:#1D4ED8;background:#E7EEFE;border-radius:5px;padding:1px 5px;', 'у студента'); r.appendChild(b); }
+        if (x.stu) { const b = elt('span', 'float:right;font-size:8.5px;font-weight:800;color:#1D4ED8;background:#E7EEFE;border-radius:5px;padding:1px 5px;', 'нет в списке'); r.appendChild(b); }
         else if (x.f >= 2) { const b = elt('span', 'float:right;font-size:8.5px;font-weight:800;color:#15803D;background:#E9F6EE;border-radius:5px;padding:1px 5px;', 'частый'); r.appendChild(b); }
         r.appendChild(document.createTextNode(x.n));
         r.appendChild(elt('div', 'font-size:9.5px;color:#6B7280;font-weight:600;', x.id === '__gift' ? 'найду нужный' : String(x.id)));
@@ -4818,13 +4863,18 @@
 
       const drawList = function () {
         const q = docNorm(search.value.trim());
-        const pool = lib.concat(stuCourses);
         let rows;
-        if (!q) rows = sortRows(pool);
-        else {
+        if (!q) {
+          rows = sortRows(lib);                       // раскрытый список — ТОЛЬКО курсы из списка Натальи
+        } else {
           const w = q.split(/\s+/).filter(Boolean);
           const m = function (name) { const h = docNorm(name); return w.every(function (t) { return h.indexOf(t) !== -1; }); };
-          rows = sortRows(pool.filter(function (x) { return m(x.n); }));
+          const libHit = sortRows(lib.filter(function (x) { return m(x.n); }));
+          const inLib = {}; libHit.forEach(function (x) { inLib[x.id] = 1; });
+          // курс, которого НЕТ в списке — из выбранной программы студента
+          const stuHit = stuCourses.filter(function (x) { return !inLib[x.id] && m(x.n); })
+            .sort(function (a, b) { return a.n.localeCompare(b.n); });
+          rows = libHit.concat(stuHit);
           if (m(GIFT_NAME)) rows.unshift({ id: '__gift', n: GIFT_NAME, f: 1 });
         }
         list.innerHTML = '';
