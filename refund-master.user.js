@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.21.0
+// @version      1.22.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -119,44 +119,66 @@
   }
 
   /* ---------- поиск свободной строки в гугл-таблице возвратов ---------- */
+  //
+  // Лист возвратов грязный: сверху ~сотни старых разрозненных строк, ВНИЗУ —
+  // плотный блок актуальных заявок (куда Наталья дописывает новую строку),
+  // иногда ещё 1–2 «улетевшие» строки далеко под блоком. Обычная выгрузка CSV
+  // для .xlsx не работает и схлопывает пустые строки (теряются номера), поэтому
+  // считаем через gviz-агрегат `count(A)` по диапазонам A{r}:A{конец}:
+  // f(r) = сколько заполненных ячеек столбца A, начиная со строки r (не растёт с ростом r).
+  // По сетке ищем участок, где f резко падает (там кончается плотный блок),
+  // и двоичным поиском внутри участка находим последнюю заполненную строку.
 
-  // Простой разбор CSV (кавычки, запятые, переводы строк, экранированные "").
-  function parseCsvRows(s) {
-    s = String(s || '');
-    if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1); // срезаем BOM, если есть
-    const rows = []; let row = [], f = '', q = false;
-    for (let i = 0; i < s.length; i++) {
-      const c = s[i];
-      if (q) {
-        if (c === '"') { if (s[i + 1] === '"') { f += '"'; i++; } else q = false; }
-        else f += c;
-      } else if (c === '"') { q = true; }
-      else if (c === ',') { row.push(f); f = ''; }
-      else if (c === '\n') { row.push(f); rows.push(row); row = []; f = ''; }
-      else if (c !== '\r') { f += c; }
-    }
-    if (f !== '' || row.length) { row.push(f); rows.push(row); }
-    return rows;
+  const SHEET_MAX_ROW = 100000;
+
+  function sheetQuery(extra) {
+    return gmFetchText(SHEET_CSV_URL + '&' + extra);
+  }
+  function looksLikeLoginPage(t) {
+    return /<!doctype|<html|<head|accounts\.google\.com/i.test(String(t).slice(0, 400));
+  }
+  function parseCount(t) {
+    if (/"status"\s*:\s*"error"/.test(t)) return 0; // invalid_range и т.п.
+    const m = String(t).replace(/\s+/g, ' ').match(/"?(\d+)"?\s*$/);
+    return m ? parseInt(m[1], 10) : 0;
+  }
+  // f(from): count(A) в строках from..SHEET_MAX_ROW. Ошибка/не-число → 0.
+  function countAfrom(from) {
+    return sheetQuery('tq=' + encodeURIComponent('select count(A)') + '&range=A' + from + ':A' + SHEET_MAX_ROW)
+      .then(parseCount).catch(() => 0);
   }
 
-  // Promise<{ next, lastData } | { error }>. Читает лист «База обращений» и
-  // ищет последнюю строку с человеческими данными. Столбцы F(5), M(12), Q(16) —
-  // формулы, протянутые ниже данных: их в расчёт не берём.
+  // Promise<{ next, lastData, total, strayBelow } | { error }>.
   function findNextFreeRow() {
-    const FORMULA_COLS = { 5: 1, 12: 1, 16: 1 };
-    return gmFetchText(SHEET_CSV_URL).then(txt => {
-      const head = String(txt).slice(0, 300).toLowerCase();
-      if (/<!doctype|<html|<head|accounts\.google\.com|sign in|войдите/.test(head)) {
-        return { error: 'нужен вход в Google в этом браузере' };
-      }
-      const rows = parseCsvRows(txt);
-      let last = 0;
-      for (let i = 0; i < rows.length; i++) {
-        const hasData = rows[i].some((v, idx) => !FORMULA_COLS[idx] && String(v || '').trim() !== '');
-        if (hasData) last = i + 1; // нумерация строк таблицы — с 1
-      }
-      if (last < 2) return { error: 'не разобрала данные таблицы' };
-      return { next: last + 1, lastData: last };
+    return sheetQuery('tq=' + encodeURIComponent('select count(A)')).then(probe => {
+      if (looksLikeLoginPage(probe)) return { error: 'нужен вход в Google в этом браузере' };
+      const total = parseCount(probe);
+      if (!total) return { error: 'таблица пустая или недоступна' };
+
+      const grid = [400, 1000, 1800, 2600, 3200, 3450, 3550, 3620, 3680, 3720, 3780, 3860, 3960];
+      return Promise.all(grid.map(countAfrom)).then(fv => {
+        grid.push(SHEET_MAX_ROW); fv.push(0);
+        // последний участок сетки с резким падением f (>=5) — конец плотного блока
+        let bi = -1;
+        for (let i = 0; i < grid.length - 1; i++) if (fv[i] - fv[i + 1] >= 5) bi = i;
+        if (bi === -1) for (let i = 0; i < grid.length - 1; i++) if (fv[i] - fv[i + 1] >= 1) bi = i;
+        let lo, hi, fHi;
+        if (bi === -1) { lo = 2; hi = grid[0]; fHi = fv[0]; }
+        else { lo = grid[bi]; hi = grid[bi + 1]; fHi = fv[bi + 1]; }
+
+        // двоичный поиск: наибольшая R в [lo, hi), где в строках R..hi-1 есть заполненная A
+        const step = (a, b, best) => {
+          if (a > b) return Promise.resolve(best);
+          const m = (a + b) >> 1;
+          return countAfrom(m).then(fm => (fm - fHi >= 1) ? step(m + 1, b, m) : step(a, m - 1, best));
+        };
+        return step(lo, hi - 1, lo - 1).then(lastRow => {
+          if (lastRow < 2) return { error: 'не разобрала структуру таблицы' };
+          return countAfrom(lastRow + 1).then(below => ({
+            next: lastRow + 1, lastData: lastRow, total: total, strayBelow: below,
+          }));
+        });
+      });
     }).catch(e => ({
       error: (e && e.message === 'NOAUTH') ? 'Google не пустил — нужен вход'
         : (e && e.message) || 'сеть или куки не пустили',
@@ -969,8 +991,12 @@
           rowNumInput.value = T.rowNumber;
           try { GM_setValue('rm_row', T.rowNumber); } catch (e) { /* ignore */ }
           saveCase(); updateRowLabels();
-          rowNote.style.color = '#15803D';
-          rowNote.textContent = '✓ Свободная строка — ' + r.next + ' (последняя заполненная: ' + r.lastData + '). Проверь глазами и, если надо, поправь.';
+          rowNote.style.color = r.strayBelow ? '#B45309' : '#15803D';
+          rowNote.textContent = (r.strayBelow ? '⚠️ ' : '✓ ') +
+            'Свободная строка — ' + r.next + ' (плотный блок заканчивается на ' + r.lastData + ').' +
+            (r.strayBelow
+              ? ' Но НИЖЕ блока есть ещё ' + r.strayBelow + ' заполнен. строк(и) — открой таблицу и глянь, не туда ли писать.'
+              : ' Всё равно проверь глазами.');
         } else {
           rowNote.style.color = '#B45309';
           rowNote.textContent = '⚠️ Не смогла прочитать таблицу (' + r.error + '). Впиши № строки руками.';
@@ -1340,7 +1366,7 @@
   }
 
   if (location.hostname.endsWith('omnidesk.ru')) {
-    console.log(TAG, 'запущен, версия ' + '1.21.0');
+    console.log(TAG, 'запущен, версия ' + '1.22.0');
     removeLauncher();
     ensureMenuItem();
     setInterval(function () { removeLauncher(); ensureMenuItem(); }, 2000);
