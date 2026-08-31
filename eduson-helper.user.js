@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.57.0
+// @version      0.58.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -111,7 +111,7 @@
 
   /* ================================================ */
 
-  const VER = '0.57.0';
+  const VER = '0.58.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -274,10 +274,34 @@
     return /(?:ович|евич|овна|евна|ична|инична|оглы|кызы|улы|уулу)\b/i.test(String(s || ''));
   }
   // Карточка юзера /admin/users/<id>: <h1> = «Фамилия Имя [Отчество]».
+  // Админка иногда дублирует слова: «Иванов Иванов Пётр Петрович Петрович» → чистим.
   function parseAdminUserName(html) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
-    const h1 = ((doc.querySelector('h1') || {}).textContent || '').replace(/\s+/g, ' ').trim();
+    let h1 = ((doc.querySelector('h1') || {}).textContent || '').replace(/\s+/g, ' ').trim();
+    h1 = h1.split(' ').filter(function (w, i, a) {
+      return w.toLowerCase() !== (a[i - 1] || '').toLowerCase();
+    }).join(' ');
     return adminNameLooksReal(h1) ? h1 : '';
+  }
+
+  // Набор слов ФИО (строчные, ё→е, латиница/кириллица, ≥2 букв). Для сравнения «тот же человек».
+  function nameWordSet(s) {
+    return new Set(String(s || '').toLowerCase().replace(/ё/g, 'е')
+      .split(/[^a-zа-я0-9]+/).filter(function (w) { return w.length >= 2 && /[a-zа-я]/.test(w); }));
+  }
+  // «Это тот же человек»: совпали минимум 2 слова ФИО (фамилия+имя), в любом порядке;
+  // либо у одного из имён всего одно слово и оно совпало.
+  function sameName(a, b) {
+    const A = nameWordSet(a), B = nameWordSet(b);
+    if (!A.size || !B.size) return false;
+    let common = 0;
+    A.forEach(function (w) { if (B.has(w)) common++; });
+    return common >= 2 || (common >= 1 && Math.min(A.size, B.size) === 1);
+  }
+  // Строка из списка /admin/users содержит нашу почту?
+  function rowHasEmail(text, emails) {
+    const t = String(text || '').toLowerCase();
+    return (emails || []).some(function (e) { return e && t.indexOf(String(e).toLowerCase()) !== -1; });
   }
   // Страница Super User: таблица Sub Users (колонки First Name / Last Name).
   // Строку выбираем по совпадению почты/телефона клиента, иначе первую с полным именем. → «Фамилия Имя».
@@ -575,65 +599,107 @@
     return null;
   }
 
-  // Возвращает { links:[{url,courses}], isSuper:bool, error: null|'NOAUTH'|'текст' }
+  // Возвращает { links:[{url,courses,name}], isSuper:bool, error, ambiguous:bool }
   // isSuper=true  → это Super User, links ведут на /admin/super_users/<N>, ставим галочку СУПЕРЮЗЕР
   // isSuper=false → Super User нет, links ведут на карточку(и) юзера /admin/users/<id>
+  //
+  // ВАЖНО (кейс 568-975223, Попова Анна): при B2B-сделке один amo_lead_id висит на ДЕСЯТКАХ
+  // юзеров (все участники обучения), у всех в трекинге один и тот же amo_contact_id покупателя.
+  // Поэтому: по общему ключу (lead) берём ТОЛЬКО строки, где ФИО/почта совпали с нашим клиентом;
+  // без совпадения по ФИО/почте — ничего не вставляем (лучше пусто, чем 20 чужих карточек).
   async function lookupAdminLinks(data) {
-    const keys = [];
-    if (data.amoLeadId) keys.push(String(data.amoLeadId));
-    if (data.cardAmoId && String(data.cardAmoId) !== String(data.amoLeadId)) keys.push(String(data.cardAmoId));
-    if (data.amoContactId) keys.push(String(data.amoContactId));
-    (data.emails || []).slice(0, 2).forEach(function (e) {
-      if (e && !/@eduson\.tv$/i.test(e)) keys.push(e);
-    });
+    const wantName = data.name || '';
+    const wantEmails = (data.emails || []).map(function (e) { return String(e).toLowerCase().trim(); })
+      .filter(function (e) { return e && !/@eduson\.tv$/i.test(e); });
+    const canVerify = !!(wantName || wantEmails.length);
+
+    // специфичные ключи (укажут на конкретного человека) — вперёд; общий lead — в конец
+    const specific = [];
+    if (data.amoContactId) specific.push(String(data.amoContactId));
+    wantEmails.slice(0, 2).forEach(function (e) { specific.push(e); });
+    const shared = [];
+    if (data.cardAmoId && String(data.cardAmoId) !== String(data.amoLeadId)) shared.push(String(data.cardAmoId));
+    if (data.amoLeadId) shared.push(String(data.amoLeadId));
+    const keys = specific.concat(shared);
     if (!keys.length) return { links: [], isSuper: false, error: null };
 
     let authError = false, lastErr = '';
 
-    // 1. Ищем карточки юзеров в /admin/users по каждому ключу (до первого попадания)
+    // 1. Ищем строки в /admin/users по каждому ключу (до первого попадания)
     const userRows = [];
-    for (const q of keys) {
+    for (let ki = 0; ki < keys.length; ki++) {
+      const q = keys[ki];
+      const isShared = ki >= specific.length;
+      let raw;
       try {
         const html = await gmFetchText(ADMIN_BASE + '/admin/users?language=ru&q=' + encodeURIComponent(q));
         if (adminLooksLikeLogin(html)) { authError = true; continue; }
-        const raw = parseUserRowsFromList(html);
-        let rows = raw.filter(function (r) { return r.text.indexOf(q) !== -1; });
-        if (!rows.length && raw.length && raw.length <= 5) rows = raw; // доверяем поиску админки
-        if (rows.length) {
-          rows.forEach(function (r) { if (!userRows.some(function (u) { return u.uid === r.uid; })) userRows.push(r); });
-          break;
+        raw = parseUserRowsFromList(html);
+      } catch (e) { if (e.message === 'NOAUTH') authError = true; else lastErr = e.message; continue; }
+      if (!raw.length) continue;
+
+      let rows;
+      if (isShared) {
+        // общий ключ: только совпавшие по ФИО/почте; без возможности проверить — пропускаем
+        if (!canVerify) continue;
+        rows = raw.filter(function (r) { return sameName(r.text, wantName) || rowHasEmail(r.text, wantEmails); });
+        if (!rows.length) continue;
+      } else {
+        rows = raw;
+        // специфичный ключ вернул подозрительно много — тоже сузим по ФИО/почте, если можем
+        if (canVerify && raw.length > 3) {
+          const strict = raw.filter(function (r) { return sameName(r.text, wantName) || rowHasEmail(r.text, wantEmails); });
+          if (strict.length) rows = strict;
         }
-      } catch (e) { if (e.message === 'NOAUTH') authError = true; else lastErr = e.message; }
+      }
+      rows.forEach(function (r) { if (!userRows.some(function (u) { return u.uid === r.uid; })) userRows.push(r); });
+      if (userRows.length) break;
     }
     if (!userRows.length) return { links: [], isSuper: false, error: authError ? 'NOAUTH' : (lastErr || null) };
 
-    // 2. Открываем карточки: собираем номера Super User либо (если нет) ссылки на карточки
-    const superIds = [];
-    const cardUrls = [];
-    for (const r of userRows.slice(0, 6)) {
+    // 2. Открываем карточки, ещё раз сверяем ФИО/почту по самой карточке, собираем Super User / ссылки
+    const superIds = [], cardUrls = [], nameByKey = {};
+    for (const r of userRows.slice(0, 10)) {
+      let card;
       try {
-        const card = await gmFetchText(userCardUrl(r.uid));
-        if (adminLooksLikeLogin(card)) { authError = true; continue; }
-        const suId = parseSuperUserIdFromUserCard(card);
-        if (suId) { if (superIds.indexOf(suId) === -1) superIds.push(suId); }
-        else { if (cardUrls.indexOf(userCardUrl(r.uid)) === -1) cardUrls.push(userCardUrl(r.uid)); }
-      } catch (e) { if (e.message === 'NOAUTH') authError = true; else lastErr = e.message; }
+        card = await gmFetchText(userCardUrl(r.uid));
+      } catch (e) { if (e.message === 'NOAUTH') authError = true; else lastErr = e.message; continue; }
+      if (adminLooksLikeLogin(card)) { authError = true; continue; }
+      if (canVerify) {
+        const cardName = parseAdminUserName(card);
+        const emailOk = wantEmails.some(function (e) { return card.toLowerCase().indexOf(e) !== -1; });
+        const nameOk = sameName(cardName || r.text, wantName);
+        if (!emailOk && !nameOk) continue; // не наш человек — мимо
+      }
+      const suId = parseSuperUserIdFromUserCard(card);
+      // имя для окошка выбора: h1 карточки, иначе — из строки списка (после id, до курса/трекинга)
+      const nm = parseAdminUserName(card) ||
+        (String(r.text || '').replace(/^\s*\d+\s*/, '').match(/^[А-ЯЁA-Z][А-ЯЁа-яёA-Za-z-]+(?:\s+[А-ЯЁA-Z][А-ЯЁа-яёA-Za-z-]+){0,2}/) || ['аккаунт'])[0];
+      if (suId) {
+        if (superIds.indexOf(suId) === -1) { superIds.push(suId); nameByKey['s' + suId] = nm; }
+      } else {
+        const u = userCardUrl(r.uid);
+        if (cardUrls.indexOf(u) === -1) { cardUrls.push(u); nameByKey[u] = nm; }
+      }
     }
 
     if (superIds.length) {
       const links = [];
-      for (const id of superIds.slice(0, 6)) {
+      for (const id of superIds.slice(0, 8)) {
         let courses = [];
         try {
           const page = await gmFetchText(superUserUrl(id));
           if (!adminLooksLikeLogin(page)) courses = parseSuperUserCourses(page);
         } catch (e) { /* название курса не критично */ }
-        links.push({ url: superUserUrl(id), courses: courses });
+        links.push({ url: superUserUrl(id), courses: courses, name: nameByKey['s' + id] || '' });
       }
-      return { links: links, isSuper: true, error: null };
+      return { links: links, isSuper: true, error: null, ambiguous: links.length > 1 };
     }
     if (cardUrls.length) {
-      return { links: cardUrls.map(function (u) { return { url: u, courses: [] }; }), isSuper: false, error: null };
+      return {
+        links: cardUrls.map(function (u) { return { url: u, courses: [], name: nameByKey[u] || '' }; }),
+        isSuper: false, error: null, ambiguous: cardUrls.length > 1,
+      };
     }
     return { links: [], isSuper: false, error: authError ? 'NOAUTH' : (lastErr || null) };
   }
@@ -675,15 +741,24 @@
     try { r = await getAdminLinks(data); }
     catch (e) { miss.push(RU.admin + ' — ошибка: ' + e.message); return; }
 
-    if (r.links.length) {
-      data.admin = r.links.map(function (l) { return l.url; });
+    let links = r.links || [];
+    // Несколько совпадений (у студента 2+ аккаунта / у разных людей одинаковое ФИО) —
+    // спрашиваем куратора, какие ссылки вписать (а не суём все).
+    if (links.length > 1) {
+      const chosen = await chooseAdminLinks(links, data.name || '');
+      links = chosen || [];
+      if (!links.length) { ok.push(RU.admin + ' — куратор выбрал не вписывать'); return; }
+    }
+
+    if (links.length) {
+      data.admin = links.map(function (l) { return l.url; });
       data.isSuper = !!r.isSuper;
-      const res = fillAdminField(r.links);
+      const res = fillAdminField(links);
       const kind = r.isSuper ? 'Super User' : 'карточка юзера, Super User нет';
-      const many = r.links.length > 1 ? ', ' + r.links.length + ' шт — все в буфере' : '';
+      const many = links.length > 1 ? ', ' + links.length + ' шт — все в буфере' : '';
       if (res.ok) ok.push(RU.admin + ' (' + kind + many + ')');
       else miss.push(RU.admin + ' — ' + res.why);
-      if (r.links.length > 1) {
+      if (links.length > 1) {
         try { GM_setClipboard(data.admin.join('\n')); } catch (e) {}
       }
       if (r.isSuper) {
@@ -696,7 +771,7 @@
     } else if (r.error) {
       miss.push(RU.admin + ' — ' + r.error);
     } else {
-      miss.push(RU.admin + ' — в админке студент не нашёлся');
+      miss.push(RU.admin + ' — по ФИО/почте студент в админке не нашёлся (впиши ссылку руками)');
     }
   }
 
@@ -865,8 +940,17 @@
     return new Promise(function (resolve) {
       const box = document.createElement('div');
       box.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:2147483647;background:#fff;border-radius:16px;box-shadow:0 12px 40px rgba(15,23,42,.35);padding:18px;max-width:460px;width:92%;font-family:' + HP_FONT + ';';
+      // ✕ — жёсткая отмена всего заполнения
+      const x = document.createElement('button');
+      x.textContent = '✕';
+      x.title = 'Отменить заполнение';
+      x.style.cssText = 'position:absolute;top:8px;right:10px;background:none;border:none;font-size:16px;line-height:1;color:#9CA3AF;cursor:pointer;padding:4px;font-family:inherit;';
+      x.onmouseenter = function () { x.style.color = '#EF4444'; };
+      x.onmouseleave = function () { x.style.color = '#9CA3AF'; };
+      x.onclick = function () { box.remove(); resolve('__CANCEL__'); };
+      box.appendChild(x);
       const title = document.createElement('div');
-      title.style.cssText = 'font-size:14px;font-weight:700;color:#111827;margin-bottom:4px;';
+      title.style.cssText = 'font-size:14px;font-weight:700;color:#111827;margin-bottom:4px;padding-right:18px;';
       title.textContent = 'У студента несколько оплаченных сделок 📚';
       const sub = document.createElement('div');
       sub.style.cssText = 'font-size:12px;color:#6B7280;margin-bottom:12px;';
@@ -890,6 +974,60 @@
       document.documentElement.appendChild(box);
     });
   }
+
+  // Выбор ссылок для поля «АДМИНКА»: когда после сверки по ФИО/почте осталось >1 совпадения
+  // (у студента может быть несколько аккаунтов; либо ФИО у разных людей совпало). Куратор
+  // отмечает галочками, какие вставлять. Возвращает массив выбранных links (может быть пустым).
+  function chooseAdminLinks(links, clientName) {
+    return new Promise(function (resolve) {
+      const box = document.createElement('div');
+      box.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:2147483647;background:#fff;border-radius:16px;box-shadow:0 12px 40px rgba(15,23,42,.35);padding:18px;max-width:460px;width:92%;font-family:' + HP_FONT + ';';
+      const title = document.createElement('div');
+      title.style.cssText = 'font-size:14px;font-weight:700;color:#111827;margin-bottom:4px;';
+      title.textContent = 'Несколько совпадений в админке 🖥';
+      const sub = document.createElement('div');
+      sub.style.cssText = 'font-size:12px;color:#6B7280;margin-bottom:12px;';
+      sub.textContent = 'Отметь, какие ссылки вписать в поле «АДМИНКА»' +
+        (clientName ? ' (клиент: ' + clientName + ')' : '') + '.';
+      box.appendChild(title);
+      box.appendChild(sub);
+
+      const cbs = [];
+      links.slice(0, 10).forEach(function (l) {
+        const row = document.createElement('label');
+        row.style.cssText = 'display:flex;gap:9px;align-items:flex-start;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:10px;padding:10px 12px;margin-bottom:8px;cursor:pointer;font-size:13px;color:#111827;';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox'; cb.checked = true;
+        cb.style.cssText = 'width:15px;height:15px;cursor:pointer;margin-top:1px;flex:0 0 auto;';
+        cbs.push({ cb: cb, link: l });
+        const txt = document.createElement('div');
+        const nm = String(l.name || 'аккаунт').replace(/[<>&]/g, '');
+        const crs = (l.courses && l.courses.length) ? l.courses.slice(0, 2).join(', ').replace(/[<>&]/g, '') : '';
+        txt.innerHTML = '<div style="font-weight:600;">' + nm + '</div>' +
+          (crs ? '<div style="font-size:11px;color:#6B7280;margin-top:2px;">📚 ' + crs + '</div>' : '') +
+          '<div style="font-size:10px;color:#9CA3AF;margin-top:2px;word-break:break-all;">' +
+          String(l.url).replace(/[<>&]/g, '').replace(/\?language=ru$/, '') + '</div>';
+        row.appendChild(cb); row.appendChild(txt);
+        box.appendChild(row);
+      });
+
+      const go = document.createElement('button');
+      go.style.cssText = 'display:block;width:100%;background:' + HP_ACC + ';border:none;color:#fff;border-radius:10px;padding:10px;cursor:pointer;font-size:13px;font-weight:700;font-family:inherit;margin-top:2px;';
+      go.textContent = 'Вставить отмеченные';
+      go.onclick = function () {
+        box.remove();
+        resolve(cbs.filter(function (x) { return x.cb.checked; }).map(function (x) { return x.link; }));
+      };
+      box.appendChild(go);
+      const skip = document.createElement('button');
+      skip.style.cssText = 'background:none;border:none;color:#0284C7;font-size:12px;cursor:pointer;padding:6px 4px 0;display:block;margin:2px auto 0;font-family:inherit;';
+      skip.textContent = 'Не вставлять ничего';
+      skip.onclick = function () { box.remove(); resolve([]); };
+      box.appendChild(skip);
+      document.documentElement.appendChild(box);
+    });
+  }
+
   async function courseFromNotes(leadId, api) {
     try {
       const res = await api('/api/v4/leads/' + leadId + '/notes?limit=250');
@@ -962,6 +1100,7 @@
     }
     let useLead = wonLeads[0];
     if (wonLeads.length > 1) useLead = await chooseDeal(wonLeads);
+    if (useLead === '__CANCEL__') throw new Error('CANCELLED');
     if (useLead) {
       data.amoLeadId = useLead.id || data.amoLeadId;
       await applyLeadToData(useLead, data, api, true);
@@ -1153,6 +1292,7 @@
         if (wonLeads.length > 1) {
           useLead = await chooseDeal(wonLeads);
         }
+        if (useLead === '__CANCEL__') throw new Error('CANCELLED');
         if (useLead) {
           d.amoLeadId = useLead.id || d.amoLeadId;
           await applyLeadToData(useLead, d, api, true);
@@ -2694,7 +2834,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.57.0'; // синхр. с Хэлпером
+  const VER = '0.58.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
