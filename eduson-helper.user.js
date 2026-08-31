@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.75.0
+// @version      0.76.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.75.0';
+  const VER = '0.76.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3051,7 +3051,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.75.0'; // синхр. с Хэлпером
+  const VER = '0.76.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3571,10 +3571,10 @@
     makePanelDraggable(p, head);
 
     // вкладки
-    const tabs = elt('div', 'display:flex;gap:6px;margin-bottom:8px;');
+    const tabs = elt('div', 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;');
     const body = elt('div', '');
     const mkTab = function (label, fn) {
-      const b = elt('div', 'flex:1;text-align:center;cursor:pointer;font-weight:800;font-size:11px;padding:6px 0;border-radius:999px;border:1.5px solid ' + ACC_BD + ';color:' + ACC + ';', label);
+      const b = elt('div', 'flex:1 1 28%;text-align:center;cursor:pointer;font-weight:800;font-size:11px;padding:6px 2px;border-radius:999px;border:1.5px solid ' + ACC_BD + ';color:' + ACC + ';white-space:nowrap;', label);
       b.onclick = function () {
         Array.from(tabs.children).forEach(function (t) { t.style.background = '#fff'; t.style.color = ACC; });
         b.style.background = ACC; b.style.color = '#fff';
@@ -3589,10 +3589,12 @@
     const tTag = mkTab('Теги', renderTags);
     const tDoc = mkTab('Документ', renderDoc);
     const tLesson = mkTab('Урок', renderLesson);
+    const tProg = mkTab('Прогресс_80', renderProgress80);
     tabs.appendChild(tPing);
     tabs.appendChild(tTag);
     tabs.appendChild(tDoc);
     tabs.appendChild(tLesson);
+    tabs.appendChild(tProg);
     p.appendChild(tabs);
     p.appendChild(body);
     tPing.onclick();
@@ -4503,6 +4505,193 @@
         ? 'Не пустило на www.eduson.tv. Открой админку в соседней вкладке, войди и открой панель заново.'
         : 'Не получилось: ' + ((e && e.message) || 'ошибка') + '.';
     });
+  }
+
+  /* ==================== ВКЛАДКА «ПРОГРЕСС_80» ====================
+     Клиент прошёл урок, а прогресс завис (обычно на ~80%). Куратор вставляет ссылки
+     на уроки — скрипт находит студента в админке (тот же путь, что логин-линк / «Урок»)
+     и по каждому курсу шлёт тот же запрос, что кнопка «Завершить курс»
+     (POST /admin/users/<uid>/create_course_diploma, course_id=<id>). Прогресс → 100%.
+     Скрипт НИЧЕГО не делает без явного подтверждения (2 клика). */
+
+  // Из текста достаём ID курсов: и из ссылок /ru/courses/<id>, и голые числа (по одному в строке).
+  function parseCourseIds(text) {
+    const out = [];
+    const push = function (id) { id = String(id || '').trim(); if (id && out.indexOf(id) === -1) out.push(id); };
+    let m, re = /\/courses\/(\d{1,7})/g;
+    while ((m = re.exec(text || ''))) push(m[1]);
+    // голое число — только если ВСЯ строка это число (чтобы не хватать «завис на 80%», prescription_id и пр.)
+    String(text || '').split(/\n+/).forEach(function (ln) {
+      const t = ln.trim();
+      if (/^\d{2,7}$/.test(t)) push(t);
+    });
+    return out;
+  }
+
+  // POST формы админки через GM (следует за редиректом, отдаёт HTML результата).
+  function gmPostForm(url, params) {
+    const data = Object.keys(params).map(function (k) {
+      return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
+    }).join('&');
+    return new Promise(function (resolve, reject) {
+      GM_xmlhttpRequest({
+        method: 'POST', url: url, timeout: 25000,
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+        data: data,
+        onload: function (res) {
+          if (res.status >= 200 && res.status < 400) resolve(res.responseText || '');
+          else if (res.status === 401 || res.status === 403) reject(new Error('NOAUTH'));
+          else reject(new Error('код ' + res.status));
+        },
+        onerror: function () { reject(new Error('сеть')); },
+        ontimeout: function () { reject(new Error('долго не отвечает')); }
+      });
+    });
+  }
+
+  // uid обучающегося в админке Эдюсон (из поля АДМИНКА карточки; через супер-юзер — по email/тел).
+  async function resolveStudentUid() {
+    const ids = adminUserSuperIds();
+    if (!ids.users.length && !ids.supers.length) throw new Error('в карточке нет ссылки на админку — нажми магнит 🧲');
+    const u = readUser();
+    let userIds = ids.users.slice();
+    for (let i = 0; i < ids.supers.length && !userIds.length; i++) {
+      const sHtml = await gmText(superUserUrl2(ids.supers[i]));
+      if (looksLikeAdminLogin(sHtml)) throw new Error('NOAUTH');
+      const uid = subUserUidFromSuper(sHtml, u.email, u.phone);
+      if (uid) userIds.push(uid);
+    }
+    if (!userIds.length) throw new Error('не нашла обучающегося в супере');
+    return userIds[0];
+  }
+
+  // HTML страницы /admin/users/<uid> → { token, names:{id:название}, studentName }
+  function parseAdminUserForComplete(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    let token = '';
+    const f = doc.querySelector('form[action*="create_course_diploma"]');
+    if (f) { const t = f.querySelector('input[name="authenticity_token"]'); if (t) token = t.value || ''; }
+    if (!token) { const meta = doc.querySelector('meta[name="csrf-token"]'); if (meta) token = meta.getAttribute('content') || ''; }
+    const names = {};
+    const sel = doc.querySelector('form[action*="create_course_diploma"] select[name="course[id]"]');
+    if (sel) sel.querySelectorAll('option').forEach(function (o) { if (o.value) names[o.value] = (o.textContent || '').trim(); });
+    const h1 = doc.querySelector('h1');
+    return { token: token, names: names, studentName: h1 ? h1.textContent.trim() : '' };
+  }
+
+  function renderProgress80(body) {
+    body.appendChild(elt('div', 'font-weight:800;font-size:13px;margin-bottom:4px;', 'Подтянуть прогресс по урокам'));
+    body.appendChild(elt('div', 'font-size:10.5px;color:#6B7280;font-weight:600;line-height:1.5;margin-bottom:6px;',
+      'Вставь ссылки на уроки (можно всё сообщение студента разом). Скрипт завершит эти курсы студенту в админке — прогресс станет 100%. Отправку подтверждаешь ты.'));
+
+    const ta = elt('textarea', inputCss + 'min-height:66px;resize:vertical;');
+    ta.placeholder = 'https://academy-….eduson.tv/ru/courses/14532?...\n…или просто ID, по одному в строке';
+    body.appendChild(ta);
+
+    const parseBtn = elt('div', 'margin-top:7px;text-align:center;cursor:pointer;font-weight:800;font-size:12px;padding:8px 0;border-radius:999px;background:' + ACC + ';color:#fff;', 'Разобрать');
+    body.appendChild(parseBtn);
+
+    const area = elt('div', 'margin-top:9px;');
+    body.appendChild(area);
+
+    parseBtn.onclick = function () {
+      const ids = parseCourseIds(ta.value);
+      area.innerHTML = '';
+      if (!ids.length) { area.appendChild(elt('div', 'font-size:11.5px;color:#B45309;font-weight:700;', 'Не нашла ни одной ссылки на курс или ID.')); return; }
+
+      const status = elt('div', 'font-size:11.5px;font-weight:700;color:#9CA3AF;', 'Ищу студента в админке…');
+      area.appendChild(status);
+      const bar = miniBar(); bar.osc(); area.appendChild(bar.el);
+
+      resolveStudentUid().then(function (uid) {
+        return gmText(EDU_ADMIN + '/admin/users/' + uid + '?language=ru').then(function (html) {
+          if (looksLikeAdminLogin(html)) throw new Error('NOAUTH');
+          return { uid: uid, info: parseAdminUserForComplete(html) };
+        });
+      }).then(function (r) {
+        bar.done(); setTimeout(function () { if (bar.el.parentNode) bar.el.remove(); }, 400);
+        status.style.display = 'none';
+        const info = r.info, uid = r.uid;
+        if (!info.token) { area.appendChild(elt('div', 'font-size:11.5px;color:#B45309;font-weight:700;', 'Не нашла токен на странице студента — обнови вкладку админки и попробуй снова.')); return; }
+
+        area.appendChild(elt('div', 'font-size:12.5px;font-weight:800;color:#111827;margin-bottom:1px;', 'Студент: ' + (info.studentName || readUser().name || '?')));
+        area.appendChild(elt('div', 'font-size:10px;color:#9CA3AF;font-weight:700;margin-bottom:7px;', 'ID ' + uid + ' · проверь, что это тот студент'));
+
+        const cbs = [];
+        ids.forEach(function (id) {
+          const known = info.names[id];
+          const row = elt('label', 'display:flex;gap:7px;align-items:flex-start;padding:6px 0;border-top:1px solid #F3F4F6;cursor:pointer;font-size:11.5px;font-weight:600;color:#111827;line-height:1.35;');
+          const cb = elt('input', 'margin-top:2px;flex:0 0 auto;'); cb.type = 'checkbox'; cb.checked = true; cb.dataset.id = id;
+          const txt = elt('div', 'flex:1;', id + ' — ' + (known || '⚠️ курса нет в списке админки, проверь ID'));
+          if (!known) txt.style.color = '#B45309';
+          row.appendChild(cb); row.appendChild(txt);
+          area.appendChild(row);
+          cbs.push(cb);
+        });
+
+        const go = elt('div', 'margin-top:11px;text-align:center;cursor:pointer;font-weight:800;font-size:12px;padding:9px 0;border-radius:999px;background:#16A34A;color:#fff;', 'Завершить отмеченные');
+        area.appendChild(go);
+        const log = elt('div', 'margin-top:8px;font-size:11px;font-weight:700;line-height:1.65;white-space:pre-wrap;');
+        area.appendChild(log);
+
+        let armed = false, running = false;
+        go.onclick = function () {
+          if (running) return;
+          const chosen = cbs.filter(function (c) { return c.checked; }).map(function (c) { return c.dataset.id; });
+          if (!chosen.length) { toast('Ничего не отмечено'); return; }
+          if (!armed) {
+            armed = true;
+            go.textContent = 'Точно завершить ' + chosen.length + '? нажми ещё раз';
+            go.style.background = '#B91C1C';
+            setTimeout(function () { if (armed && !running) { armed = false; go.textContent = 'Завершить отмеченные'; go.style.background = '#16A34A'; } }, 4500);
+            return;
+          }
+          armed = false; running = true;
+          go.style.pointerEvents = 'none'; go.style.opacity = '.55'; go.textContent = 'Завершаю…';
+          log.innerHTML = '';
+          let token = info.token, done = 0, fail = 0, i = 0;
+          (function next() {
+            if (i >= chosen.length) {
+              go.textContent = fail ? ('Готово: ' + done + ', ошибок ' + fail) : ('Готово: ' + done);
+              go.style.background = fail ? '#B45309' : '#0284C7';
+              go.style.pointerEvents = ''; go.style.opacity = '';
+              running = false;
+              toast(fail ? ('Завершено ' + done + ', ошибок ' + fail) : ('Завершено курсов: ' + done));
+              return;
+            }
+            const id = chosen[i++];
+            const line = elt('div', 'color:#6B7280;', '… ' + id + ' — отправляю');
+            log.appendChild(line);
+            gmPostForm(EDU_ADMIN + '/admin/users/' + uid + '/create_course_diploma?language=ru', {
+              authenticity_token: token, course_id: id, commit: 'Завершить курс'
+            }).then(function (html) {
+              const doc = new DOMParser().parseFromString(html, 'text/html');
+              const flash = doc.querySelector('.flash_div, [class*="flash"], .alert');
+              const msg = flash ? flash.textContent.replace(/\s+/g, ' ').trim() : '';
+              const ok = /создан|готов|заверш|success|диплом/i.test(msg) || (!msg && !looksLikeAdminLogin(html));
+              line.textContent = (ok ? '✓ ' : '✗ ') + id + ' — ' + (msg || (ok ? 'готово' : 'без ответа админки'));
+              line.style.color = ok ? '#16A34A' : '#B91C1C';
+              if (ok) done++; else fail++;
+              const nt = doc.querySelector('form[action*="create_course_diploma"] input[name="authenticity_token"]');
+              if (nt && nt.value) token = nt.value;
+              setTimeout(next, 500);
+            }).catch(function (e) {
+              line.textContent = '✗ ' + id + ' — ' + ((e && e.message) === 'NOAUTH' ? 'не пустило в админку' : ((e && e.message) || 'ошибка'));
+              line.style.color = '#B91C1C';
+              fail++;
+              setTimeout(next, 500);
+            });
+          })();
+        };
+      }).catch(function (e) {
+        bar.fail();
+        status.style.display = '';
+        status.style.color = '#B45309';
+        status.textContent = (e && e.message === 'NOAUTH')
+          ? 'Не пустило на www.eduson.tv. Открой админку в соседней вкладке, войди и попробуй снова.'
+          : 'Не получилось: ' + ((e && e.message) || 'ошибка') + '.';
+      });
+    };
   }
 
   /* ==================== КНОПКА В ШАПКЕ ==================== */
