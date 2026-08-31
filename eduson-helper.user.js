@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.61.0
+// @version      0.62.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -112,7 +112,7 @@
 
   /* ================================================ */
 
-  const VER = '0.61.0';
+  const VER = '0.62.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -2835,7 +2835,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.61.0'; // синхр. с Хэлпером
+  const VER = '0.62.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -2957,6 +2957,23 @@
     'Давид Багатурия': { tag: '@D_Bagaturia', dept: '',
       mops: [['Белеева Мария', '@maria_beleeva'], ['Фролова Екатерина', '@frol_katrin'], ['Лем Станислав', '@stan_lem'], ['Степанов Петр', '@PeterStepanov'], ['Михайлова Карина', '@karina_michailova'], ['Брудковски Александра', '@brudkovski'], ['Гагилев Дмитрий', '@Gagilev'], 'Вендин Максим', 'Золотарев Игорь'] }
   };
+
+  // МОП (в любом порядке слов) → { tag: личный ТГ, rg: тег руководителя }. Для автоподстановки в пинги.
+  const MOP_INDEX = (function () {
+    const norm = function (s) {
+      return String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^а-яa-z]+/g, ' ')
+        .trim().split(/\s+/).filter(Boolean).sort().join(' ');
+    };
+    const idx = {};
+    Object.keys(TEAMS).forEach(function (lead) {
+      const rg = TEAMS[lead].tag;
+      TEAMS[lead].mops.forEach(function (m) {
+        const nm = Array.isArray(m) ? m[0] : m;
+        idx[norm(nm)] = { name: nm, tag: (Array.isArray(m) && m[1]) || '', rg: rg };
+      });
+    });
+    return { get: function (name) { return idx[norm(name)] || null; } };
+  })();
 
   const DZ_DEFAULT = { name: 'Мария Старцева', tag: '@maria_startceva' };
   const DZ_REVIEWERS = [
@@ -3381,6 +3398,7 @@
           if (r.name) {
             mopInput.value = r.name;
             mopNote.textContent = r.sure ? 'из амо — кто продал сделку' : 'по данным амо — проверь, тот ли это МОП';
+            applyMopTag(r.name);
             recompute();
           } else if (r.err === 'NOAUTH') {
             mopNote.textContent = 'амо не пустило (' + deal + '). Открой eduson.amocrm.ru в соседней вкладке, войди, вернись и открой пинг заново. Если не помогает — впиши МОП сам.';
@@ -3429,6 +3447,22 @@
     const ta = elt('textarea', 'width:100%;min-height:150px;border:1px solid #D1D5DB;border-radius:10px;padding:8px 10px;font:500 12px/1.5 ' + FONT + ';color:#111827;resize:vertical;');
     body.appendChild(ta);
 
+    // Автоподстановка тега МОПа в поле «Тег» (для 'paymanual'). Не затираем то, что куратор уже вписал.
+    let mopTagBase = '';
+    function applyMopTag(name) {
+      if (ping.suggest !== 'paymanual' || !manualInput) return;
+      const mi = MOP_INDEX.get(name);
+      const t = mi ? (mi.tag || mi.rg) : '';
+      if (t && !manualInput.value.trim()) manualInput.value = t;
+      if (mopNote) {
+        if (!mopTagBase) mopTagBase = mopNote.textContent;
+        mopNote.textContent = mopTagBase + (
+          !mi ? ' · тег в справочнике не нашла — впиши сам'
+            : mi.tag ? ' · тег подставлен'
+            : ' · личного тега нет — тег РГ ' + mi.rg);
+      }
+    }
+
     function chosenTag() {
       if (!needTag) return '';
       if (tagSel && tagSel.value !== '__manual__') return tagSel.value;
@@ -3459,7 +3493,11 @@
       recompute();
     };
     if (manualInput) manualInput.oninput = recompute;
-    if (mopInput) mopInput.oninput = recompute;
+    if (mopInput) mopInput.oninput = function () {
+      // куратор поправил МОПа — подставим тег из справочника (если поле тега ещё пустое)
+      applyMopTag(mopInput.value.trim());
+      recompute();
+    };
     linkInput.oninput = recompute;
     ta.oninput = function () { lastHtml = ''; };
 

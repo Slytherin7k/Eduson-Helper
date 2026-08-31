@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.28.0
+// @version      1.29.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -75,6 +75,29 @@
 
   const F_VID_OPLATY = 1285563;   // «Вид оплаты B2C»
   const F_OPERATOR = 1623777;     // «Оператор Рассрочки»
+
+  // Команды продаж: тег РГ (руководителя) → его МОПы. Для автоподстановки в блок
+  // «Возврат ≤ 3 дней → РГ». Актуально на 31.08.2026. Имена МОПов — в любом порядке слов.
+  const RG_TEAMS = {
+    '@Mila_Otrokusha': ['Косарев Юрий', 'Перова Юлия', 'Лобков Артур', 'Бондаренко Андрей', 'Мартышкина Ольга', 'Пасхалиди Димитрий', 'Зинченко Алена'],
+    '@alexandrkulikof': ['Ильина Диана', 'Кухто Арина', 'Беспалов Евгений', 'Забродская Карина', 'Пухова Полина', 'Пруненко Татьяна'],
+    '@kondratev_av': ['Данилов Алексей', 'Руденко Оксана', 'Рассомакин Иван', 'Шапошникова Натали', 'Шевелева Ксения'],
+    '@marinachekhova': ['Жолобова Анастасия', 'Крестьянникова Александра', 'Гурулёва Дарья', 'Шарапова Анастасия', 'Соколова Анастасия', 'Иваненко Андрей'],
+    '@av_fomenko': ['Дубровина Ольга', 'Попова Анастасия', 'Красовский Антон', 'Гетманов Николай', 'Мишин Иван', 'Костюк Матвей', 'Иванов Алексей', 'Байраковский Кирилл'],
+    '@lvovskiy_vit': ['Кузнецова Екатерина', 'Шмаков Юрий', 'Зыбченко Анастасия', 'Сопилкина Наталья', 'Соловьева Светлана', 'Пилипенко Ольга', 'Уварова Ольга', 'Скакун Артур'],
+    '@az_anar': ['Константинова Екатерина', 'Тагиль Карина', 'Кузнецов Артур', 'Левченко Владислав', 'Пименова Виктория', 'Тихомирова Алина', 'Сычева Татьяна'],
+    '@kozhanov_eduson': ['Печинога Валерия', 'Шеханова Лилия', 'Негреева Диана', 'Агаджанян Валерия', 'Рагимов Максун', 'Тихомирова Мария'],
+    '@Klem_Den_lucky': ['Соколовский Александр', 'Виноградов Виктор', 'Рябова Эльвира', 'Шум Карина', 'Качегова Даяна', 'Яловегин Николай', 'Ильницкий Илларион', 'Гончарова Ирина', 'Денежкин Никита', 'Журавлева Евгения', 'Зинкевич Елизавета'],
+    '@Vladimir_Tolstov_m': ['Прохорова Василиса', 'Романова Людмила', 'Гусев Кирилл', 'Квон Екатерина', 'Сартакова Евгения', 'Умнова Виктория', 'Максимов Владислав', 'Папко Екатерина'],
+    '@D_Bagaturia': ['Белеева Мария', 'Фролова Екатерина', 'Лем Станислав', 'Степанов Петр', 'Михайлова Карина', 'Брудковски Александра', 'Гагилев Дмитрий', 'Вендин Максим', 'Золотарев Игорь'],
+  };
+  const rgByMop = (function () {
+    const norm = s => String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^а-яa-z]+/g, ' ')
+      .trim().split(/\s+/).filter(Boolean).sort().join(' ');
+    const idx = {};
+    Object.keys(RG_TEAMS).forEach(rg => RG_TEAMS[rg].forEach(n => { idx[norm(n)] = rg; }));
+    return name => idx[norm(name)] || '';
+  })();
 
   /* ================================================ */
 
@@ -1075,7 +1098,10 @@
       statusBox.style.color = '#374151';
       fetchDealExtras(d.id, d.course, seedEmail, seedPhone).then(x => {
         if (x.progress !== '') { T.progress = x.progress; if (inputs.progress) inputs.progress.value = x.progress; }
-        if (x.mop) { T.mop = x.mop; T.mopFromNote = x.mopFromNote; if (inputs.mop) inputs.mop.value = x.mop; }
+        if (x.mop) {
+          T.mop = x.mop; T.mopFromNote = x.mopFromNote; if (inputs.mop) inputs.mop.value = x.mop;
+          if (!clean(T.rgTag)) { const rg = rgByMop(x.mop); if (rg) { T.rgTag = rg; if (inputs.rgTag) inputs.rgTag.value = rg; } }
+        }
         saveCase(); renderAmoCard();
         statusBox.textContent = '✓ Курс: ' + (d.course || '?') +
           (x.progress !== '' ? ' · пройдено ' + x.progress + '%' : ' · % не нашёлся — впиши руками') +
@@ -1271,7 +1297,7 @@
     // 2) РГ — только при возврате ≤ 3 дней
     rgBlock = mkBlock(colR, 'Возврат ≤ 3 дней → передаём РГ', true);
     rgBlock.style.display = 'none';
-    mkField(rgBlock, 'rgTag', 'Тег РГ в ТГ (из закрытой таблицы)', 'man', { ph: '@kondratev_av', save: 'rm_rg' });
+    mkField(rgBlock, 'rgTag', 'Тег РГ в ТГ (подставится по МОПу, можно поправить)', 'man', { ph: '@kondratev_av', save: 'rm_rg' });
     const bRG = el('button', S.big, '📨 Сообщение РГ');
     bRG.onclick = () => {
       const lines = [
@@ -1414,6 +1440,11 @@
         setF('name', d.name); setF('course', d.course); setF('cluster', d.cluster);
         setF('payType', d.payType); setF('amount', d.amount); setF('mop', d.mop);
         if (d.purchaseDate) setF('accessDate', d.purchaseDate);
+        // Тег РГ — по МОПу (кто продал). Не затираем то, что куратор уже вписал.
+        if (d.mop && !clean(T.rgTag)) {
+          const rg = rgByMop(d.mop);
+          if (rg) { T.rgTag = rg; if (inputs.rgTag) inputs.rgTag.value = rg; }
+        }
         // «Пройдено, %» — «0» тоже валидно (setF его бы пропустил как falsy)
         if (d.progress !== '') { T.progress = d.progress; if (inputs.progress) inputs.progress.value = d.progress; saveCase(); }
         T.producer = d.producer || PRODUCERS[T.cluster] || '';
@@ -1553,7 +1584,7 @@
   }
 
   if (location.hostname.endsWith('omnidesk.ru')) {
-    console.log(TAG, 'запущен, версия ' + '1.28.0');
+    console.log(TAG, 'запущен, версия ' + '1.29.0');
     removeLauncher();
     ensureMenuItem();
     setInterval(function () { removeLauncher(); ensureMenuItem(); }, 2000);
