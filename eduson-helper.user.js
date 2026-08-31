@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.64.0
+// @version      0.65.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.64.0';
+  const VER = '0.65.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -2843,7 +2843,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.64.0'; // синхр. с Хэлпером
+  const VER = '0.65.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3021,13 +3021,13 @@
   //   {тег} {метка+ссылка} {моп} {цитата} {имя} {email} {телефон} — подставляются.
   const PINGS = [
     { id: 'question', title: 'Завис вопрос', suggest: 'leadcontent', linkKind: 'notion', linkLabel: 'Вопрос',
-      text: 'Привет, {тег}! Подвис вопрос от студента — посмотри, пожалуйста.\n{ссылка}' },
+      text: '{тег}\nПривет! Подвис вопрос от студента — посмотри, пожалуйста.\n{ссылка}' },
     { id: 'dz', title: 'Зависла проверка ДЗ', suggest: 'dz', linkKind: 'homework', linkLabel: 'Карточка ДЗ',
-      text: 'Привет, {тег}! Подвисла проверка ДЗ — посмотри, пожалуйста.\n{ссылка}' },
+      text: '{тег}\nПривет! Подвисла проверка ДЗ — посмотри, пожалуйста.\n{ссылка}' },
     { id: 'sending', title: 'Задержка отправки диплома', suggest: 'diploma', linkKind: 'asana', linkLabel: 'Задача в Асане',
-      text: 'Привет, {тег}! Подвисла отправка диплома, задержка уже большая — возьми, пожалуйста, в ближайшую очередь.\n{ссылка}' },
+      text: '{тег}\nПривет! Подвисла отправка диплома, задержка уже большая — возьми, пожалуйста, в ближайшую очередь.\n{ссылка}' },
     { id: 'payment', title: 'Вопрос по оплате / подарочному курсу', suggest: 'paymanual', linkKind: 'amo', linkLabel: 'Сделка',
-      text: 'Привет, {тег}! Студент написал в амо по оплате / подарочному курсу — свяжись с ним, пожалуйста.\n{ссылка}' },
+      text: '{тег}\nПривет! Студент написал в амо по оплате / подарочному курсу — свяжись с ним, пожалуйста.\n{ссылка}' },
     { id: 'lead', title: 'Новый лид', suggest: 'none', linkKind: 'amo', linkLabel: 'Сделка',
       text: '✳️ НОВЫЙ ЛИД ✳️\nВозьмите в работу, пожалуйста.\n\nСообщение клиента:\n«{цитата}»\n\n{имя}\n{email}\n{телефон}\n{ссылка}' }
   ];
@@ -3285,6 +3285,30 @@
     return e;
   }
 
+  // Панель можно таскать за шапку; позиция запоминается (curatorPanelPos).
+  function makePanelDraggable(box, handle) {
+    let sx, sy, ox, oy, drag = false;
+    handle.addEventListener('mousedown', function (e) {
+      if (e.target && e.target.tagName === 'SPAN') return; // крестик закрытия
+      drag = true;
+      const r = box.getBoundingClientRect();
+      sx = e.clientX; sy = e.clientY; ox = r.left; oy = r.top;
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', function (e) {
+      if (!drag) return;
+      let nx = ox + (e.clientX - sx), ny = oy + (e.clientY - sy);
+      nx = Math.max(4, Math.min(nx, window.innerWidth - 60));
+      ny = Math.max(4, Math.min(ny, window.innerHeight - 30));
+      box.style.left = nx + 'px'; box.style.top = ny + 'px'; box.style.right = 'auto';
+    });
+    document.addEventListener('mouseup', function () {
+      if (!drag) return;
+      drag = false;
+      try { GM_setValue('curatorPanelPos', JSON.stringify({ x: parseInt(box.style.left, 10), y: parseInt(box.style.top, 10) })); } catch (e) {}
+    });
+  }
+
   const PANEL_ID = 'curator-panel';
   function togglePanel() {
     let p = document.getElementById(PANEL_ID);
@@ -3294,20 +3318,31 @@
   }
 
   function buildPanel() {
-    const p = elt('div', 'position:fixed;z-index:2147483646;top:64px;right:18px;width:370px;max-height:80vh;overflow:auto;' +
-      'background:#fff;color:#1F2937;border:1px solid #E5E7EB;border-radius:16px;box-shadow:0 18px 48px rgba(15,23,42,.24);' +
-      'font-family:' + FONT + ';padding:12px 14px;');
+    const p = elt('div', 'position:fixed;z-index:2147483646;width:336px;max-height:82vh;overflow-x:hidden;overflow-y:auto;' +
+      'background:#fff;color:#1F2937;border:1px solid #E5E7EB;border-radius:14px;box-shadow:0 18px 48px rgba(15,23,42,.24);' +
+      'font-family:' + FONT + ';padding:9px 11px;');
     p.id = PANEL_ID;
 
-    const head = elt('div', 'display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;');
-    head.appendChild(elt('div', 'font-weight:800;font-size:12px;color:' + ACC + ';letter-spacing:.3px;', 'Пинги и теги'));
+    // позиция: запомненная или по умолчанию (правый верх)
+    let pos = null;
+    try { pos = JSON.parse(GM_getValue('curatorPanelPos') || 'null'); } catch (e) { pos = null; }
+    if (pos && isFinite(pos.x) && isFinite(pos.y)) {
+      p.style.left = Math.max(4, Math.min(pos.x, window.innerWidth - 60)) + 'px';
+      p.style.top = Math.max(4, Math.min(pos.y, window.innerHeight - 30)) + 'px';
+    } else {
+      p.style.right = '18px'; p.style.top = '64px';
+    }
+
+    const head = elt('div', 'display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;cursor:move;user-select:none;');
+    head.appendChild(elt('div', 'font-weight:800;font-size:12px;color:' + ACC + ';letter-spacing:.3px;', '⠿ Пинги и теги'));
     const x = elt('span', 'cursor:pointer;color:#9CA3AF;font-size:15px;line-height:1;', '✕');
     x.onclick = togglePanel;
     head.appendChild(x);
     p.appendChild(head);
+    makePanelDraggable(p, head);
 
     // вкладки
-    const tabs = elt('div', 'display:flex;gap:6px;margin-bottom:10px;');
+    const tabs = elt('div', 'display:flex;gap:6px;margin-bottom:8px;');
     const body = elt('div', '');
     const mkTab = function (label, fn) {
       const b = elt('div', 'flex:1;text-align:center;cursor:pointer;font-weight:800;font-size:11px;padding:6px 0;border-radius:999px;border:1.5px solid ' + ACC_BD + ';color:' + ACC + ';', label);
@@ -3343,7 +3378,7 @@
   }
 
   const fieldLabel = 'font-size:10px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:#9CA3AF;margin:10px 0 3px;';
-  const inputCss = 'width:100%;padding:7px 10px;border:1px solid #D1D5DB;border-radius:9px;font:600 12.5px ' + FONT + ';color:#111827;background:#fff;';
+  const inputCss = 'width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #D1D5DB;border-radius:9px;font:600 12.5px ' + FONT + ';color:#111827;background:#fff;';
 
   const LINK_META = {
     notion: { label: 'Ссылка на карточку Notion', ph: 'ссылка на карточку Notion' },
@@ -3424,9 +3459,17 @@
     }
 
     // --- Кому (выбор тега) ---
-    let tagSel = null, manualInput = null;
+    let tagSel = null, manualInput = null, respSel = null;
     const needTag = ping.suggest !== 'none';
     if (needTag) {
+      // Для «завис вопрос»: тег на лида контента идёт только когда ответственного нет.
+      if (ping.suggest === 'leadcontent') {
+        body.appendChild(elt('div', fieldLabel, 'Ответственный по вопросу'));
+        respSel = elt('select', inputCss);
+        respSel.appendChild(new Option('Нет ответственного — тег лида контента', 'lead'));
+        respSel.appendChild(new Option('Есть ответственный — впишу тег сам', 'own'));
+        body.appendChild(respSel);
+      }
       body.appendChild(elt('div', fieldLabel, ping.suggest === 'paymanual' ? 'Тег (впиши сам)' : 'Кому'));
       manualInput = elt('input', inputCss);
       manualInput.placeholder = '@тег';
@@ -3436,10 +3479,6 @@
         manualInput.style.cssText = inputCss + 'margin-top:5px;display:none;';
       }
       body.appendChild(manualInput);
-      if (ping.suggest === 'leadcontent') {
-        body.appendChild(elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;margin-top:3px;',
-          'Есть ответственный в карточке — впиши его. Нет — тег лида кластера (по умолчанию).'));
-      }
     }
 
     // --- Ссылка ---
@@ -3452,7 +3491,7 @@
 
     // --- Превью ---
     body.appendChild(elt('div', fieldLabel, 'Текст пинга'));
-    const ta = elt('textarea', 'width:100%;min-height:150px;border:1px solid #D1D5DB;border-radius:10px;padding:8px 10px;font:500 12px/1.5 ' + FONT + ';color:#111827;resize:vertical;');
+    const ta = elt('textarea', 'width:100%;box-sizing:border-box;min-height:150px;border:1px solid #D1D5DB;border-radius:10px;padding:8px 10px;font:500 12px/1.5 ' + FONT + ';color:#111827;resize:vertical;');
     body.appendChild(ta);
 
     // Автоподстановка тега МОПа в поле «Тег» (для 'paymanual'). Не затираем то, что куратор уже вписал.
@@ -3473,6 +3512,7 @@
 
     function chosenTag() {
       if (!needTag) return '';
+      if (respSel && respSel.value === 'own') return manualInput.value.trim();
       if (tagSel && tagSel.value !== '__manual__') return tagSel.value;
       return manualInput.value.trim();
     }
@@ -3487,17 +3527,26 @@
       const opts = suggestTags(ping, clusterSel ? clusterSel.value : null);
       if (!opts.length) tagSel.appendChild(new Option(ping.suggest === 'leadcontent' ? '— сначала выбери кластер —' : '—', ''));
       opts.forEach(function (o) { tagSel.appendChild(new Option(o.label + '  ·  ' + o.tag, o.tag)); });
-      tagSel.appendChild(new Option(ping.suggest === 'leadcontent'
-        ? '— в карточке есть ответственный, впишу сам —' : '— вписать тег вручную —', '__manual__'));
+      if (!respSel) tagSel.appendChild(new Option('— вписать тег вручную —', '__manual__'));
       tagSel.value = opts.length ? opts[0].tag : '';
-      manualInput.style.display = 'none';
+      if (!respSel) manualInput.style.display = 'none';
+    }
+    // «есть / нет ответственного» — переключает выбор лида контента ↔ ручной тег.
+    function applyResp() {
+      if (!respSel) return;
+      const own = respSel.value === 'own';
+      if (tagSel) tagSel.style.display = own ? 'none' : 'block';
+      manualInput.style.display = own ? 'block' : 'none';
+      recompute();
     }
     fillTagSel();
+    applyResp();
     recompute();
 
+    if (respSel) respSel.onchange = applyResp;
     if (clusterSel) clusterSel.onchange = function () { fillTagSel(); recompute(); };
     if (tagSel) tagSel.onchange = function () {
-      manualInput.style.display = tagSel.value === '__manual__' ? 'block' : 'none';
+      if (!respSel) manualInput.style.display = tagSel.value === '__manual__' ? 'block' : 'none';
       recompute();
     };
     if (manualInput) manualInput.oninput = recompute;
