@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.67.0
+// @version      0.68.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.67.0';
+  const VER = '0.68.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -2874,7 +2874,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.67.0'; // синхр. с Хэлпером
+  const VER = '0.68.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3388,12 +3388,15 @@
       };
       return b;
     };
+    lessonCache = null; // список уроков — свой у каждого студента, обновляем при открытии панели
     const tPing = mkTab('Пинги', renderPings);
     const tTag = mkTab('Теги', renderTags);
     const tDoc = mkTab('Документ', renderDoc);
+    const tLesson = mkTab('Урок', renderLesson);
     tabs.appendChild(tPing);
     tabs.appendChild(tTag);
     tabs.appendChild(tDoc);
+    tabs.appendChild(tLesson);
     p.appendChild(tabs);
     p.appendChild(body);
     tPing.onclick();
@@ -3920,6 +3923,223 @@
       status.textContent = (e && e.message === 'NOAUTH')
         ? 'Google не пустил. Открой таблицу «Академ.часы в курсах» в соседней вкладке, войди в аккаунт и открой панель заново.'
         : 'Не получилось прочитать таблицу (' + (e && e.message || 'ошибка') + ').';
+    });
+  }
+
+  /* ==================== ВКЛАДКА «УРОК» ====================
+     Ссылка на урок платформы по названию. Путь — как у логин-линка:
+     поле АДМИНКА карточки → super_user / user на www.eduson.tv/admin →
+     кабинет студента на academy-<slug>.eduson.tv/ru/users/<uid>/stats →
+     учебный план курса (…/assignments/<N>) → уроки = <a href="/ru/courses/<id>">Название</a>.
+     Ссылка на урок = https://<домен>/ru/courses/<id> (без токена — у кураторов есть доступ). */
+
+  const EDU_ADMIN = 'https://www.eduson.tv';
+  function superUserUrl2(id) { return EDU_ADMIN + '/admin/super_users/' + id + '?language=ru'; }
+  const digits10 = function (s) { return String(s || '').replace(/\D/g, '').slice(-10); };
+
+  function adminLinksInCard() {
+    const set = [];
+    document.querySelectorAll('.right_info_panels a[href*="eduson.tv/admin"], #info_panel_wrap a[href*="eduson.tv/admin"], .info_panel_nano a[href*="eduson.tv/admin"]')
+      .forEach(function (a) { if (set.indexOf(a.href) === -1) set.push(a.href); });
+    const v = adminLink();
+    if (/^https?:\/\//.test(v) && set.indexOf(v) === -1) set.push(v);
+    return set;
+  }
+  function adminUserSuperIds() {
+    const users = [], supers = [];
+    adminLinksInCard().forEach(function (h) {
+      let m = h.match(/\/admin\/users\/(\d+)/); if (m && users.indexOf(m[1]) === -1) users.push(m[1]);
+      m = h.match(/\/admin\/super_users\/(\d+)/); if (m && supers.indexOf(m[1]) === -1) supers.push(m[1]);
+    });
+    return { users: users, supers: supers };
+  }
+  function looksLikeAdminLogin(html) {
+    const h = String(html || '');
+    if (/Admin Zone|\/admin\/super_users|\/admin\/users\//i.test(h)) return false;
+    return /name=["']user\[email\]|id=["']user_password|Sign in|Войти/i.test(h.slice(0, 2000));
+  }
+  // super_user HTML → uid обучающегося (по email/тел из карточки, иначе первая полная строка)
+  function subUserUidFromSuper(html, email, phone) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    let tbl = null;
+    doc.querySelectorAll('table').forEach(function (t) {
+      const head = ((t.querySelector('tr') || {}).textContent || '').toLowerCase();
+      if (head.indexOf('email') !== -1 && head.indexOf('first name') !== -1) tbl = t;
+    });
+    if (!tbl) return '';
+    const trs = [].slice.call(tbl.querySelectorAll('tr'));
+    const heads = [].slice.call(trs[0].querySelectorAll('th,td')).map(function (x) { return x.textContent.trim().toLowerCase(); });
+    const iE = heads.indexOf('email'), iP = heads.indexOf('phone');
+    const wantE = String(email || '').toLowerCase().trim(), wantP = digits10(phone);
+    const uidOf = function (tr) { const a = tr.querySelector('a[href*="/admin/users/"]'); const m = a && a.getAttribute('href').match(/\/admin\/users\/(\d+)/); return m ? m[1] : ''; };
+    const rows = trs.slice(1);
+    const hit = rows.find(function (tr) {
+      const c = [].slice.call(tr.querySelectorAll('td')).map(function (td) { return td.textContent.trim(); });
+      return (wantE && iE >= 0 && (c[iE] || '').toLowerCase() === wantE) ||
+             (wantP && iP >= 0 && digits10(c[iP]) === wantP);
+    });
+    if (hit && uidOf(hit)) return uidOf(hit);
+    const any = rows.find(function (tr) { return uidOf(tr); });
+    return any ? uidOf(any) : '';
+  }
+  // admin/users/<uid> HTML → https://academy-*.eduson.tv/ru/users/<uid>/stats
+  function cabinetUrlFromUserCard(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const a = doc.querySelector('a[href*=".eduson.tv/ru/users/"][href*="/stats"]')
+          || doc.querySelector('a[href*=".eduson.tv/ru/users/"]')
+          || doc.querySelector('a[href*="/ru/users/"][href*="/stats"]');
+    const href = a && a.getAttribute('href');
+    if (href && /^https?:\/\//.test(href)) {
+      return href.indexOf('/stats') !== -1 ? href : href.replace(/\/?$/, '') + '/stats';
+    }
+    const m = String(html).match(/https?:\/\/(academy-[\w-]+\.eduson\.tv)\/ru\/users\/(\d+)/);
+    if (m) return 'https://' + m[1] + '/ru/users/' + m[2] + '/stats';
+    return '';
+  }
+  // страница /stats → [{name,url}] учебных планов
+  function plansFromStats(html, baseUrl) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const out = [];
+    doc.querySelectorAll('a[href*="/assignments/"]').forEach(function (a) {
+      const href = a.getAttribute('href') || '';
+      if (!/\/ru\/users\/\d+\/assignments\/\d+/.test(href)) return;
+      const name = (a.textContent || '').replace(/\s+/g, ' ').replace(/^курс:\s*/i, '').trim();
+      let url; try { url = new URL(href, baseUrl).href; } catch (e) { url = href; }
+      if (name && !out.some(function (x) { return x.url === url; })) out.push({ name: name, url: url });
+    });
+    return out;
+  }
+  // страница плана → [{id,name}] уроков (мини-курсов внутри программы)
+  function lessonsFromPlan(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const byId = {};
+    doc.querySelectorAll('a[href*="/ru/courses/"]').forEach(function (a) {
+      const m = (a.getAttribute('href') || '').match(/\/ru\/courses\/(\d+)/);
+      if (!m) return;
+      const name = (a.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!name || name.length < 3) return;
+      if (!byId[m[1]] || byId[m[1]].length < name.length) byId[m[1]] = name;
+    });
+    return Object.keys(byId).map(function (id) { return { id: id, name: byId[id] }; });
+  }
+  function pickPlan(plans, course) {
+    const n = docNorm(course);
+    if (!n) return null;
+    const exact = plans.find(function (p) { return docNorm(p.name) === n; });
+    if (exact) return exact;
+    const words = n.split(' ').filter(function (w) { return w.length >= 4; });
+    let best = null, bs = 0;
+    plans.forEach(function (p) {
+      const hay = docNorm(p.name);
+      const s = words.filter(function (w) { return hay.indexOf(w) !== -1; }).length;
+      if (s > bs) { bs = s; best = p; }
+    });
+    if (best && (bs >= 2 || (bs >= 1 && words.length === 1))) return best;
+    return null;
+  }
+
+  let lessonCache = null; // { domain, lessons:[{id,name}], planName, plans, note }
+  async function loadLessons() {
+    if (lessonCache) return lessonCache;
+    const ids = adminUserSuperIds();
+    if (!ids.users.length && !ids.supers.length) throw new Error('в карточке нет ссылки на админку — нажми сначала магнит 🧲');
+    const u = readUser();
+
+    let userIds = ids.users.slice();
+    for (let i = 0; i < ids.supers.length && !userIds.length; i++) {
+      const sHtml = await gmText(superUserUrl2(ids.supers[i]));
+      if (looksLikeAdminLogin(sHtml)) throw new Error('NOAUTH');
+      const uid = subUserUidFromSuper(sHtml, u.email, u.phone);
+      if (uid) userIds.push(uid);
+    }
+    if (!userIds.length) throw new Error('не нашла обучающегося в супере');
+
+    let cabUrl = '';
+    for (let j = 0; j < userIds.length && !cabUrl; j++) {
+      const cHtml = await gmText(EDU_ADMIN + '/admin/users/' + userIds[j] + '?language=ru');
+      if (looksLikeAdminLogin(cHtml)) throw new Error('NOAUTH');
+      cabUrl = cabinetUrlFromUserCard(cHtml);
+    }
+    if (!cabUrl) throw new Error('не нашла кабинет студента на платформе');
+    const domain = (cabUrl.match(/^https?:\/\/[^/]+/) || [''])[0];
+
+    const statsHtml = await gmText(cabUrl);
+    if (looksLikeAdminLogin(statsHtml)) throw new Error('NOAUTH');
+    const plans = plansFromStats(statsHtml, cabUrl);
+    if (!plans.length) throw new Error('у студента нет учебных планов в кабинете');
+
+    let picked = pickPlan(plans, readCourse());
+    let note = '';
+    if (!picked) { picked = plans[0]; note = plans.length > 1 ? 'курс из карточки не совпал — взяла «' + picked.name + '»' : ''; }
+
+    const planHtml = await gmText(picked.url);
+    const lessons = lessonsFromPlan(planHtml);
+    if (!lessons.length) throw new Error('в учебном плане не нашла уроков');
+
+    lessonCache = { domain: domain, lessons: lessons, planName: picked.name, plans: plans, note: note };
+    return lessonCache;
+  }
+
+  function renderLesson(body) {
+    body.appendChild(elt('div', 'font-weight:800;font-size:13px;margin-bottom:6px;', 'Ссылка на урок'));
+    const status = elt('div', 'font-size:11.5px;font-weight:700;color:#9CA3AF;', 'Ищу курс студента на платформе…');
+    body.appendChild(status);
+
+    const searchLabel = elt('div', fieldLabel, 'Название урока');
+    searchLabel.style.display = 'none';
+    const search = elt('input', inputCss);
+    search.type = 'search';
+    search.placeholder = 'напр. управление конфликтами';
+    search.style.display = 'none';
+    const listBox = elt('div', 'margin-top:4px;max-height:260px;overflow:auto;border:1px solid #EEF2F5;border-radius:9px;display:none;');
+    body.appendChild(searchLabel); body.appendChild(search); body.appendChild(listBox);
+    const hint = elt('div', 'margin-top:10px;font-size:10px;color:#9CA3AF;font-weight:600;line-height:1.5;', '');
+    body.appendChild(hint);
+
+    loadLessons().then(function (data) {
+      status.style.display = 'none';
+      searchLabel.style.display = ''; search.style.display = '';
+      searchLabel.textContent = 'Название урока · курс: ' + data.planName + ' · уроков: ' + data.lessons.length;
+      if (data.note) { status.style.display = ''; status.style.color = '#B45309'; status.textContent = '⚠️ ' + data.note; }
+
+      function draw() {
+        const terms = docNorm(search.value).split(' ').filter(Boolean);
+        listBox.innerHTML = '';
+        if (!terms.length) { listBox.style.display = 'none'; return; }
+        const hits = data.lessons.filter(function (l) {
+          const hay = docNorm(l.name);
+          return terms.every(function (t) { return hay.indexOf(t) !== -1; });
+        }).slice(0, 60);
+        if (!hits.length) {
+          listBox.appendChild(elt('div', 'padding:9px 11px;font-size:11.5px;color:#9CA3AF;font-weight:700;', 'Ничего не найдено'));
+        } else {
+          hits.forEach(function (l) {
+            const url = data.domain + '/ru/courses/' + l.id;
+            const row = elt('div', 'padding:8px 11px;cursor:pointer;border-bottom:1px solid #F3F4F6;');
+            row.appendChild(elt('div', 'font-size:12px;font-weight:700;color:#111827;line-height:1.35;', l.name));
+            row.appendChild(elt('div', 'font-size:10px;color:#6B7280;font-weight:600;margin-top:2px;word-break:break-all;', url));
+            row.onmouseenter = function () { row.style.background = '#F0F9FF'; };
+            row.onmouseleave = function () { row.style.background = 'transparent'; };
+            row.onclick = function () {
+              copyText(url);
+              toast('Ссылка на урок скопирована:\n' + l.name);
+              row.style.background = '#DCFCE7';
+            };
+            listBox.appendChild(row);
+          });
+        }
+        listBox.style.display = 'block';
+      }
+      search.addEventListener('input', draw);
+
+      const others = (data.plans || []).map(function (p) { return p.name; }).filter(function (n) { return n !== data.planName; });
+      hint.textContent = 'Клик по строке — ссылка на урок в буфере. Работает, пока ты залогинена в www.eduson.tv.' +
+        (others.length ? ' Другие курсы студента: ' + others.join('; ') + '.' : '');
+    }).catch(function (e) {
+      status.style.color = '#B45309';
+      status.textContent = (e && e.message === 'NOAUTH')
+        ? 'Не пустило на www.eduson.tv. Открой админку в соседней вкладке, войди и открой панель заново.'
+        : 'Не получилось: ' + ((e && e.message) || 'ошибка') + '.';
     });
   }
 
