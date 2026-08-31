@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.77.0
+// @version      0.78.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.77.0';
+  const VER = '0.78.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3056,7 +3056,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.77.0'; // синхр. с Хэлпером
+  const VER = '0.78.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3568,7 +3568,7 @@
     }
 
     const head = elt('div', 'display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;cursor:move;user-select:none;');
-    head.appendChild(elt('div', 'font-weight:800;font-size:11.5px;color:' + ACC + ';letter-spacing:.1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;', '⠿ Здесь могла бы быть ваша реклама 😎'));
+    head.appendChild(elt('div', 'font-weight:800;font-size:11.5px;color:' + ACC + ';letter-spacing:.1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;', '⠿ Здесь могла быть ваша реклама😎'));
     const x = elt('span', 'cursor:pointer;color:#9CA3AF;font-size:15px;line-height:1;', '✕');
     x.onclick = togglePanel;
     head.appendChild(x);
@@ -4524,49 +4524,51 @@
      🎁 разрешается: список курсов студента из прогретой вкладки «Урок» (lessonCache) →
      курс с «Заполните анкету»; иначе домен из lessonCache → GIFT_MAP по программе. */
 
-  // ID → название, из личной выгрузки Натальи. c: 'career' / 'present' — за кнопкой-блоком;
-  // 'other' — в поиске (f:1 — частый, выше в списке). Добавлять новые строки сюда.
+  // ID → название. c: 'career' / 'present' — за кнопкой-блоком (в поиске всегда в конце);
+  // 'other' — в поиске. f = число обращений за 2 мес (выгрузка Натальи 01.09.2026); f>=2 → бейдж
+  // «частый». Порядок в списке: по f вниз. Добавлять новые строки сюда.
   const COURSE_LIB = [
-    { id: 5554, n: 'Как получить работу мечты', c: 'career', f: 1 },
-    { id: 5557, n: 'Как составить резюме', c: 'career', f: 1 },
-    { id: 5553, n: 'Как составить сопроводительное письмо и портфолио', c: 'career', f: 1 },
-    { id: 5556, n: 'Как успешно пройти ассессмент', c: 'career', f: 1 },
-    { id: 5552, n: 'Как активно участвовать в собеседовании', c: 'career', f: 1 },
-    { id: 5581, n: 'Как принять оффер и начать работать', c: 'career', f: 1 },
+    // career — блок «Работа мечты» (кнопка 💼), по частоте обращений
+    { id: 5581, n: 'Как принять оффер и начать работать', c: 'career', f: 5 },
+    { id: 5554, n: 'Как получить работу мечты', c: 'career', f: 4 },
+    { id: 5557, n: 'Как составить резюме', c: 'career', f: 4 },
+    { id: 5556, n: 'Как успешно пройти ассессмент', c: 'career', f: 3 },
+    { id: 5553, n: 'Как составить сопроводительное письмо и портфолио', c: 'career', f: 3 },
+    { id: 5552, n: 'Как активно участвовать в собеседовании', c: 'career', f: 0 },
+    // presentations (кнопка 📊)
     { id: 4289, n: 'Как создать структуру презентации', c: 'present', f: 1 },
-    { id: 4350, n: 'Как сделать заголовки в презентации', c: 'present', f: 0 },
-    { id: 4446, n: 'Как оформить текст в презентации', c: 'present', f: 0 },
-    { id: 4527, n: 'Как оформить изображения в презентации', c: 'present', f: 0 },
-    { id: 4210, n: 'Как работать с текстом в PowerPoint', c: 'present', f: 0 },
-    { id: 3879, n: 'Как вовлечь сотрудников: кейсы Blizzard и Riot Games', c: 'other', f: 1 },
-    { id: 5581, n: 'Как принять оффер и начать работать', c: 'other', f: 1 },
-    { id: 5554, n: 'Как получить работу мечты', c: 'other', f: 1 },
-    { id: 5557, n: 'Как составить резюме', c: 'other', f: 1 },
-    { id: 3428, n: 'Как проанализировать проблемную ситуацию для принятия решения', c: 'other', f: 1 },
-    { id: 13192, n: 'Как работать с формами и таблицами в HTML', c: 'other', f: 1 },
-    { id: 5022, n: 'Тайм-менеджмент: диаграмма Ганта в Excel', c: 'other', f: 1 },
-    { id: 5145, n: 'Тайм-менеджмент: метод автофокуса', c: 'other', f: 0 },
-    { id: 17552, n: 'Саммари «Идеальный руководитель» (И. Адизес)', c: 'other', f: 1 },
+    { id: 4350, n: 'Как сделать заголовки в презентации', c: 'present', f: 1 },
+    { id: 4446, n: 'Как оформить текст в презентации', c: 'present', f: 1 },
+    { id: 4527, n: 'Как оформить изображения в презентации', c: 'present', f: 1 },
+    { id: 4210, n: 'Как работать с текстом в PowerPoint', c: 'present', f: 1 },
+    // прочие курсы (поиск) — по убыванию частоты
+    { id: 3879, n: 'Как вовлечь сотрудников: кейсы Blizzard и Riot Games', c: 'other', f: 5 },
+    { id: 3428, n: 'Как проанализировать проблемную ситуацию для принятия решения', c: 'other', f: 3 },
+    { id: 13192, n: 'Как работать с формами и таблицами в HTML', c: 'other', f: 3 },
+    { id: 17552, n: 'Саммари «Идеальный руководитель» (И. Адизес)', c: 'other', f: 2 },
+    { id: 5022, n: 'Тайм-менеджмент: диаграмма Ганта в Excel', c: 'other', f: 2 },
+    { id: 4833, n: 'Серия курсов по русскому языку', c: 'other', f: 1 },
+    { id: 11052, n: 'Практический кейс: сформируйте рейтинг заказов', c: 'other', f: 1 },
+    { id: 11273, n: 'Практический кейс: введение в маркетинг, каналы и аналитика', c: 'other', f: 1 },
+    { id: 12252, n: 'Практический кейс: как обсудить перенос сроков с заказчиком', c: 'other', f: 1 },
+    { id: 11791, n: 'Практический кейс: SCRUM и Kanban', c: 'other', f: 1 },
+    { id: 16287, n: 'Какие навыки добавить в резюме после модуля «Как проектировать интеграции»', c: 'other', f: 1 },
+    { id: 21298, n: 'Анатомия промпта — от сырого к рабочему', c: 'other', f: 1 },
+    { id: 21122, n: 'Как писать и редактировать тексты с Алисой', c: 'other', f: 1 },
     { id: 17839, n: 'Как работают нейросети', c: 'other', f: 1 },
-    { id: 21298, n: 'Анатомия промпта — от сырого к рабочему', c: 'other', f: 0 },
-    { id: 21122, n: 'Как писать и редактировать тексты с Алисой', c: 'other', f: 0 },
+    { id: 4547, n: 'Как правильно давать обратную связь', c: 'other', f: 1 },
+    { id: 4514, n: 'Как сформировать эффективную команду', c: 'other', f: 1 },
+    { id: 6380, n: 'Как общаться на IT-темы на английском', c: 'other', f: 1 },
+    { id: 13844, n: 'Как инвесторы оценивают проекты', c: 'other', f: 1 },
+    { id: 15923, n: 'Как учесть когнитивную архитектуру при создании программы', c: 'other', f: 1 },
+    { id: 16161, n: 'Как организовать операционные процессы и персонал в ресторане', c: 'other', f: 1 },
+    { id: 21140, n: 'Как добавить карточку товара на OZON', c: 'other', f: 1 },
+    { id: 11259, n: 'Тест. Финансовый результат', c: 'other', f: 1 },
+    { id: 8308, n: 'Тест: повышение мотивации и вовлечения сотрудников через обучение', c: 'other', f: 1 },
+    // в выгрузке за 2 мес не встречались — оставлены для поиска
+    { id: 5145, n: 'Тайм-менеджмент: метод автофокуса', c: 'other', f: 0 },
     { id: 12711, n: 'Как использовать LinkedIn для построения карьеры', c: 'other', f: 0 },
     { id: 7378, n: 'Саммари «Пиши, сокращай» (М. Ильяхов)', c: 'other', f: 0 },
-    { id: 6380, n: 'Как общаться на IT-темы на английском', c: 'other', f: 0 },
-    { id: 11791, n: 'Практический кейс: SCRUM и Kanban', c: 'other', f: 0 },
-    { id: 11052, n: 'Практический кейс: сформируйте рейтинг заказов', c: 'other', f: 0 },
-    { id: 11273, n: 'Практический кейс: введение в маркетинг, каналы и аналитика', c: 'other', f: 0 },
-    { id: 12252, n: 'Практический кейс: как обсудить перенос сроков с заказчиком', c: 'other', f: 0 },
-    { id: 16287, n: 'Какие навыки добавить в резюме после модуля «Как проектировать интеграции»', c: 'other', f: 0 },
-    { id: 13844, n: 'Как инвесторы оценивают проекты', c: 'other', f: 0 },
-    { id: 15923, n: 'Как учесть когнитивную архитектуру при создании программы', c: 'other', f: 0 },
-    { id: 16161, n: 'Как организовать операционные процессы и персонал в ресторане', c: 'other', f: 0 },
-    { id: 21140, n: 'Как добавить карточку товара на OZON', c: 'other', f: 0 },
-    { id: 11259, n: 'Тест. Финансовый результат', c: 'other', f: 0 },
-    { id: 8308, n: 'Тест: повышение мотивации и вовлечения сотрудников через обучение', c: 'other', f: 0 },
-    { id: 4833, n: 'Серия курсов по русскому языку', c: 'other', f: 0 },
-    { id: 4514, n: 'Как сформировать эффективную команду', c: 'other', f: 0 },
-    { id: 4547, n: 'Как правильно давать обратную связь', c: 'other', f: 0 },
     { id: 58, n: 'Как построить команду мечты', c: 'other', f: 0 },
     { id: 111, n: 'Подход Адизеса: эффективные стили менеджмента', c: 'other', f: 0 }
   ];
@@ -4766,21 +4768,40 @@
       box.appendChild(mkQ('📊', 'Презентации', '5', function () { blockView('present', 'Презентации'); }));
       main.appendChild(box);
 
-      // поиск
-      main.appendChild(elt('div', S.or, '…или найди курс:'));
+      // поиск — по библиотеке И по реальным курсам студента (те же данные, что вкладка «Урок»)
+      main.appendChild(elt('div', S.or, '…или найди курс (с экрана или из программы студента):'));
       const search = elt('input', inputCss + 'padding:7px 10px;');
       search.type = 'search'; search.placeholder = 'название курса с экрана…';
       const list = elt('div', S.list);
       main.appendChild(search); main.appendChild(list);
 
-      const grp = function (x) { return x.c === 'other' ? 0 : x.c === 'career' ? 1 : 2; };
-      const ordered = COURSE_LIB.slice().sort(function (a, b) { return grp(a) - grp(b) || (b.f - a.f) || a.n.localeCompare(b.n); });
+      // библиотека: дедуп по id; курсы за кнопками (career/present) — всегда в конце («избранное»)
+      const btnCat = { career: 1, present: 1 };
       const seen = {};
-      const uniq = ordered.filter(function (x) { const k = x.id + '|' + x.c; if (seen[k]) return false; seen[k] = 1; return true; });
+      const lib = COURSE_LIB.filter(function (x) { if (seen[x.id]) return false; seen[x.id] = 1; return true; })
+        .map(function (x) { return { id: x.id, n: x.n, f: x.f || 0, inBtn: !!btnCat[x.c] }; });
+
+      // реальные курсы студента с платформы — подтягиваем в фоне (обычно уже прогреты)
+      let stuCourses = [];
+      const stuHas = {};
+      loadLessons().then(function (d) {
+        (d.lessons || []).forEach(function (l) { stuHas[l.id] = 1; });
+        stuCourses = (d.lessons || []).filter(function (l) { return !seen[l.id]; })
+          .map(function (l) { return { id: l.id, n: l.name, f: 0, inBtn: false, stu: true }; });
+        drawList();
+      }).catch(function () {});
+
+      // порядок в раскрытом списке: 0 — курсы самого студента, 1 — прочая библиотека (по частоте
+      // запросов), 2 — «избранное» за кнопками. Внутри группы — по частоте, затем по алфавиту.
+      const rank = function (x) { return x.inBtn ? 2 : (x.stu || stuHas[x.id]) ? 0 : 1; };
+      const sortRows = function (arr) {
+        return arr.slice().sort(function (a, b) { return rank(a) - rank(b) || (b.f - a.f) || a.n.localeCompare(b.n); });
+      };
 
       const courseRow = function (x) {
         const r = elt('div', S.row);
-        if (x.f) { const b = elt('span', 'float:right;font-size:8.5px;font-weight:800;color:#15803D;background:#E9F6EE;border-radius:5px;padding:1px 5px;', 'частый'); r.appendChild(b); }
+        if (x.stu || stuHas[x.id]) { const b = elt('span', 'float:right;font-size:8.5px;font-weight:800;color:#1D4ED8;background:#E7EEFE;border-radius:5px;padding:1px 5px;', 'у студента'); r.appendChild(b); }
+        else if (x.f >= 2) { const b = elt('span', 'float:right;font-size:8.5px;font-weight:800;color:#15803D;background:#E9F6EE;border-radius:5px;padding:1px 5px;', 'частый'); r.appendChild(b); }
         r.appendChild(document.createTextNode(x.n));
         r.appendChild(elt('div', 'font-size:9.5px;color:#6B7280;font-weight:600;', x.id === '__gift' ? 'найду нужный' : String(x.id)));
         r.onclick = function () {
@@ -4797,24 +4818,25 @@
 
       const drawList = function () {
         const q = docNorm(search.value.trim());
+        const pool = lib.concat(stuCourses);
         let rows;
-        if (!q) rows = uniq.slice();
+        if (!q) rows = sortRows(pool);
         else {
           const w = q.split(/\s+/).filter(Boolean);
           const m = function (name) { const h = docNorm(name); return w.every(function (t) { return h.indexOf(t) !== -1; }); };
-          rows = uniq.filter(function (x) { return m(x.n); });
-          if (m(GIFT_NAME)) rows.unshift({ id: '__gift', n: GIFT_NAME, c: 'gift', f: 1 });
+          rows = sortRows(pool.filter(function (x) { return m(x.n); }));
+          if (m(GIFT_NAME)) rows.unshift({ id: '__gift', n: GIFT_NAME, f: 1 });
         }
         list.innerHTML = '';
         if (!rows.length) { list.appendChild(elt('div', 'padding:10px;font-size:10.5px;color:#9CA3AF;font-weight:700;text-align:center;', 'не нашла — проверь написание или вставь ссылку ниже')); return; }
-        rows.slice(0, 60).forEach(function (x) { list.appendChild(courseRow(x)); });
+        rows.slice(0, 80).forEach(function (x) { list.appendChild(courseRow(x)); });
       };
       search.addEventListener('input', drawList);
       drawList();
 
-      // запасное: вставить ссылку/ID
-      const more = elt('div', S.more, '▸ вставить ссылку или ID');
-      const moreBox = elt('div', 'display:none;margin-top:5px;');
+      // запасное: вставить ссылку/ID — по просьбе Натальи открыто сразу
+      const more = elt('div', S.more, '▾ вставить ссылку или ID');
+      const moreBox = elt('div', 'display:block;margin-top:5px;');
       more.onclick = function () {
         const open = moreBox.style.display !== 'none';
         moreBox.style.display = open ? 'none' : 'block';
