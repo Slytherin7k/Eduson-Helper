@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.74.0
+// @version      0.75.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.74.0';
+  const VER = '0.75.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3051,7 +3051,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.74.0'; // синхр. с Хэлпером
+  const VER = '0.75.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4534,12 +4534,14 @@
     let btn = document.getElementById('curator-tools-btn');
 
     if (helper && helper.parentElement === bar) {
-      // Хэлпер установлен — кладём кнопку последней В ЕГО контейнер: общий gap и один отступ на всю группу.
+      // Хэлпер установлен — кладём кнопку ПЕРВОЙ В ЕГО контейнер (общий gap, один отступ
+      // на всю группу). Порядок слева направо: 💬 пинги · 🔑 ключ · 🧲 магнит —
+      // магнит крайний справа, чтобы Наталья не задевала его случайно.
       const standalone = document.getElementById('curator-hdr');
       if (standalone) standalone.remove();
       btn = document.getElementById('curator-tools-btn');
       if (!btn) btn = makeCuratorBtn();
-      if (btn.parentElement !== helper || helper.lastElementChild !== btn) helper.appendChild(btn);
+      if (btn.parentElement !== helper || helper.firstElementChild !== btn) helper.insertBefore(btn, helper.firstChild);
       return;
     }
 
