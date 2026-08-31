@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.27.0
+// @version      1.28.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -1125,10 +1125,13 @@
     tableBlock.appendChild(rowNumWrap);
 
     // Поиск свободной строки: заполняет поле и пишет короткую заметку рядом.
+    // mode: 'click' — кнопкой; 'auto' — сам при открытии мастера (поле подсвечивается,
+    // если поле уже было вписано и не совпало — заметка про это скажет, не потеряется).
     let rowFinding = false;
     const findRowInto = (mode) => {
       if (rowFinding) return;
       rowFinding = true;
+      const had = String(T.rowNumber || '').trim();
       const prevTxt = bFindRow.textContent;
       bFindRow.textContent = '…'; bFindRow.disabled = true;
       rowNote.style.display = 'block';
@@ -1136,13 +1139,16 @@
       rowNote.textContent = 'Смотрю таблицу возвратов…';
       findNextFreeRow().then(r => {
         if (r.next) {
+          const changed = had && had !== String(r.next);
           T.rowNumber = String(r.next);
           rowNumInput.value = T.rowNumber;
+          rowNumInput.style.background = '#FEF9C3'; // подсветка: значение подставлено автопоиском
           try { GM_setValue('rm_row', T.rowNumber); } catch (e) { /* ignore */ }
           saveCase(); updateRowLabels();
-          rowNote.style.color = r.strayBelow ? '#B45309' : '#15803D';
-          rowNote.textContent = (r.strayBelow ? '⚠️ ' : '✓ ') +
+          rowNote.style.color = (r.strayBelow || changed) ? '#B45309' : '#15803D';
+          rowNote.textContent = ((r.strayBelow || changed) ? '⚠️ ' : '✓ ') +
             'Свободная строка — ' + r.next + ' (плотный блок заканчивается на ' + r.lastData + ').' +
+            (changed ? ' В поле было ' + had + ' — заменила на автопоиск.' : '') +
             (r.strayBelow
               ? ' Но НИЖЕ блока есть ещё ' + r.strayBelow + ' заполнен. строк(и) — открой таблицу и глянь, не туда ли писать.'
               : ' Всё равно проверь глазами.');
@@ -1336,11 +1342,13 @@
     const updateRowLabels = () => { bAll.textContent = '📋 Копировать всю строку → вставить в A' + (T.rowNumber || '?'); };
     rowNumInput.addEventListener('input', () => {
       T.rowNumber = rowNumInput.value.replace(/\D/g, ''); rowNumInput.value = T.rowNumber;
+      rowNumInput.style.background = ''; // куратор поправил вручную — снимаем подсветку автопоиска
       GM_setValue('rm_row', T.rowNumber); saveCase(); updateRowLabels();
     });
     updateRowLabels();
-    // № строки ещё не вписан по этому кейсу → сразу подсказать свободную строку.
-    if (!String(T.rowNumber).trim()) findRowInto('auto');
+    // При каждом открытии мастера сам ищем свободную строку (как прогресс и прочее).
+    // Поле подсвечивается жёлтым + заметка «проверь глазами» — куратор при необходимости правит.
+    findRowInto('auto');
 
     // позиция / размер / свёрнутость. По умолчанию — прижата к правому краю
     // и широкая (раскрывается влево, «как книга»); ключи rm_pos2/rm_size2 —
@@ -1545,7 +1553,7 @@
   }
 
   if (location.hostname.endsWith('omnidesk.ru')) {
-    console.log(TAG, 'запущен, версия ' + '1.27.0');
+    console.log(TAG, 'запущен, версия ' + '1.28.0');
     removeLauncher();
     ensureMenuItem();
     setInterval(function () { removeLauncher(); ensureMenuItem(); }, 2000);
