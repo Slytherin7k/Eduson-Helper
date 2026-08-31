@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.20.0
+// @version      1.21.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -14,6 +14,7 @@
 // @grant        GM_xmlhttpRequest
 // @connect      eduson.amocrm.ru
 // @connect      eduson.tv
+// @connect      docs.google.com
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -25,6 +26,14 @@
   const AMO_SUBDOMAIN = 'eduson';
 
   const SHEET_URL = 'https://docs.google.com/spreadsheets/d/1sjkq9hTg8MIjHt7KeRw2QIFryg1lSZ5o/edit#gid=332759802';
+  const SHEET_ID = (SHEET_URL.match(/\/d\/([\w-]+)/) || [])[1] || '';
+  const SHEET_GID = (SHEET_URL.match(/gid=(\d+)/) || [])[1] || '0';
+  // Таблица возвратов — .xlsx в Google Sheets. Обычная выгрузка ?format=csv для неё
+  // не работает (Google отдаёт CSV только для «родных» листов), а вот
+  // визуализационный эндпоинт gviz/tq?tqx=out:csv для xlsx CSV ОТДАЁТ, если
+  // запрос идёт как XHR. Читаем ТОЛЬКО чтобы посчитать, где заканчиваются данные.
+  const SHEET_CSV_URL = 'https://docs.google.com/spreadsheets/d/' + SHEET_ID +
+    '/gviz/tq?tqx=out:csv&gid=' + SHEET_GID;
   const CALC_URL = 'https://docs.google.com/spreadsheets/d/11GNvwRy-fJwL2zg1KZbGouXzy5XXvJBlKXvtCHdgFfg/edit';
   const CUTOFF_DATE = new Date(2026, 6, 29); // 29.07.2026 — с этой даты сумму считают в калькуляторе
 
@@ -107,6 +116,51 @@
         ontimeout: function () { reject(new Error('долго нет ответа')); },
       });
     });
+  }
+
+  /* ---------- поиск свободной строки в гугл-таблице возвратов ---------- */
+
+  // Простой разбор CSV (кавычки, запятые, переводы строк, экранированные "").
+  function parseCsvRows(s) {
+    s = String(s || '');
+    if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1); // срезаем BOM, если есть
+    const rows = []; let row = [], f = '', q = false;
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (q) {
+        if (c === '"') { if (s[i + 1] === '"') { f += '"'; i++; } else q = false; }
+        else f += c;
+      } else if (c === '"') { q = true; }
+      else if (c === ',') { row.push(f); f = ''; }
+      else if (c === '\n') { row.push(f); rows.push(row); row = []; f = ''; }
+      else if (c !== '\r') { f += c; }
+    }
+    if (f !== '' || row.length) { row.push(f); rows.push(row); }
+    return rows;
+  }
+
+  // Promise<{ next, lastData } | { error }>. Читает лист «База обращений» и
+  // ищет последнюю строку с человеческими данными. Столбцы F(5), M(12), Q(16) —
+  // формулы, протянутые ниже данных: их в расчёт не берём.
+  function findNextFreeRow() {
+    const FORMULA_COLS = { 5: 1, 12: 1, 16: 1 };
+    return gmFetchText(SHEET_CSV_URL).then(txt => {
+      const head = String(txt).slice(0, 300).toLowerCase();
+      if (/<!doctype|<html|<head|accounts\.google\.com|sign in|войдите/.test(head)) {
+        return { error: 'нужен вход в Google в этом браузере' };
+      }
+      const rows = parseCsvRows(txt);
+      let last = 0;
+      for (let i = 0; i < rows.length; i++) {
+        const hasData = rows[i].some((v, idx) => !FORMULA_COLS[idx] && String(v || '').trim() !== '');
+        if (hasData) last = i + 1; // нумерация строк таблицы — с 1
+      }
+      if (last < 2) return { error: 'не разобрала данные таблицы' };
+      return { next: last + 1, lastData: last };
+    }).catch(e => ({
+      error: (e && e.message === 'NOAUTH') ? 'Google не пустил — нужен вход'
+        : (e && e.message) || 'сеть или куки не пустили',
+    }));
   }
 
   function fmtTs(ts) {
@@ -883,14 +937,52 @@
 
     // 3) Строка в таблице возвратов
     tableBlock = mkBlock(colL, 'Строка в таблице возвратов');
-    const rowNumWrap = el('div', 'display:flex;gap:8px;align-items:center;background:' + ACC_LT + ';border:1px solid ' + ACC_BD + ';border-radius:12px;padding:8px 11px;');
-    rowNumWrap.appendChild(el('span', 'font-size:11.5px;font-weight:700;color:' + ACC_DK + ';flex:1 1 auto;line-height:1.3;', '№ пустой строки внизу таблицы:'));
+    const rowNumWrap = el('div', 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:' + ACC_LT + ';border:1px solid ' + ACC_BD + ';border-radius:12px;padding:8px 11px;');
+    rowNumWrap.appendChild(el('span', 'font-size:11.5px;font-weight:700;color:' + ACC_DK + ';flex:1 1 auto;line-height:1.3;', '№ свободной строки внизу таблицы:'));
     const rowNumInput = el('input', S.input);
-    rowNumInput.style.cssText += 'width:78px;flex:0 0 auto;font-size:15px;font-weight:800;text-align:center;border:1.5px solid #7DD3FC;color:' + ACC_DK + ';padding:6px;';
-    rowNumInput.placeholder = '3540';
+    rowNumInput.style.cssText += 'width:74px;flex:0 0 auto;font-size:15px;font-weight:800;text-align:center;border:1.5px solid #7DD3FC;color:' + ACC_DK + ';padding:6px;';
+    rowNumInput.placeholder = '—';
     rowNumInput.value = T.rowNumber;
     rowNumWrap.appendChild(rowNumInput);
+    const bFindRow = el('button', S.small, '🔍 найти');
+    bFindRow.style.cssText += 'width:auto;flex:0 0 auto;margin-top:0;padding:7px 11px;white-space:nowrap;background:#fff;color:' + ACC + ';border:1.5px solid ' + ACC_BD + ';';
+    bFindRow.title = 'Посмотреть в гугл-таблице возвратов, какая строка внизу свободна';
+    rowNumWrap.appendChild(bFindRow);
+    const rowNote = el('div', 'flex:1 1 100%;font-size:10px;font-weight:700;line-height:1.4;color:' + ACC_DK + ';', '');
+    rowNote.style.display = 'none';
+    rowNumWrap.appendChild(rowNote);
     tableBlock.appendChild(rowNumWrap);
+
+    // Поиск свободной строки: заполняет поле и пишет короткую заметку рядом.
+    let rowFinding = false;
+    const findRowInto = (mode) => {
+      if (rowFinding) return;
+      rowFinding = true;
+      const prevTxt = bFindRow.textContent;
+      bFindRow.textContent = '…'; bFindRow.disabled = true;
+      rowNote.style.display = 'block';
+      rowNote.style.color = ACC_DK;
+      rowNote.textContent = 'Смотрю таблицу возвратов…';
+      findNextFreeRow().then(r => {
+        if (r.next) {
+          T.rowNumber = String(r.next);
+          rowNumInput.value = T.rowNumber;
+          try { GM_setValue('rm_row', T.rowNumber); } catch (e) { /* ignore */ }
+          saveCase(); updateRowLabels();
+          rowNote.style.color = '#15803D';
+          rowNote.textContent = '✓ Свободная строка — ' + r.next + ' (последняя заполненная: ' + r.lastData + '). Проверь глазами и, если надо, поправь.';
+        } else {
+          rowNote.style.color = '#B45309';
+          rowNote.textContent = '⚠️ Не смогла прочитать таблицу (' + r.error + '). Впиши № строки руками.';
+        }
+      }).catch(() => {
+        rowNote.style.color = '#B45309';
+        rowNote.textContent = '⚠️ Не смогла прочитать таблицу. Впиши № строки руками.';
+      }).then(() => {
+        rowFinding = false; bFindRow.disabled = false; bFindRow.textContent = prevTxt;
+      });
+    };
+    bFindRow.onclick = () => findRowInto('click');
 
     const bAll = el('button', S.big);
     bAll.onclick = () => {
@@ -1061,6 +1153,8 @@
       GM_setValue('rm_row', T.rowNumber); saveCase(); updateRowLabels();
     });
     updateRowLabels();
+    // № строки ещё не вписан по этому кейсу → сразу подсказать свободную строку.
+    if (!String(T.rowNumber).trim()) findRowInto('auto');
 
     // позиция / размер / свёрнутость. По умолчанию — прижата к правому краю
     // и широкая (раскрывается влево, «как книга»); ключи rm_pos2/rm_size2 —
@@ -1246,7 +1340,7 @@
   }
 
   if (location.hostname.endsWith('omnidesk.ru')) {
-    console.log(TAG, 'запущен, версия ' + '1.20.0');
+    console.log(TAG, 'запущен, версия ' + '1.21.0');
     removeLauncher();
     ensureMenuItem();
     setInterval(function () { removeLauncher(); ensureMenuItem(); }, 2000);
