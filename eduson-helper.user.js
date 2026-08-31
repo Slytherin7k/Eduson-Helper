@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.72.0
+// @version      0.73.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.72.0';
+  const VER = '0.73.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -180,7 +180,11 @@
 
   /* ---------- запросы к админке Эдюсона (только чтение HTML) ---------- */
 
-  function gmFetchText(url) {
+  // Кэш GET-ответов на время ОДНОГО запуска магнита: findDealViaAdmin, lookupAdminLinks и
+  // lookupAdminFio часто тянут одни и те же страницы супера/карточки — не качаем повторно.
+  // Ставится в начале smartFillOmni, снимается в конце (см. `_admCache = ...`).
+  let _admCache = null;
+  function gmFetchRaw(url) {
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
         method: 'GET',
@@ -199,6 +203,16 @@
         ontimeout: function () { reject(new Error('админка долго не отвечает')); },
       });
     });
+  }
+  function gmFetchText(url) {
+    if (_admCache) {
+      if (_admCache.has(url)) return _admCache.get(url);
+      const p = gmFetchRaw(url);
+      _admCache.set(url, p);
+      p.catch(function () { if (_admCache) _admCache.delete(url); }); // ошибку не кэшируем
+      return p;
+    }
+    return gmFetchRaw(url);
   }
 
   function adminLooksLikeLogin(html) {
@@ -530,10 +544,16 @@
     let auth = false;
     const leadIds = [], contactIds = [];
 
-    for (const q of queries.slice(0, 3)) {
-      let listHtml;
-      try { listHtml = await gmFetchText(ADMIN_BASE + '/admin/users?language=ru&q=' + encodeURIComponent(q)); }
-      catch (e) { if (e.message === 'NOAUTH') auth = true; continue; }
+    // Списки по всем запросам (почта/телефон) — параллельно.
+    const qList = queries.slice(0, 3);
+    const listHtmls = await Promise.all(qList.map(function (q) {
+      return gmFetchText(ADMIN_BASE + '/admin/users?language=ru&q=' + encodeURIComponent(q))
+        .then(function (h) { return h; }, function (e) { return e && e.message === 'NOAUTH' ? '__NOAUTH__' : ''; });
+    }));
+    for (let qi = 0; qi < qList.length; qi++) {
+      const listHtml = listHtmls[qi];
+      if (listHtml === '__NOAUTH__') { auth = true; continue; }
+      if (!listHtml) continue;
       if (adminLooksLikeLogin(listHtml)) { auth = true; continue; }
 
       collectAmoIds(listHtml, leadIds, contactIds);            // трекинг часто прямо в списке
@@ -669,22 +689,25 @@
     }
     if (!userRows.length) return { links: [], isSuper: false, error: authError ? 'NOAUTH' : (lastErr || null) };
 
-    // 2. Открываем карточки, ещё раз сверяем ФИО/почту по самой карточке, собираем Super User / ссылки
+    // 2. Открываем карточки ПАРАЛЛЕЛЬНО (было — по очереди до 10 больших страниц),
+    //    затем сверяем ФИО/почту по самой карточке в исходном порядке.
     const superIds = [], cardUrls = [], nameByKey = {};
-    for (const r of userRows.slice(0, 10)) {
-      let card;
-      try {
-        card = await gmFetchText(userCardUrl(r.uid));
-      } catch (e) { if (e.message === 'NOAUTH') authError = true; else lastErr = e.message; continue; }
-      if (adminLooksLikeLogin(card)) { authError = true; continue; }
+    const rows2 = userRows.slice(0, 10);
+    const cards = await Promise.all(rows2.map(function (r) {
+      return gmFetchText(userCardUrl(r.uid)).then(function (h) { return { h: h }; }, function (e) { return { err: e }; });
+    }));
+    rows2.forEach(function (r, i) {
+      const res = cards[i];
+      if (res.err) { if (res.err.message === 'NOAUTH') authError = true; else lastErr = res.err.message; return; }
+      const card = res.h;
+      if (adminLooksLikeLogin(card)) { authError = true; return; }
       if (canVerify) {
         const cardName = parseAdminUserName(card);
         const emailOk = wantEmails.some(function (e) { return card.toLowerCase().indexOf(e) !== -1; });
         const nameOk = sameName(cardName || r.text, wantName);
-        if (!emailOk && !nameOk) continue; // не наш человек — мимо
+        if (!emailOk && !nameOk) return; // не наш человек — мимо
       }
       const suId = parseSuperUserIdFromUserCard(card);
-      // имя для окошка выбора: h1 карточки, иначе — из строки списка (после id, до курса/трекинга)
       const nm = parseAdminUserName(card) ||
         (String(r.text || '').replace(/^\s*\d+\s*/, '').match(/^[А-ЯЁA-Z][А-ЯЁа-яёA-Za-z-]+(?:\s+[А-ЯЁA-Z][А-ЯЁа-яёA-Za-z-]+){0,2}/) || ['аккаунт'])[0];
       if (suId) {
@@ -693,18 +716,18 @@
         const u = userCardUrl(r.uid);
         if (cardUrls.indexOf(u) === -1) { cardUrls.push(u); nameByKey[u] = nm; }
       }
-    }
+    });
 
     if (superIds.length) {
-      const links = [];
-      for (const id of superIds.slice(0, 8)) {
-        let courses = [];
-        try {
-          const page = await gmFetchText(superUserUrl(id));
-          if (!adminLooksLikeLogin(page)) courses = parseSuperUserCourses(page);
-        } catch (e) { /* название курса не критично */ }
-        links.push({ url: superUserUrl(id), courses: courses, name: nameByKey['s' + id] || '' });
-      }
+      const ids = superIds.slice(0, 8);
+      const pages = await Promise.all(ids.map(function (id) {
+        return gmFetchText(superUserUrl(id)).then(function (p) { return p; }, function () { return ''; });
+      }));
+      const links = ids.map(function (id, i) {
+        const page = pages[i];
+        const courses = (page && !adminLooksLikeLogin(page)) ? parseSuperUserCourses(page) : [];
+        return { url: superUserUrl(id), courses: courses, name: nameByKey['s' + id] || '' };
+      });
       return { links: links, isSuper: true, error: null, ambiguous: links.length > 1 };
     }
     if (cardUrls.length) {
@@ -1580,23 +1603,25 @@
   }
   /* ---------- режим 2: кнопка в OmniDesk ---------- */
   async function smartFillOmni() {
+    _admCache = new Map();
+    try { await smartFillOmniInner(); }
+    catch (e) { console.error(TAG, e); const r = iconRing('eduson-magnet-btn'); if (r) r.fail(); }
+    finally { _admCache = null; }
+  }
+  async function smartFillOmniInner() {
     const base = 'https://' + AMO_SUBDOMAIN + '.amocrm.ru';
     const api = function (path) { return gmFetch(base + path); };
     const seed = grabContactSeed();
     const amoId = grabAmoIdFromPage();
     console.log(TAG, 'amo-номер:', amoId || '—', '| телефоны:', seed.phones, '| email:', seed.emails);
     let data = null, err = null, note = '';
-    PB.open('🧲 Собираю данные из amoCRM…');
+    const MR = iconRing('eduson-magnet-btn');
+    if (MR) MR.osc();
     if (amoId) {
-      PB.set('amoCRM · сделка ' + amoId + '…');
       try { data = await fetchClientById(amoId, seed, base); }
       catch (e) { err = e; }
     }
     if (!err && !data && (seed.phones.length || seed.emails.length)) {
-      const by = [];
-      if (seed.phones.length) by.push('телефону ' + seed.phones.join(', '));
-      if (seed.emails.length) by.push('email ' + seed.emails.join(', '));
-      PB.set('Ищу в amoCRM по ' + by.join(' и ') + '…');
       let candidates = [];
       try { candidates = await searchAmoCandidates(seed, base); }
       catch (e) { err = e; }
@@ -1621,20 +1646,20 @@
             }
           } catch (e) { err = e; }
         } else {
-          PB.hide();
+          if (MR) MR.hide();
           toast('Хорошо, никого не выбираю 🙂', 'info');
           return;
         }
       }
     }
     if (err) {
-      if (err.message === 'CANCELLED') { PB.hide(); toast('Хорошо, никого не выбираю 🙂', 'info'); return; }
+      if (MR) MR.fail();
+      if (err.message === 'CANCELLED') { if (MR) MR.hide(); toast('Хорошо, никого не выбираю 🙂', 'info'); return; }
       console.error(TAG, 'ошибка:', err);
       if (err.message === 'NOAUTH') {
-        PB.err('amoCRM не пустила');
-        toast('Открой амо в соседней вкладке, убедись что залогинена, и нажми магнит ещё раз.', 'warn', 12000);
+        toast('Браузер не пустил меня в амо 😕\nОткрой амо в соседней вкладке, убедись что залогинена, и нажми магнит ещё раз.', 'warn', 12000);
       } else {
-        PB.err('Ошибка amoCRM: ' + err.message);
+        toast('Не получилось связаться с амо: ' + err.message, 'error');
       }
       return;
     }
@@ -1645,7 +1670,6 @@
     const noDealYet = !data || data.noPurchase || data.course === 'не покупал'
       || (!data.chosenDeal && !data.course);
     if (!err && noDealYet && (seed.emails.length || seed.phones.length)) {
-      PB.set('Сделки в amoCRM нет — смотрю в админке Эдюсон…');
       try {
         const adm = await findDealViaAdmin(seed, api);
         let viaAdmin = false;
@@ -1687,7 +1711,8 @@
     }
     if (!data || (!data.name && !data.emails.length && !data.phones.length && !data.course && !data.support)) {
       GM_setValue(DEBUG_KEY, { version: VER, url: location.href, amoId: amoId, seed: seed, result: 'ничего не нашлось', ts: Date.now() });
-      PB.err('В amoCRM ничего не нашлось');
+      if (MR) MR.fail();
+      toast('В амо ничего не нашлось 😕', 'warn');
       return;
     }
     data.cardAmoId = amoId || '';
@@ -1701,7 +1726,6 @@
     // ФИО должно быть полное: сравниваем имя из амо с ФИО из админки Эдюсон, берём где больше слов.
     // Если сделку нашли через админку (курс купили другому) — имя обучающегося берём из админки
     // (по его почте), а НЕ из контакта покупателя в сделке.
-    PB.set('Сверяю ФИО и админку Эдюсон…');
     try {
       const adminFio = await lookupAdminFio(data, seed);
       if (adminFio) {
@@ -1716,9 +1740,8 @@
     GM_setValue(STORE_KEY, data);
     GM_setValue(DEBUG_KEY, { version: VER, url: location.href, amoId: amoId, seed: seed, data: data, note: note, ts: Date.now() });
     console.log(TAG, 'данные из амо:', data);
-    PB.set('Заполняю карточку OmniDesk…');
+    if (MR) MR.done();
     await fillInputsFromData(data, 'Нашлось в амо' + (note ? '\n(' + note + ')' : ''));
-    PB.hide(); // дальше своё сообщение показывает fillInputsFromData
   }
   /* ---------- заполнение формы OmniDesk ---------- */
   function isVisible(el) { return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length); }
@@ -2726,37 +2749,37 @@
       _loginLinkCache = { caseId: caseId, links: links, note: note || '' };
       showLoginLinks(links, note);
     };
+    const R = iconRing('eduson-loginlink-btn');
     try {
-      PB.open('🔑 Ищу логин-линк в админке Эдюсон…');
+      if (R) R.osc();
 
       // Основной путь — по ссылке из поля «АДМИНКА» (её уже нашёл магнит), не свободным поиском.
-      let res = await lookupLoginLinks(function (t) { PB.set(t); });
+      let res = await lookupLoginLinks();
 
       // Запасной путь: поле АДМИНКА пустое → строгий поиск по amo-номеру (без свободного email).
       if (res.error === 'ADMINKA_EMPTY') {
         const st = GM_getValue(STORE_KEY) || {};
         const amoId = grabAmoIdFromPage() || st.amoLeadId || st.amoContactId || st.cardAmoId || '';
         if (!amoId) {
-          PB.err('Поле АДМИНКА пустое, amo-номера нет');
-          toast('Нажми сначала магнит 🧲 — он заполнит поле АДМИНКА.', 'warn', 10000);
+          if (R) R.fail();
+          toast('Поле АДМИНКА пустое. Нажми сначала магнит 🧲 — он его заполнит.', 'warn', 10000);
           return;
         }
-        PB.set('Ищу по номеру amo…');
         res = await lookupLoginLinksByAmoId(amoId);
       }
 
       if (res.error === 'NOAUTH') {
-        PB.err('Админка не пустила');
-        toast('Открой www.eduson.tv, залогинься и нажми ключ снова.', 'warn', 10000);
+        if (R) R.fail();
+        toast('Админка не пустила 😕\nОткрой www.eduson.tv, залогинься и нажми ключ снова.', 'warn', 10000);
         return;
       }
       const links = res.links || [];
       if (!links.length) {
-        PB.err('Логин-линк не нашёлся');
+        if (R) R.fail();
         toast('Логин-линк не нашёлся: ' + (res.error || 'неизвестно') + '.', 'warn', 9000);
         return;
       }
-      PB.ok(links.length > 1 ? '🔑 Готово — ' + links.length + ' курса, выбери' : '🔑 Логин-линк готов');
+      if (R) R.done();
       if (links.length === 1) {
         present(links);
         return;
@@ -2773,11 +2796,50 @@
         present(links);
       }
     } catch (e) {
-      PB.err('Ошибка: ' + e.message);
+      if (R) R.fail();
+      toast('Ошибка при поиске логин-линка: ' + e.message, 'error');
     } finally {
       loginLinkBusy = false;
     }
   }
+
+  // Кольцо-прогресс вокруг иконки шапки: .osc() крутится (непонятно сколько),
+  // .set(frac) заполняет по периметру, .done()/.fail() — цвет и убрать.
+  function makeRing(btn) {
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 34 32');
+    svg.style.cssText = 'position:absolute;left:-2px;top:-2px;width:34px;height:32px;pointer-events:none;overflow:visible;display:none;';
+    const rect = document.createElementNS(NS, 'rect');
+    rect.setAttribute('x', '1'); rect.setAttribute('y', '1');
+    rect.setAttribute('width', '32'); rect.setAttribute('height', '30');
+    rect.setAttribute('rx', '6'); rect.setAttribute('fill', 'none');
+    rect.setAttribute('stroke', '#0284C7'); rect.setAttribute('stroke-width', '2.5');
+    rect.setAttribute('stroke-linecap', 'round'); rect.setAttribute('pathLength', '100');
+    svg.appendChild(rect);
+    btn.appendChild(svg);
+    let timer = 0, off = 0;
+    const stop = function () { clearInterval(timer); timer = 0; };
+    const hide = function () { stop(); svg.style.display = 'none'; };
+    return {
+      osc: function () {
+        stop(); svg.style.display = 'block';
+        rect.setAttribute('stroke', '#0284C7');
+        rect.setAttribute('stroke-dasharray', '26 100');
+        timer = setInterval(function () { off = (off - 3) % 100; rect.setAttribute('stroke-dashoffset', off); }, 45);
+      },
+      set: function (frac) {
+        stop(); svg.style.display = 'block';
+        rect.setAttribute('stroke', '#0284C7');
+        rect.setAttribute('stroke-dashoffset', '0');
+        rect.setAttribute('stroke-dasharray', Math.max(2, Math.min(100, frac * 100)) + ' 100');
+      },
+      done: function () { stop(); svg.style.display = 'block'; rect.setAttribute('stroke', '#16A34A'); rect.setAttribute('stroke-dashoffset', '0'); rect.setAttribute('stroke-dasharray', '100 100'); setTimeout(hide, 1400); },
+      fail: function () { stop(); svg.style.display = 'block'; rect.setAttribute('stroke', '#DC2626'); rect.setAttribute('stroke-dasharray', '100 100'); setTimeout(hide, 3000); },
+      hide: hide
+    };
+  }
+  function iconRing(id) { const b = document.getElementById(id); return b && b._ring; }
 
   // Одна иконка в шапке кейса (ключ / магнит). Размер — как у нативных иконок омника,
   // чтобы не торчали вверх и не залезали на панель справа.
@@ -2785,7 +2847,7 @@
     const btn = document.createElement('div');
     btn.id = id;
     btn.title = titleText;
-    btn.style.cssText = 'width:30px;height:28px;flex:0 0 auto;box-sizing:border-box;' +
+    btn.style.cssText = 'position:relative;width:30px;height:28px;flex:0 0 auto;box-sizing:border-box;' +
       'display:flex;align-items:center;justify-content:center;cursor:pointer;' +
       'background:#fff;border:1px solid #DADCE0;border-radius:5px;box-shadow:0 1px 2px rgba(0,0,0,.12);transition:background .15s;';
     btn.innerHTML = svgHtml;
@@ -2795,6 +2857,7 @@
     btn.onmouseenter = function () { btn.style.background = '#EEF0F3'; if (svg) svg.style.fill = '#374151'; };
     btn.onmouseleave = function () { btn.style.background = '#fff'; if (svg) svg.style.fill = '#6B7280'; };
     btn._flash = function () { if (svg) { svg.style.fill = '#0284C7'; setTimeout(function () { svg.style.fill = '#6B7280'; }, 700); } };
+    btn._ring = makeRing(btn);
     return btn;
   }
 
@@ -2855,92 +2918,6 @@
     };
     return b;
   }
-  // Плашка-прогресс внизу слева (одна на всё). Видно, что кнопка сработала, сколько ждать.
-  const PB = (function () {
-    const ID = 'eduson-progress';
-    let t0 = 0, tick = 0, osc = 0, phase = 0, sess = 0;
-    function box() {
-      let b = document.getElementById(ID);
-      if (b) return b;
-      b = document.createElement('div');
-      b.id = ID;
-      b.style.cssText = 'position:fixed;left:14px;bottom:14px;z-index:2147483647;width:300px;max-width:88vw;' +
-        'background:#fff;color:#1F2937;padding:11px 26px 12px 14px;border:1px solid #E5E7EB;border-radius:14px;' +
-        'font-family:' + HP_FONT + ';box-shadow:0 12px 36px rgba(15,23,42,.22);border-left:5px solid #0284C7;';
-      const t = document.createElement('div');
-      t.setAttribute('data-t', ''); t.style.cssText = 'font-size:12px;font-weight:800;line-height:1.4;margin-bottom:7px;white-space:pre-wrap;';
-      const track = document.createElement('div');
-      track.style.cssText = 'height:6px;background:#EEF2F7;border-radius:999px;overflow:hidden;';
-      const bar = document.createElement('div');
-      bar.setAttribute('data-bar', ''); bar.style.cssText = 'height:100%;width:15%;margin-left:0;background:#0284C7;border-radius:999px;transition:width .25s,margin-left .25s;';
-      track.appendChild(bar);
-      const s = document.createElement('div');
-      s.setAttribute('data-s', ''); s.style.cssText = 'font-size:10px;color:#9CA3AF;font-weight:700;margin-top:5px;';
-      const x = document.createElement('span');
-      x.textContent = '✕'; x.title = 'Закрыть (не останавливает скрипт)';
-      x.style.cssText = 'position:absolute;top:5px;right:9px;cursor:pointer;color:#9CA3AF;font-size:13px;line-height:1;padding:2px;';
-      x.onclick = function () { hide(); };
-      b.appendChild(t); b.appendChild(track); b.appendChild(s); b.appendChild(x);
-      document.documentElement.appendChild(b);
-      return b;
-    }
-    function bars(b) { return { bar: b.querySelector('[data-bar]'), t: b.querySelector('[data-t]'), s: b.querySelector('[data-s]') }; }
-    function stopTimers() { clearInterval(tick); clearInterval(osc); tick = 0; osc = 0; }
-    function startOsc(b) {
-      clearInterval(osc); phase = 0;
-      const bar = bars(b).bar;
-      osc = setInterval(function () {
-        phase = (phase + 1) % 40;
-        const p = phase < 20 ? phase : 40 - phase; // 0..20..0
-        bar.style.width = '32%';
-        bar.style.marginLeft = (p * 3.2) + '%';
-      }, 90);
-    }
-    function open(title) {
-      const b = box();
-      t0 = Date.now(); sess++;
-      b.style.borderLeftColor = '#0284C7';
-      const p = bars(b);
-      p.t.textContent = title || 'Работаю…';
-      p.bar.style.background = '#0284C7';
-      startOsc(b);
-      clearInterval(tick);
-      tick = setInterval(function () {
-        const bb = document.getElementById(ID); if (!bb) return;
-        bb.querySelector('[data-s]').textContent = ((Date.now() - t0) / 1000).toFixed(1) + ' с';
-      }, 150);
-      return b;
-    }
-    function set(title, done, total) {
-      const b = document.getElementById(ID); if (!b) { open(title); return; }
-      const p = bars(b);
-      if (title) p.t.textContent = title;
-      if (typeof done === 'number' && typeof total === 'number' && total > 0) {
-        clearInterval(osc); osc = 0;
-        p.bar.style.marginLeft = '0';
-        p.bar.style.width = Math.max(4, Math.min(100, done / total * 100)) + '%';
-        p.s.textContent = done + ' / ' + total + '  ·  ' + ((Date.now() - t0) / 1000).toFixed(0) + ' с';
-      } else if (!osc) {
-        startOsc(b);
-      }
-    }
-    function finish(title, colour, keepMs) {
-      const b = document.getElementById(ID); if (!b) return;
-      stopTimers();
-      b.style.borderLeftColor = colour;
-      const p = bars(b);
-      p.t.textContent = title;
-      p.bar.style.marginLeft = '0'; p.bar.style.width = '100%'; p.bar.style.background = colour;
-      p.s.textContent = 'за ' + ((Date.now() - t0) / 1000).toFixed(1) + ' с';
-      const mySess = sess;
-      setTimeout(function () { if (sess === mySess) { const x = document.getElementById(ID); if (x) x.remove(); } }, keepMs);
-    }
-    function ok(title) { finish(title || 'Готово', '#16A34A', 2500); }
-    function err(title) { finish(title || 'Не получилось', '#DC2626', 6000); }
-    function hide() { stopTimers(); const b = document.getElementById(ID); if (b) b.remove(); }
-    return { open: open, set: set, ok: ok, err: err, hide: hide };
-  })();
-
   function toast(msg, type, ms, onTap) {
     const colors = { ok: '#16A34A', warn: '#D97706', error: '#DC2626', info: '#0284C7' };
     const box = document.createElement('div');
@@ -2995,7 +2972,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.72.0'; // синхр. с Хэлпером
+  const VER = '0.73.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4244,7 +4221,20 @@
     const lessons = lessonsFromPlan(planHtml);
     if (!lessons.length) throw new Error('в учебном плане не нашла уроков');
 
-    lessonCache = { domain: domain, lessons: lessons, planName: picked.name, plans: plans, note: note };
+    // Кэш вложенных лекций по этому плану в GM (уроки курса меняются редко; TTL 14 дней) —
+    // чтобы «Никита» на второй раз находился сразу.
+    let deep = [], deepDone = {};
+    try {
+      const gc = JSON.parse(GM_getValue('curator_lessons_' + picked.url) || 'null');
+      if (gc && Date.now() - gc.ts < 14 * 864e5 && Array.isArray(gc.deep)) {
+        deep = gc.deep; deepDone = gc.deepDone || {};
+      }
+    } catch (e) { /* нет кэша */ }
+
+    lessonCache = {
+      domain: domain, lessons: lessons, planName: picked.name, plans: plans, note: note,
+      planKey: picked.url, deep: deep, deepDone: deepDone
+    };
     return lessonCache;
   }
 
@@ -4266,19 +4256,27 @@
     const hint = elt('div', 'margin-top:10px;font-size:10px;color:#9CA3AF;font-weight:600;line-height:1.5;', '');
     body.appendChild(hint);
 
-    // кнопка глубокого поиска (по вложенным лекциям) — между строкой поиска и списком
-    const deepBtn = elt('div', 'display:none;margin-top:6px;text-align:center;background:#F0F9FF;color:' + ACC + ';border:1px solid ' + ACC_BD + ';border-radius:10px;padding:7px 8px;font-size:11px;font-weight:800;cursor:pointer;line-height:1.35;', '🔍 Искать и во вложенных уроках (лекции спикеров)');
-    body.insertBefore(deepBtn, listBox);
+    // строка статуса «поиск во вложенных уроках» + «стоп», и тонкая полоса под ней
+    const scanLine = elt('div', 'display:none;margin-top:6px;font-size:10.5px;font-weight:700;color:' + ACC_DEEP + ';align-items:center;gap:8px;');
+    const scanTxt = elt('span', 'flex:1;'); const scanStop = elt('span', 'cursor:pointer;color:#B91C1C;font-weight:800;', 'стоп');
+    scanLine.appendChild(scanTxt); scanLine.appendChild(scanStop);
+    const scanBar = miniBar(); scanBar.el.style.display = 'none';
+    body.insertBefore(scanLine, listBox);
+    body.insertBefore(scanBar.el, listBox);
 
     loadLessons().then(function (data) {
       loadBar.done(); setTimeout(function () { if (loadBar.el.parentNode) loadBar.el.remove(); }, 400);
       status.style.display = 'none';
-      searchLabel.style.display = ''; search.style.display = ''; deepBtn.style.display = 'block';
+      searchLabel.style.display = ''; search.style.display = '';
       searchLabel.textContent = 'Название урока · курс: ' + data.planName + ' · уроков: ' + data.lessons.length;
       if (data.note) { status.style.display = ''; status.style.color = '#B45309'; status.textContent = '⚠️ ' + data.note; }
 
-      let deep = data.deep || null;   // [{name, url, parent}] — все вложенные лекции курса (кэш в lessonCache)
-      let deepLoading = false;
+      if (!data.deep) data.deep = [];          // накопленные вложенные лекции (кэш в lessonCache)
+      if (!data.deepDone) data.deepDone = {};  // {courseId:1} — какие уроки уже открывали
+      let scanRun = 0, scanning = false, scanTerms = '';
+      const scanDone = function () { return Object.keys(data.deepDone).length >= data.lessons.length; };
+      const stopScan = function () { scanRun++; scanning = false; scanLine.style.display = 'none'; scanBar.el.style.display = 'none'; };
+      scanStop.onclick = stopScan;
 
       const nameDiv = function (name) { return elt('div', 'font-size:12px;font-weight:700;color:#111827;line-height:1.35;', name); };
       const urlDiv = function (url) { return elt('div', 'font-size:10px;color:#6B7280;font-weight:600;margin-top:2px;word-break:break-all;', url); };
@@ -4290,7 +4288,7 @@
         main.appendChild(nameDiv(name));
         if (parent) main.appendChild(elt('div', 'font-size:9.5px;color:#9CA3AF;font-weight:700;margin-top:1px;', 'в уроке: ' + parent));
         main.appendChild(urlDiv(url));
-        main.onclick = function () { copyText(url); toast('Ссылка на урок скопирована:\n' + name); wrap.style.background = '#DCFCE7'; };
+        main.onclick = function () { copyText(url); toast('Ссылка на урок скопирована:\n' + name); wrap.style.background = '#DCFCE7'; stopScan(); };
         wrap.appendChild(main);
         return wrap;
       };
@@ -4303,7 +4301,7 @@
         const main = elt('div', 'flex:1;min-width:0;cursor:pointer;');
         main.appendChild(nameDiv(l.name));
         main.appendChild(urlDiv(url));
-        main.onclick = function () { copyText(url); toast('Ссылка на урок скопирована:\n' + l.name); wrap.style.background = '#DCFCE7'; };
+        main.onclick = function () { copyText(url); toast('Ссылка на урок скопирована:\n' + l.name); wrap.style.background = '#DCFCE7'; stopScan(); };
         const exp = elt('div', 'flex:0 0 auto;cursor:pointer;font-size:11px;font-weight:800;color:' + ACC + ';padding:2px 7px;border:1px solid ' + ACC_BD + ';border-radius:8px;line-height:1.4;', '▾');
         exp.title = 'вложенные уроки';
         const sub = elt('div', 'display:none;padding:2px 11px 8px 20px;');
@@ -4328,69 +4326,93 @@
         return wrap;
       };
 
+      let curTerms = [];
+      const matchName = function (name) { const hay = docNorm(name); return curTerms.every(function (t) { return hay.indexOf(t) !== -1; }); };
+
+      let drawT = 0;
       function draw() {
-        const terms = docNorm(search.value).split(' ').filter(Boolean);
+        curTerms = docNorm(search.value).split(' ').filter(Boolean);
         listBox.innerHTML = '';
-        if (!terms.length) { listBox.style.display = 'none'; return; }
-        const match = function (name) { const hay = docNorm(name); return terms.every(function (t) { return hay.indexOf(t) !== -1; }); };
-        const courseHits = data.lessons.filter(function (l) { return match(l.name); }).slice(0, 40);
-        const lectHits = deep ? deep.filter(function (x) { return match(x.name); }).slice(0, 40) : [];
+        if (!curTerms.length) { listBox.style.display = 'none'; stopScan(); return; }
+        const courseHits = data.lessons.filter(function (l) { return matchName(l.name); }).slice(0, 40);
+        const lectHits = data.deep.filter(function (x) { return matchName(x.name); }).slice(0, 40);
+        courseHits.forEach(function (l) { listBox.appendChild(courseRowWithExpand(l)); });
+        lectHits.forEach(function (x) { listBox.appendChild(lessonRow(x.name, x.url, x.parent)); });
         if (!courseHits.length && !lectHits.length) {
           listBox.appendChild(elt('div', 'padding:9px 11px;font-size:11.5px;color:#9CA3AF;font-weight:700;line-height:1.5;',
-            deep ? 'Ничего не найдено.' : 'Среди уроков не нашла. Лекции спикеров внутри уроков — нажми «Искать и во вложенных» над списком.'));
-        } else {
-          courseHits.forEach(function (l) { listBox.appendChild(courseRowWithExpand(l)); });
-          lectHits.forEach(function (x) { listBox.appendChild(lessonRow(x.name, x.url, x.parent)); });
+            scanDone() ? 'Ничего не найдено.' : 'Пока не нашла — ищу внутри уроков…'));
         }
         listBox.style.display = 'block';
+        maybeScan();
       }
-      search.addEventListener('input', draw);
+      const scheduleDraw = function () { clearTimeout(drawT); drawT = setTimeout(draw, 120); };
+      search.addEventListener('input', function () { clearTimeout(drawT); drawT = setTimeout(draw, 200); });
 
-      const deepBar = miniBar();
-      deepBar.el.style.display = 'none';
-      body.insertBefore(deepBar.el, listBox);
-
-      const markDeepDone = function () {
-        deepBtn.textContent = '✓ Вложенные уроки в поиске (' + deep.length + ')';
-        deepBtn.style.background = '#DCFCE7'; deepBtn.style.cursor = 'default';
-        deepBar.done(); setTimeout(function () { deepBar.el.style.display = 'none'; }, 500);
-      };
-      if (deep) markDeepDone();
-
-      deepBtn.onclick = function () {
-        if (deepLoading || deep) return;
-        deepLoading = true;
-        deepBtn.style.cursor = 'default';
-        deepBar.el.style.display = 'block'; deepBar.set(0, 1);
+      // Подгружаем страницы уроков и вытаскиваем вложенные лекции — по мере необходимости.
+      // Приоритет: уроки, чьё название совпадает со словом запроса, — первыми. Останавливаемся,
+      // когда куратор кликнул результат / нажал «стоп» / всё проверено / прошло 45 сек.
+      function maybeScan() {
+        const key = curTerms.join(' ');
+        if (scanDone() || !curTerms.length) return;
+        if (scanning && key === scanTerms) return;
+        const pending = data.lessons.filter(function (l) { return !data.deepDone[l.id]; });
+        if (!pending.length) return;
+        scanTerms = key;
+        pending.sort(function (a, b) {
+          const am = curTerms.some(function (t) { return docNorm(a.name).indexOf(t) !== -1; }) ? 0 : 1;
+          const bm = curTerms.some(function (t) { return docNorm(b.name).indexOf(t) !== -1; }) ? 0 : 1;
+          return am - bm;
+        });
+        startScan(pending);
+      }
+      function startScan(queue) {
+        scanning = true;
+        const myRun = ++scanRun;
+        const t0 = Date.now();
         const total = data.lessons.length;
-        let done = 0; const acc = [];
-        deepBtn.textContent = 'Проверяю уроки… 0 / ' + total + ' · поиск работает';
-        const queue = data.lessons.slice();
+        scanLine.style.display = 'flex'; scanBar.el.style.display = 'block';
+        const tickUI = function () {
+          const d = Object.keys(data.deepDone).length;
+          scanTxt.textContent = 'ищу во вложенных уроках… ' + d + ' / ' + total;
+          scanBar.set(d, total);
+        };
+        tickUI();
+        let n = 0;
         const worker = function () {
+          if (myRun !== scanRun || Date.now() - t0 > 45000) return Promise.resolve();
           const l = queue.shift();
           if (!l) return Promise.resolve();
+          if (data.deepDone[l.id]) return worker();
           return fetchCourseLectures(data.domain, l.id).then(function (arr) {
-            arr.forEach(function (lc) { acc.push({ name: lc.name, url: data.domain + lc.path, parent: l.name }); });
-          }).catch(function () {}).then(function () {
-            done++;
-            if (done % 4 === 0 || done === total) {
-              deepBtn.textContent = 'Проверяю уроки… ' + done + ' / ' + total + ' · поиск работает';
-              deepBar.set(done, total);
-            }
+            data.deepDone[l.id] = 1;
+            let hit = false;
+            arr.forEach(function (lc) {
+              const u = data.domain + lc.path;
+              if (data.deep.some(function (x) { return x.url === u; })) return;
+              data.deep.push({ name: lc.name, url: u, parent: l.name });
+              if (matchName(lc.name)) hit = true;
+            });
+            if (hit) scheduleDraw();
+          }).catch(function () { data.deepDone[l.id] = 1; }).then(function () {
+            if (++n % 3 === 0) tickUI();
             return worker();
           });
         };
-        const workers = [];
-        for (let i = 0; i < 12; i++) workers.push(worker());
-        Promise.all(workers).then(function () {
-          deep = acc; data.deep = acc; deepLoading = false;
-          markDeepDone();
-          draw();
+        const ws = [];
+        for (let i = 0; i < 15; i++) ws.push(worker());
+        Promise.all(ws).then(function () {
+          // сохраняем накопленный индекс в GM (даже частичный — на след. раз продолжим)
+          try { GM_setValue('curator_lessons_' + data.planKey, JSON.stringify({ ts: Date.now(), deep: data.deep, deepDone: data.deepDone })); } catch (e) {}
+          if (myRun !== scanRun) return;
+          scanning = false;
+          tickUI();
+          if (scanDone()) { scanBar.done(); scanTxt.textContent = 'проверила все уроки курса'; }
+          setTimeout(function () { if (!scanning) { scanLine.style.display = 'none'; scanBar.el.style.display = 'none'; } }, 1400);
         });
-      };
+      }
 
       const others = (data.plans || []).map(function (p) { return p.name; }).filter(function (n) { return n !== data.planName; });
-      hint.textContent = 'Клик по названию — ссылка на урок в буфере. «▾» у строки — вложенные уроки (лекции спикеров). Кнопка «Искать во вложенных» разово подгружает все лекции курса в поиск (~30–40 сек, поиск при этом работает). Работает, пока ты залогинена в www.eduson.tv.' +
+      hint.textContent = 'Печатай название урока или имя спикера. Скрипт сам заглядывает внутрь уроков и показывает совпадения по мере нахождения — кликни нужное или нажми «стоп». «▾» — раскрыть вложенные лекции урока. Работает, пока ты залогинена в www.eduson.tv.' +
         (others.length ? ' Другие курсы студента: ' + others.join('; ') + '.' : '');
     }).catch(function (e) {
       loadBar.fail();
