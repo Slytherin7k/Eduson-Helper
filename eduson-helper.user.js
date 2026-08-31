@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.66.0
+// @version      0.67.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.66.0';
+  const VER = '0.67.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -1628,32 +1628,50 @@
       }
       return;
     }
-    // Запасной путь: клиент найден, но оплаченной сделки в амо нет (или курс так и не подтянулся) —
-    // ищем amo_lead_id в админке Эдюсон и берём выигранную сделку по нему.
-    if (data && (data.noPurchase || (!data.chosenDeal && !data.course)) && (seed.emails.length || seed.phones.length)) {
-      toast('Оплаченной сделки в амо не вижу — смотрю в админке Эдюсон…', 'info', 9000);
+    // Запасной путь: оплаченной сделки в амо по контактам клиента нет.
+    // Частый случай — курс купили ДРУГОМУ человеку: в амо контакт покупателя (с другой
+    // почтой), а в карточке OmniDesk — обучающийся. В админке Эдюсон у обучающегося в
+    // «Tracking info» есть amo_lead_id / amo_contact_id — по ним и берём сделку из амо.
+    const noDealYet = !data || data.noPurchase || data.course === 'не покупал'
+      || (!data.chosenDeal && !data.course);
+    if (!err && noDealYet && (seed.emails.length || seed.phones.length)) {
+      toast('Оплаченной сделки в амо по клиенту не вижу — смотрю в админке Эдюсон…', 'info', 9000);
       try {
         const adm = await findDealViaAdmin(seed, api);
+        let viaAdmin = false;
         if (adm && adm.lead) {
+          if (!data) data = newClientData(base + '/leads/detail/' + adm.lead.id);
           data.noPurchase = false;
           data.course = ''; data.support = ''; data.purchaseTs = 0; data.supportMonths = 0;
           data.amoLeadId = adm.lead.id || data.amoLeadId;
           await applyLeadToData(adm.lead, data, api, true);
           data.chosenDeal = { id: adm.lead.id, course: dealCoursePreview(adm.lead),
                               closed: adm.lead.closed_at ? fmtTs(adm.lead.closed_at) : '' };
-          note = (note ? note + '; ' : '') + 'сделку нашла через админку Эдюсон';
+          viaAdmin = true;
         } else if (adm && adm.contact) {
           const d2 = newClientData(base + '/contacts/detail/' + adm.contact.id);
           try {
             await assembleDataInto(adm.contact, d2, api);
             if (!d2.noPurchase && d2.course && d2.course !== 'не покупал') {
-              d2.name = d2.name || data.name;
-              (data.emails || []).forEach(function (e) { if (d2.emails.indexOf(e) === -1) d2.emails.push(e); });
-              (data.phones || []).forEach(function (p) { if (d2.phones.indexOf(p) === -1) d2.phones.push(p); });
+              if (data && data.name) d2.name = data.name;
               data = d2;
-              note = (note ? note + '; ' : '') + 'клиента нашла через админку Эдюсон';
+              viaAdmin = true;
             }
           } catch (e) { /* NOAUTH или иное — оставляем что было */ }
+        }
+        if (viaAdmin) {
+          note = (note ? note + '; ' : '') + 'сделку нашла через админку Эдюсон (возможно, курс купили другому человеку)';
+          data.viaAdmin = true;
+          // контакт в сделке — покупателя; амо-contact-id покупателя для поиска карточки
+          // обучающегося не годится (ищем строго по его почте/телефону).
+          data.amoContactId = 0;
+          // почты/телефоны обучающегося — с карточки OmniDesk, не покупателя из сделки
+          (seed.emails || []).forEach(function (e) {
+            if (!/@eduson\.tv$/i.test(e) && data.emails.indexOf(e) === -1) data.emails.unshift(e);
+          });
+          (seed.phones || []).forEach(function (p) {
+            if (data.phones.indexOf(p) === -1) data.phones.unshift(p);
+          });
         }
       } catch (e) { /* админка недоступна — оставляем как есть */ }
     }
@@ -1671,12 +1689,15 @@
       }
     }
     // ФИО должно быть полное: сравниваем имя из амо с ФИО из админки Эдюсон, берём где больше слов.
+    // Если сделку нашли через админку (курс купили другому) — имя обучающегося берём из админки
+    // (по его почте), а НЕ из контакта покупателя в сделке.
     try {
       const adminFio = await lookupAdminFio(data, seed);
       if (adminFio) {
-        const better = fullerName(data.name || '', adminFio);
+        const useAdmin = data.viaAdmin && adminNameWords(adminFio).length >= 2;
+        const better = useAdmin ? adminFio : fullerName(data.name || '', adminFio);
         if (better && better !== data.name) {
-          note = (note ? note + '; ' : '') + 'ФИО взяла из админки Эдюсон (полнее)';
+          note = (note ? note + '; ' : '') + (useAdmin ? 'ФИО обучающегося — из админки Эдюсон' : 'ФИО взяла из админки Эдюсон (полнее)');
           data.name = fioOrder(better) || better;
         }
       }
@@ -1781,6 +1802,16 @@
       // общее только по тарифному слову («Базовый», «PRO») — совпадение мнимое, пропускаем:
       // так «Data scientist: тариф Базовый» больше не цепляет «HR-менеджер. Базовый курс».
       if (commonReal === 0) return;
+      // У обеих сторон есть свои значимые (не тарифные) слова, а общих меньше двух —
+      // это разные курсы («Бизнес-аналитик» ≠ «Аналитик данных»), не угадываем даже при
+      // совпадении тарифа. Лучше оставить поле пустым, чем подставить чужой курс.
+      if (commonReal < 2) {
+        const tReal = tSig.filter(function (w) { return !tariffKey(w); });
+        const oReal = oSig.filter(function (w) { return !tariffKey(w); });
+        const tMissing = tReal.some(function (w) { return !oSet[w]; });
+        const oExtra = oReal.some(function (w) { return !tSet[w]; });
+        if (tMissing && oExtra) return;
+      }
       const targetCov = common / tSig.length;   // сколько слов amo нашлось в варианте
       const optCov = common / oSig.length;      // насколько вариант «про то же»
 
@@ -2843,7 +2874,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.66.0'; // синхр. с Хэлпером
+  const VER = '0.67.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
