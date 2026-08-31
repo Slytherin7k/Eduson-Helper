@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.58.0
+// @version      0.59.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -16,6 +16,7 @@
 // @connect      eduson.amocrm.ru
 // @connect      amocrm.ru
 // @connect      eduson.tv
+// @connect      docs.google.com
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -111,7 +112,7 @@
 
   /* ================================================ */
 
-  const VER = '0.58.0';
+  const VER = '0.59.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -2834,7 +2835,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.58.0'; // синхр. с Хэлпером
+  const VER = '0.59.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3292,8 +3293,10 @@
     };
     const tPing = mkTab('Пинги', renderPings);
     const tTag = mkTab('Теги', renderTags);
+    const tDoc = mkTab('Документ', renderDoc);
     tabs.appendChild(tPing);
     tabs.appendChild(tTag);
+    tabs.appendChild(tDoc);
     p.appendChild(tabs);
     p.appendChild(body);
     tPing.onclick();
@@ -3581,6 +3584,185 @@
     }
     q.addEventListener('input', draw);
     draw();
+  }
+
+  /* ==================== ВКЛАДКА «ДОКУМЕНТ» ====================
+     Таблица «Академ.часы в курсах» (лист «Список курсов»): A — курс, B — ак.ч.,
+     C — что выдаём (ДПП / УПК / «Диплом от Эдюсон» / …). По умолчанию показываем
+     документ по курсу из карточки OmniDesk; можно выбрать любой другой курс. */
+  const DOC_SHEET_CSV =
+    'https://docs.google.com/spreadsheets/d/1XTS-f9ndG4J5StlnqZJK4GbSR1m6Vxq1LmRVoKlneeE/gviz/tq?tqx=out:csv&gid=0';
+  const DOC_FULL = {
+    'ДПП': 'Диплом о профессиональной переподготовке',
+    'УПК': 'Удостоверение о повышении квалификации',
+  };
+  // кириллические двойники латиницы → латиница: чтобы «1С-Разработчик» (омник)
+  // и «1C-Разработчик — 112 часов» (таблица) считались одним курсом.
+  const DOC_FOLD = { 'а':'a','е':'e','о':'o','р':'p','с':'c','х':'x','к':'k','м':'m','т':'t','н':'h','в':'b','у':'y','і':'i','ѕ':'s' };
+  function docNorm(s) {
+    return String(s || '').toLowerCase()
+      .replace(/ё/g, 'е')
+      .replace(/[а-яіѕ]/g, function (ch) { return DOC_FOLD[ch] || ch; })
+      .replace(/[^a-zа-я0-9]+/g, ' ').trim();
+  }
+
+  function gmText(url) {
+    return new Promise(function (resolve, reject) {
+      GM_xmlhttpRequest({
+        method: 'GET', url: url, timeout: 20000,
+        onload: function (res) {
+          if (res.status === 200) resolve(res.responseText || '');
+          else if (res.status === 401 || res.status === 403 || res.status === 0) reject(new Error('NOAUTH'));
+          else reject(new Error('код ' + res.status));
+        },
+        onerror: function () { reject(new Error('сеть')); },
+        ontimeout: function () { reject(new Error('долго не отвечает')); },
+      });
+    });
+  }
+
+  // CSV gviz → массив строк (кавычки, запятые и переводы строк внутри полей).
+  function parseCsv(text) {
+    const rows = []; let row = [], cur = '', q = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (q) {
+        if (ch === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; }
+        else cur += ch;
+      } else if (ch === '"') q = true;
+      else if (ch === ',') { row.push(cur); cur = ''; }
+      else if (ch === '\n') { row.push(cur); rows.push(row); row = []; cur = ''; }
+      else if (ch !== '\r') cur += ch;
+    }
+    if (cur !== '' || row.length) { row.push(cur); rows.push(row); }
+    return rows;
+  }
+
+  let docMapCache = null; // { list:[{course,doc,hours,section}], byNorm:{} }
+  function loadDocMap() {
+    if (docMapCache) return Promise.resolve(docMapCache);
+    return gmText(DOC_SHEET_CSV + '&_cb=' + Date.now()).then(function (csv) {
+      if (/<!doctype|<html|accounts\.google\.com/i.test(csv.slice(0, 400))) throw new Error('NOAUTH');
+      const rows = parseCsv(csv);
+      const list = []; let section = '';
+      rows.forEach(function (r, idx) {
+        const course = (r[0] || '').trim(), hours = (r[1] || '').trim(), doc = (r[2] || '').trim();
+        if (!course) return;
+        if (idx === 0) return;                         // строка заголовков
+        if (!hours && !doc) { section = course; return; } // раздел / подраздел
+        list.push({ course: course, doc: doc, hours: hours, section: section });
+      });
+      if (!list.length) throw new Error('таблица пустая');
+      const byNorm = {};
+      list.forEach(function (it) { byNorm[docNorm(it.course)] = it; });
+      docMapCache = { list: list, byNorm: byNorm };
+      return docMapCache;
+    });
+  }
+
+  // Курс из карточки → запись таблицы. { item, exact } либо null.
+  function matchDocCourse(map, course) {
+    const n = docNorm(course);
+    if (!n) return null;
+    if (map.byNorm[n]) return { item: map.byNorm[n], exact: true };
+    // а) запись таблицы целиком входит в курс из карточки (карточка = «... тариф Базовый») — самую длинную
+    let a = null, aLen = 0;
+    map.list.forEach(function (it) {
+      const ni = docNorm(it.course);
+      if (ni && ni.length >= 5 && n.indexOf(ni) !== -1 && ni.length > aLen) { a = it; aLen = ni.length; }
+    });
+    if (a) return { item: a, exact: false };
+    // б) наоборот — курс из карточки входит в запись таблицы — самую короткую (ближе к запросу)
+    let b = null, bLen = 1e9;
+    map.list.forEach(function (it) {
+      const ni = docNorm(it.course);
+      if (ni && n.length >= 5 && ni.indexOf(n) !== -1 && ni.length < bLen) { b = it; bLen = ni.length; }
+    });
+    if (b) return { item: b, exact: false };
+    // в) совпадение по значимым словам — только если совпало ≥2 (иначе не гадаем)
+    const words = n.split(' ').filter(function (w) { return w.length >= 5; });
+    if (words.length >= 2) {
+      let hit = null, hs = 0;
+      map.list.forEach(function (it) {
+        const hay = docNorm(it.course);
+        const s = words.filter(function (w) { return hay.indexOf(w) !== -1; }).length;
+        if (s > hs) { hs = s; hit = it; }
+      });
+      if (hit && hs >= 2) return { item: hit, exact: false };
+    }
+    return null;
+  }
+
+  function renderDoc(body) {
+    body.appendChild(elt('div', 'font-weight:800;font-size:13px;margin-bottom:6px;', 'Документ по курсу'));
+    const status = elt('div', 'font-size:11.5px;font-weight:700;color:#9CA3AF;', 'Загружаю таблицу…');
+    body.appendChild(status);
+    const result = elt('div', 'margin-top:8px;');
+    body.appendChild(result);
+    const selLabel = elt('div', fieldLabel, 'Курс — можно выбрать другой для проверки');
+    selLabel.style.display = 'none';
+    const sel = elt('select', inputCss);
+    sel.style.display = 'none';
+    body.appendChild(selLabel);
+    body.appendChild(sel);
+    const legend = elt('div', 'margin-top:12px;font-size:10.5px;color:#9CA3AF;font-weight:600;line-height:1.6;white-space:pre-wrap;',
+      'ДПП — диплом о профессиональной переподготовке\nУПК — удостоверение о повышении квалификации');
+    body.appendChild(legend);
+
+    function showItem(it, note) {
+      result.innerHTML = '';
+      if (!it) {
+        result.appendChild(elt('div', 'font-weight:800;font-size:13px;color:#B45309;', 'Курс в таблице не нашла'));
+        result.appendChild(elt('div', 'font-size:11.5px;color:#6B7280;font-weight:600;margin-top:3px;', 'Выбери курс из списка ниже.'));
+        return;
+      }
+      const card = elt('div', 'border:1px solid ' + ACC_BD + ';background:#F0F9FF;border-radius:12px;padding:10px 12px;');
+      card.appendChild(elt('div', 'font-size:11px;color:#6B7280;font-weight:700;line-height:1.35;', it.course));
+      card.appendChild(elt('div', 'font-weight:900;font-size:17px;color:' + ACC_DEEP + ';margin-top:3px;', it.doc || 'документ не указан'));
+      if (DOC_FULL[it.doc]) card.appendChild(elt('div', 'font-size:12px;color:#374151;font-weight:600;margin-top:1px;', DOC_FULL[it.doc]));
+      if (it.hours) card.appendChild(elt('div', 'font-size:11px;color:#9CA3AF;font-weight:600;margin-top:4px;', it.hours + ' ак. ч.'));
+      if (note) card.appendChild(elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;margin-top:5px;line-height:1.4;', note));
+      result.appendChild(card);
+    }
+
+    loadDocMap().then(function (map) {
+      status.style.display = 'none';
+      selLabel.style.display = '';
+      sel.style.display = '';
+      let group = null, lastSection = null;
+      map.list.forEach(function (it) {
+        if (it.section !== lastSection) {
+          group = document.createElement('optgroup');
+          group.label = it.section || '—';
+          sel.appendChild(group);
+          lastSection = it.section;
+        }
+        (group || sel).appendChild(new Option(it.course + '  →  ' + (it.doc || '?'), it.course));
+      });
+      sel.onchange = function () {
+        showItem(map.byNorm[docNorm(sel.value)] || map.list.find(function (x) { return x.course === sel.value; }), null);
+      };
+
+      const crs = readCourse();
+      const m = matchDocCourse(map, crs);
+      if (m) {
+        sel.value = m.item.course;
+        showItem(m.item, m.exact
+          ? 'курс из карточки: ' + crs
+          : 'курс из карточки: ' + crs + ' — сопоставила по близости, проверь');
+      } else {
+        showItem(null);
+        if (crs) {
+          status.style.display = ''; status.style.color = '#B45309';
+          status.textContent = 'В карточке курс «' + crs + '» — в таблице не нашла, выбери вручную.';
+        }
+      }
+    }).catch(function (e) {
+      status.style.color = '#B45309';
+      status.textContent = (e && e.message === 'NOAUTH')
+        ? 'Google не пустил. Открой таблицу «Академ.часы в курсах» в соседней вкладке, войди в аккаунт и открой панель заново.'
+        : 'Не получилось прочитать таблицу (' + (e && e.message || 'ошибка') + ').';
+    });
   }
 
   /* ==================== КНОПКА В ШАПКЕ ==================== */
