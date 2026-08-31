@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.68.0
+// @version      0.69.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.68.0';
+  const VER = '0.69.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -2874,7 +2874,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.68.0'; // синхр. с Хэлпером
+  const VER = '0.69.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3388,7 +3388,7 @@
       };
       return b;
     };
-    lessonCache = null; // список уроков — свой у каждого студента, обновляем при открытии панели
+    lessonCache = null; _lectCache = {}; // списки уроков — свои у каждого студента, обновляем при открытии
     const tPing = mkTab('Пинги', renderPings);
     const tTag = mkTab('Теги', renderTags);
     const tDoc = mkTab('Документ', renderDoc);
@@ -4010,17 +4010,46 @@
     return out;
   }
   // страница плана → [{id,name}] уроков (мини-курсов внутри программы)
+  const LECT_BTN = /^(начать курс|продолжить(?: обучение)?|перейти|смотреть|открыть|назад к программе)$/i;
+  const stripDur = function (s) {
+    return String(s || '').replace(/\s+\d+\s*(мин(ут[аы]?)?|час[аов]*|ч|сек)\.?\s*$/i, '').trim();
+  };
+  // страница плана → верхнеуровневые уроки (мини-курсы). Вложенные лекции берём потом по клику.
   function lessonsFromPlan(html) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     const byId = {};
     doc.querySelectorAll('a[href*="/ru/courses/"]').forEach(function (a) {
-      const m = (a.getAttribute('href') || '').match(/\/ru\/courses\/(\d+)/);
+      const href = a.getAttribute('href') || '';
+      if (/\/lectures\//.test(href)) return;                       // это ссылка на вложенную лекцию
+      const m = href.match(/\/ru\/courses\/(\d+)(?:[/?#]|$)/);
       if (!m) return;
-      const name = (a.textContent || '').replace(/\s+/g, ' ').trim();
-      if (!name || name.length < 3) return;
+      const name = stripDur((a.textContent || '').replace(/\s+/g, ' ').trim());
+      if (!name || name.length < 3 || LECT_BTN.test(name)) return;
       if (!byId[m[1]] || byId[m[1]].length < name.length) byId[m[1]] = name;
     });
     return Object.keys(byId).map(function (id) { return { id: id, name: byId[id] }; });
+  }
+  // страница урока /ru/courses/<id> → вложенные лекции [{path,name}]
+  function lecturesFromCourse(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const byPath = {};
+    doc.querySelectorAll('a[href*="/lectures/"]').forEach(function (a) {
+      const m = (a.getAttribute('href') || '').match(/(\/ru\/courses\/\d+\/lectures\/\d+)/);
+      if (!m) return;
+      const name = stripDur((a.textContent || '').replace(/\s+/g, ' ').trim());
+      if (!name || name.length < 3 || LECT_BTN.test(name)) return;
+      if (!byPath[m[1]] || byPath[m[1]].length < name.length) byPath[m[1]] = name;
+    });
+    return Object.keys(byPath).map(function (p) { return { path: p, name: byPath[p] }; });
+  }
+  let _lectCache = {};
+  function fetchCourseLectures(domain, courseId) {
+    if (_lectCache[courseId]) return Promise.resolve(_lectCache[courseId]);
+    return gmText(domain + '/ru/courses/' + courseId).then(function (html) {
+      const arr = lecturesFromCourse(html);
+      _lectCache[courseId] = arr;
+      return arr;
+    });
   }
   function pickPlan(plans, course) {
     const n = docNorm(course);
@@ -4115,17 +4144,37 @@
         } else {
           hits.forEach(function (l) {
             const url = data.domain + '/ru/courses/' + l.id;
-            const row = elt('div', 'padding:8px 11px;cursor:pointer;border-bottom:1px solid #F3F4F6;');
-            row.appendChild(elt('div', 'font-size:12px;font-weight:700;color:#111827;line-height:1.35;', l.name));
-            row.appendChild(elt('div', 'font-size:10px;color:#6B7280;font-weight:600;margin-top:2px;word-break:break-all;', url));
-            row.onmouseenter = function () { row.style.background = '#F0F9FF'; };
-            row.onmouseleave = function () { row.style.background = 'transparent'; };
-            row.onclick = function () {
-              copyText(url);
-              toast('Ссылка на урок скопирована:\n' + l.name);
-              row.style.background = '#DCFCE7';
+            const wrap = elt('div', 'border-bottom:1px solid #F3F4F6;');
+            const row = elt('div', 'padding:8px 11px;display:flex;gap:8px;align-items:flex-start;');
+            const main = elt('div', 'flex:1;min-width:0;cursor:pointer;');
+            main.appendChild(elt('div', 'font-size:12px;font-weight:700;color:#111827;line-height:1.35;', l.name));
+            main.appendChild(elt('div', 'font-size:10px;color:#6B7280;font-weight:600;margin-top:2px;word-break:break-all;', url));
+            main.onclick = function () { copyText(url); toast('Ссылка на урок скопирована:\n' + l.name); wrap.style.background = '#DCFCE7'; };
+            const exp = elt('div', 'flex:0 0 auto;cursor:pointer;font-size:11px;font-weight:800;color:' + ACC + ';padding:2px 7px;border:1px solid ' + ACC_BD + ';border-radius:8px;line-height:1.4;', '▾');
+            exp.title = 'вложенные уроки';
+            const sub = elt('div', 'display:none;padding:2px 11px 8px 20px;');
+            exp.onclick = function () {
+              if (sub.style.display === 'block') { sub.style.display = 'none'; exp.textContent = '▾'; return; }
+              sub.style.display = 'block'; exp.textContent = '…';
+              fetchCourseLectures(data.domain, l.id).then(function (arr) {
+                exp.textContent = '▴'; sub.innerHTML = '';
+                if (!arr.length) {
+                  sub.appendChild(elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;padding:4px 0;', 'вложенных уроков нет — бери ссылку выше'));
+                  return;
+                }
+                arr.forEach(function (lc) {
+                  const lu = data.domain + lc.path;
+                  const sr = elt('div', 'padding:6px 0;cursor:pointer;border-top:1px solid #F3F4F6;');
+                  sr.appendChild(elt('div', 'font-size:11.5px;font-weight:700;color:#111827;line-height:1.3;', lc.name));
+                  sr.appendChild(elt('div', 'font-size:9.5px;color:#6B7280;font-weight:600;margin-top:1px;word-break:break-all;', lu));
+                  sr.onclick = function () { copyText(lu); toast('Ссылка на урок скопирована:\n' + lc.name); sr.style.background = '#DCFCE7'; };
+                  sub.appendChild(sr);
+                });
+              }).catch(function () { exp.textContent = '▾'; sub.style.display = 'none'; toast('Не удалось открыть вложенные уроки'); });
             };
-            listBox.appendChild(row);
+            row.appendChild(main); row.appendChild(exp);
+            wrap.appendChild(row); wrap.appendChild(sub);
+            listBox.appendChild(wrap);
           });
         }
         listBox.style.display = 'block';
@@ -4133,7 +4182,7 @@
       search.addEventListener('input', draw);
 
       const others = (data.plans || []).map(function (p) { return p.name; }).filter(function (n) { return n !== data.planName; });
-      hint.textContent = 'Клик по строке — ссылка на урок в буфере. Работает, пока ты залогинена в www.eduson.tv.' +
+      hint.textContent = 'Клик по названию — ссылка на урок в буфере. «▾» — раскрыть вложенные уроки (напр. отдельные лекции спикеров). Работает, пока ты залогинена в www.eduson.tv.' +
         (others.length ? ' Другие курсы студента: ' + others.join('; ') + '.' : '');
     }).catch(function (e) {
       status.style.color = '#B45309';
