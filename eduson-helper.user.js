@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.86.0
+// @version      0.87.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.86.0';
+  const VER = '0.87.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3056,7 +3056,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.86.0'; // синхр. с Хэлпером
+  const VER = '0.87.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3209,10 +3209,13 @@
 
   const DZ_DEFAULT = { name: 'Мария Старцева', tag: '@maria_startceva' };
   const DZ_REVIEWERS = [
+    { name: 'Юлия Проняева', tag: '@yilya_pronyaeva' },
+    { name: 'Надя Шелест', tag: '@Nadya_Zhu' },
+    { name: 'Ника Ожаровская', tag: '@nikaozharovskaya' },
+    { name: 'Валерия Каторкина', tag: '@valeria_katt' },
+    { name: 'Екатерина', tag: '@rrinaa' },
     { name: 'Даниил Тюрин', tag: '@TurinDE' },
     { name: 'Вадим Романенко', tag: '@vadim_romanenk0' },
-    { name: 'Анна Серебрякова', tag: '@serebryaka' },
-    { name: 'Яков Дмитриев', tag: '@Dmitriev_Yakov' },
     { name: 'Нина Пилипенко', tag: '@Chosi88' }
   ];
 
@@ -3799,31 +3802,37 @@
     let tagSel = null, manualInput = null, respSel = null, manualBox = null;
     const manualTag = ping.suggest === 'paymanual' || isPkk;
     const needTag = ping.suggest !== 'none';
-    if (needTag) {
-      // «Завис вопрос»: один список — «нет ответственного» + все ответственные (поиск по имени
-      // печатью первых букв) + «вписать другой тег».
-      if (isLead) {
-        body.appendChild(elt('div', fieldLabel, 'Ответственный по вопросу'));
-        respSel = elt('select', inputCss);
-        respSel.appendChild(new Option('Нет ответственного — тег лида контента', 'lead'));
-        QUESTION_RESPONSIBLES.forEach(function (p) {
-          respSel.appendChild(new Option(p.name + ' — ' + p.tag, p.tag));
-        });
-        respSel.appendChild(new Option('— вписать другой тег —', '__manual__'));
-        body.appendChild(respSel);
-      }
+    const RESP_NONE = 'Нет ответственного — тег лида контента';
+    if (needTag && isLead) {
+      // «Завис вопрос»: одно поле — можно ВПИСАТЬ (поиск по имени) или выбрать из списка.
+      // Список: «нет ответственного» + все ответственные. Можно вписать любой @тег или имя.
+      body.appendChild(elt('div', fieldLabel, 'Ответственный по вопросу'));
+      const dl = elt('datalist');
+      dl.id = 'resp-dl-' + Math.random().toString(36).slice(2);
+      const o0 = document.createElement('option'); o0.value = RESP_NONE; dl.appendChild(o0);
+      QUESTION_RESPONSIBLES.forEach(function (p) {
+        const o = document.createElement('option'); o.value = p.name + ' — ' + p.tag; dl.appendChild(o);
+      });
+      body.appendChild(dl);
+      respSel = elt('input', inputCss);
+      respSel.setAttribute('list', dl.id);
+      respSel.setAttribute('autocomplete', 'off');
+      respSel.value = RESP_NONE;
+      respSel.placeholder = 'имя, @тег или «нет ответственного»';
+      body.appendChild(respSel);
+    }
+    if (needTag && !isLead) {
       manualBox = elt('div', '');
       body.appendChild(manualBox);
       manualBox.appendChild(elt('div', fieldLabel, ping.suggest === 'paymanual' ? 'Тег (впиши сам)' : 'Кому'));
       manualInput = elt('input', inputCss);
-      manualInput.placeholder = isLead ? 'имя или @тег' : '@тег';
-      if (!manualTag && !isLead) {
+      manualInput.placeholder = '@тег';
+      if (!manualTag) {
         tagSel = elt('select', inputCss);
         manualBox.appendChild(tagSel);
         manualInput.style.cssText = inputCss + 'margin-top:5px;display:none;';
       }
       manualBox.appendChild(manualInput);
-      if (isLead) manualBox.style.display = 'none'; // видно только при «вписать другой»
     }
 
     // --- Ссылка (для «Новый лид» ссылки нет — linkKind 'none') ---
@@ -3859,32 +3868,31 @@
       }
     }
 
-    // «Имя — @тег» / «Имя» / «@тег» → @тег
-    function resolveRespTag(s) {
-      s = (s || '').trim();
-      if (!s) return '';
-      const m = s.match(/@[A-Za-z0-9_]+/);
-      if (m) return m[0];
+    // Разбор поля «Ответственный по вопросу»: «нет ответственного» / конкретный человек / @тег.
+    function respMode() {
+      const v = ((respSel && respSel.value) || '').trim();
+      if (!v || /^нет ответственного/i.test(v)) return { kind: 'lead' };
+      const m = v.match(/@[A-Za-z0-9_]+/);
+      if (m) return { kind: 'tag', tag: m[0] };
       const fold = function (x) { return x.toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim(); };
-      const p = QUESTION_RESPONSIBLES.find(function (r) { return fold(r.name) === fold(s); });
-      return p ? p.tag : s;
+      const p = QUESTION_RESPONSIBLES.find(function (r) { return fold(r.name) === fold(v); });
+      return { kind: 'tag', tag: p ? p.tag : v };
     }
     function chosenTag() {
       if (!needTag) return '';
-      if (isLead && respSel) {
-        const v = respSel.value;
-        if (v === '__manual__') return resolveRespTag(manualInput.value);
-        if (v === 'lead') {
+      if (isLead) {
+        const rm = respMode();
+        if (rm.kind === 'lead') {
           const c = clusterSel && CLUSTERS[clusterSel.value];
           return c ? ((c.lead && c.lead.tag) || c.product.tag) : '';
         }
-        return v; // @тег выбранного ответственного
+        return rm.tag;
       }
       if (tagSel && tagSel.value !== '__manual__') return tagSel.value;
       return manualInput.value.trim();
     }
     function recompute() {
-      const noResp = !!(respSel && respSel.value === 'lead');
+      const noResp = !!(isLead && respMode().kind === 'lead');
       const extra = {};
       if (curSub) {
         extra.baseText = curSub.text;
@@ -3923,13 +3931,11 @@
       tagSel.value = opts.length ? opts[0].tag : '';
       if (!respSel) manualInput.style.display = 'none';
     }
-    // Смена «Ответственного по вопросу»: показать поле ручного тега только для «вписать другой»,
-    // кластер — только когда ответственного нет (тег лида контента берётся по кластеру).
+    // Смена «Ответственного по вопросу»: кластер виден только когда ответственного нет
+    // (тогда тег = лид контента по кластеру).
     function applyResp() {
-      if (!respSel) return;
-      const v = respSel.value;
-      if (manualBox) manualBox.style.display = v === '__manual__' ? 'block' : 'none';
-      if (clusterBox && isLead) clusterBox.style.display = v === 'lead' ? 'block' : 'none';
+      if (!isLead || !respSel) return;
+      if (clusterBox) clusterBox.style.display = respMode().kind === 'lead' ? 'block' : 'none';
       recompute();
     }
     fillTagSel();
@@ -3938,7 +3944,7 @@
 
     if (subSel) subSel.onchange = applySub;
     if (courseInput) courseInput.oninput = recompute;
-    if (respSel) respSel.onchange = applyResp;
+    if (respSel) { respSel.oninput = applyResp; respSel.onchange = applyResp; }
     if (clusterSel) clusterSel.onchange = function () {
       fillTagSel();
       if (isPkk && curSub && curSub.toRop && manualInput) {
@@ -3993,7 +3999,7 @@
       { title: 'Лиды контента', rows: leads },
       { title: 'Проверяющие ДЗ', rows: [{ name: DZ_DEFAULT.name, tag: DZ_DEFAULT.tag, note: 'по умолчанию' }]
         .concat(DZ_REVIEWERS.map(function (d) { return { name: d.name, tag: d.tag, note: '' }; })) },
-      { title: 'Эскалации', rows: ESCALATIONS.map(function (e) { return { name: e.name, tag: e.tag, note: e.note }; }) },
+      { title: 'Кому писать за помощью', rows: ESCALATIONS.map(function (e) { return { name: e.name, tag: e.tag, note: e.note }; }) },
       { title: 'Директора департаментов', rows: DIRECTORS.map(function (d) { return { name: d.name, tag: d.tag, note: d.note }; }) },
       { title: 'Команды продаж (МОП)', teams: teams }
     ];
@@ -4021,7 +4027,20 @@
       const meta = elt('div', 'display:flex;flex-wrap:wrap;gap:4px 8px;margin-top:1px;align-items:baseline;');
       if (row.tag) meta.appendChild(elt('span', 'font:500 11.5px IBM Plex Mono,' + FONT + ';color:' + ACC_DEEP + ';', row.tag));
       else meta.appendChild(elt('span', 'font-size:11px;color:#9CA3AF;font-weight:600;', 'тега нет'));
-      if (row.note) meta.appendChild(elt('span', 'font-size:11px;color:#9CA3AF;font-weight:600;', row.note));
+      if (row.note) {
+        // @тег внутри примечания — тоже кликабельный (копирует тег)
+        const noteEl = elt('span', 'font-size:11px;color:#9CA3AF;font-weight:600;');
+        String(row.note).split(/(@[A-Za-z0-9_]+)/).forEach(function (part) {
+          if (/^@[A-Za-z0-9_]+$/.test(part)) {
+            const a = elt('span', 'font:500 11px IBM Plex Mono,' + FONT + ';color:' + ACC_DEEP + ';cursor:pointer;text-decoration:underline;', part);
+            a.onclick = function (e) { e.stopPropagation(); copyText(part); toast('Скопирован тег ' + part); };
+            noteEl.appendChild(a);
+          } else if (part) {
+            noteEl.appendChild(document.createTextNode(part));
+          }
+        });
+        meta.appendChild(noteEl);
+      }
       it.appendChild(meta);
       it.onmouseenter = function () { it.style.background = '#F0F9FF'; };
       it.onmouseleave = function () { it.style.background = 'transparent'; };
