@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.84.1
+// @version      0.85.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.84.1';
+  const VER = '0.85.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3056,7 +3056,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.84.1'; // синхр. с Хэлпером
+  const VER = '0.85.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3218,6 +3218,34 @@
 
   const DIPLOMA_OWNER = { name: 'Антон Трепко', tag: '@anteneshe' };
 
+  // Ответственные за вопросы (контент) — для пинга «Завис вопрос», режим «есть ответственный».
+  // Выпадающий список + поиск по имени. Дополнять строками.
+  const QUESTION_RESPONSIBLES = [
+    { name: 'Лиза Сорокина', tag: '@lmisoa' },
+    { name: 'Вадим', tag: '@VadimIvasch' },
+    { name: 'Татьяна Венерцева', tag: '@TatianaVenerceva' },
+    { name: 'Дмитрий Кочетков', tag: '@Erich_August' },
+    { name: 'Ярослав Сединин', tag: '@sedininyaros' },
+    { name: 'Юрий Быков', tag: '@YuryEngBykov' },
+    { name: 'Даниил Маляревич', tag: '@DASH_GH' },
+    { name: 'Нина Волкова', tag: '@lactevias' },
+    { name: 'Агата', tag: '@agathacca' },
+    { name: 'Елизавета Микалаускайте', tag: '@emikalauskayte' },
+    { name: 'Яна', tag: '@vselennaya_sarcazma' },
+    { name: 'Амина Гайнуллина', tag: '@ma_cherrrie' },
+    { name: 'Яков Дмитриев', tag: '@Dmitriev_Yakov' },
+    { name: 'Елизавета Власова', tag: '@Elizaveta_Vlasova_1878' },
+    { name: 'Виктория Янченко', tag: '@vikulik0' },
+    { name: 'Евгения Прижимова', tag: '@foreugenia' },
+    { name: 'Дилиара Шаймарданова', tag: '@dilya_0298' },
+    { name: 'Арина', tag: '@welllwelllwelll' },
+    { name: 'Денис Чумаков', tag: '@ingbasterddd' },
+    { name: 'Жанна Нутевги', tag: '@z_nutevgi' },
+    { name: 'Полина Макарова', tag: '@magisch_waage' },
+    { name: 'Наташа Сергеева', tag: '@dea_nati' },
+    { name: 'Денис Касаткин', tag: '@d_a_kasatkin' }
+  ];
+
   const ESCALATIONS = [
     { name: 'Юля Проняева', tag: '@yilya_pronyaeva', note: 'справки об оплате, дипломы, негатив из чатов, претензии, сложные и негативные кейсы, непонятки по тикетам · можно в чат онбординга' },
     { name: 'Маша Киликян', tag: '@Sh_enma', note: 'закрывающие документы, справки' },
@@ -3272,7 +3300,7 @@
     { id: 'dz', title: 'Зависла проверка ДЗ', suggest: 'dz', linkKind: 'homework', linkLabel: 'Карточка ДЗ',
       text: '{тег}\nПривет! Подвисла проверка ДЗ — посмотри, пожалуйста.\n{ссылка}' },
     { id: 'sending', title: 'Задержка отправки диплома', suggest: 'diploma', linkKind: 'asana', linkLabel: 'Задача в Асане',
-      text: '{тег}\nПривет! Подвисла отправка диплома, задержка уже большая — возьми, пожалуйста, в ближайшую очередь.\n{ссылка}' },
+      text: '{тег}\nПривет! Подвисла отправка, задержка уже большая — возьми, пожалуйста, в ближайшую очередь.\n{ссылка}' },
     { id: 'pkk', title: 'Пинг в ПКК МОПу/РОПу', suggest: 'pkk', linkKind: 'amo', linkLabel: 'Сделка',
       subs: PKK_SUBS, text: PKK_SUBS[0].text },
     { id: 'lead', title: 'Новый лид', suggest: 'none', linkKind: 'none',
@@ -3787,6 +3815,19 @@
         body.appendChild(tagSel);
         manualInput.style.cssText = inputCss + 'margin-top:5px;display:none;';
       }
+      // «Завис вопрос», режим «есть ответственный» — выпадающий список ответственных + поиск по имени.
+      if (ping.suggest === 'leadcontent') {
+        const dl = elt('datalist');
+        dl.id = 'resp-dl-' + Math.random().toString(36).slice(2);
+        QUESTION_RESPONSIBLES.forEach(function (p) {
+          const o = document.createElement('option');
+          o.value = p.name + ' — ' + p.tag;
+          dl.appendChild(o);
+        });
+        body.appendChild(dl);
+        manualInput.setAttribute('list', dl.id);
+        manualInput.placeholder = 'имя ответственного или @тег';
+      }
       body.appendChild(manualInput);
     }
 
@@ -3823,9 +3864,19 @@
       }
     }
 
+    // «Имя — @тег» / «Имя» / «@тег» → @тег
+    function resolveRespTag(s) {
+      s = (s || '').trim();
+      if (!s) return '';
+      const m = s.match(/@[A-Za-z0-9_]+/);
+      if (m) return m[0];
+      const fold = function (x) { return x.toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim(); };
+      const p = QUESTION_RESPONSIBLES.find(function (r) { return fold(r.name) === fold(s); });
+      return p ? p.tag : s;
+    }
     function chosenTag() {
       if (!needTag) return '';
-      if (respSel && respSel.value === 'own') return manualInput.value.trim();
+      if (respSel && respSel.value === 'own') return resolveRespTag(manualInput.value);
       if (tagSel && tagSel.value !== '__manual__') return tagSel.value;
       return manualInput.value.trim();
     }
