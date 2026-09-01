@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.98.0
+// @version      0.99.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -119,7 +119,7 @@
 
   /* ================================================ */
 
-  const VER = '0.98.0';
+  const VER = '0.99.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3059,7 +3059,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.98.0'; // синхр. с Хэлпером
+  const VER = '0.99.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4412,8 +4412,10 @@
   // корень слова для нестрогого совпадения: "установка"/"установке"/"установить" → "установ"
   function faqStem(w) {
     w = faqFold(w).replace(/[^a-zа-я0-9]+/g, '');
-    if (w.length <= 5) return w;
-    return w.slice(0, Math.max(5, Math.ceil(w.length * 0.7)));
+    if (w.length <= 4) return w;
+    const cut = w.replace(/(иями|ями|ами|ыми|ими|ого|его|ому|ему|ает|ают|ить|ать|еть|ся|ая|яя|ое|ее|ые|ие|ых|их|ым|им|ах|ях|ов|ев|ей|ой|ий|ый|ую|юю|ешь|ишь|ла|ло|ли|на|не|ни|ть|ю|я|у|е|о|ы|и|а|л|й|ь)$/, '');
+    if (cut.length >= 4) return cut;
+    return w.slice(0, Math.max(4, Math.ceil(w.length * 0.7)));
   }
   function faqRow(id, blocks) {
     let b = blocks[id];
@@ -4456,31 +4458,95 @@
     'битрикс': 'bitrix', 'амо': 'amocrm', 'амосрм': 'amocrm',
     'чатгпт': 'chatgpt', 'миджорни': 'midjourney'
   };
+  // Частые синонимы тем поддержки: слово -> с чем ещё его искать.
+  var FAQ_SYN = {
+    'доступ': ['доступы', 'доступа', 'открыт'], 'доступы': ['доступ', 'доступа'],
+    'оплата': ['платеж', 'оплатил', 'оплате', 'оплату'], 'оплатил': ['оплата', 'платеж'], 'платеж': ['оплата', 'оплатил'],
+    'сертификат': ['диплом', 'удостоверение', 'документ'], 'диплом': ['сертификат', 'удостоверение'],
+    'удостоверение': ['сертификат', 'диплом'],
+    'вебинар': ['эфир', 'трансляция'], 'эфир': ['вебинар', 'трансляция'],
+    'дедлайн': ['срок', 'сроки'], 'срок': ['дедлайн', 'сроки'],
+    'логин': ['вход', 'войти', 'авторизация', 'зайти'], 'вход': ['логин', 'войти', 'авторизация', 'зайти'],
+    'пароль': ['пароля', 'password'],
+    'возврат': ['вернуть', 'рефанд'], 'вернуть': ['возврат', 'рефанд'],
+    'тренажер': ['тренажера', 'практика'],
+    'дз': ['домашнее', 'домашняя', 'задание'], 'домашка': ['дз', 'домашнее', 'задание'],
+    'рассрочка': ['рассрочку', 'кредит', 'долями', 'частями'],
+    'куратор': ['куратора'], 'методист': ['методиста', 'преподаватель', 'эксперт'],
+    'ошибка': ['ошибку', 'ошибки', 'error', 'баг', 'некорректно'],
+    'видео': ['ролик', 'запись', 'лекция'], 'лекция': ['видео', 'урок', 'запись']
+  };
+  // "Мусорные" слова — не несут смысла для поиска, отбрасываем.
+  var FAQ_STOP = new Set(('и в во не что он на я с со как а то все она так его но да ты к у же вы за бы по ее мне было вот от меня о из ему теперь чтобы нет ли если или быть был него до вас нибудь опять уж вам ведь там потому этот того это эту эти этих мой моя при кто чем была сам чтоб без чего раз тоже себе под будет ж тогда где есть надо ней для мы тебя их всё нельзя можно почему зачем когда куда какой какая какие какого пожалуйста подскажите подскажете добрый день здравствуйте привет спасибо студент студента студентка вопрос вопросу проблема помогите помочь').split(' '));
+  // Проверка "отличается не больше чем на 1 опечатку" (для названий программ).
+  function faqNear(a, b) {
+    if (a === b) return true;
+    const la = a.length, lb = b.length;
+    if (Math.min(la, lb) < 5 || Math.abs(la - lb) > 1) return false;
+    let i = 0, j = 0, edits = 0;
+    while (i < la && j < lb) {
+      if (a[i] === b[j]) { i++; j++; continue; }
+      if (++edits > 1) return false;
+      if (la === lb) { i++; j++; } else if (la > lb) { i++; } else { j++; }
+    }
+    return edits + (la - i) + (lb - j) <= 1;
+  }
   function faqVariants(word) {
-    const w = faqFold(word).replace(/[^a-zа-я0-9]+/g, '');
-    if (!w) return [];
-    const out = [w];
-    if (FAQ_TRANSLIT[w]) { out.push(FAQ_TRANSLIT[w]); }
+    const w0 = faqFold(word).replace(/[^a-zа-я0-9]+/g, '');
+    if (!w0) return [];
+    const out = [w0];
+    const push = function (x) { if (x && out.indexOf(x) === -1) out.push(x); };
+    let key = FAQ_TRANSLIT[w0] ? w0 : null;
+    if (!key) { for (const k in FAQ_TRANSLIT) { if (faqNear(k, w0)) { key = k; break; } } }
+    if (key) { push(key); push(FAQ_TRANSLIT[key]); }
     else {
       let best = null;
-      for (const k in FAQ_TRANSLIT) { if (FAQ_TRANSLIT[k] === w && (!best || k.length < best.length)) best = k; }
-      if (best) out.push(best);
+      for (const k in FAQ_TRANSLIT) { if (FAQ_TRANSLIT[k] === w0 && (!best || k.length < best.length)) best = k; }
+      if (best) push(best);
     }
-    return out;
+    (FAQ_SYN[w0] || []).forEach(push);
+    return out.slice(0, 4);
+  }
+
+  // Из вставленной ссылки на урок достаём номера курса/урока и slug — по ним и ищем.
+  function faqFromLink(raw) {
+    if (!/https?:\/\/|eduson\.tv/i.test(raw)) return null;
+    const nums = [];
+    const add = function (n) { if (n && nums.indexOf(n) === -1) nums.push(n); };
+    const mc = raw.match(/courses?\/(\d+)/i); if (mc) add(mc[1]);
+    const ml = raw.match(/(?:lesson|lessons|task|tasks|assignment|assignments|step|steps)\/(\d+)/i); if (ml) add(ml[1]);
+    (raw.match(/\/(\d{3,})(?=[\/?#]|$)/g) || []).forEach(function (m) { add(m.slice(1)); });
+    const rest = raw
+      .replace(/https?:\/\/\S+/ig, ' ').replace(/\S*eduson\.tv\S*/ig, ' ')
+      .toLowerCase().split(/\s+/).map(function (w) { return w.replace(/[^a-zа-яё0-9]+/gi, ''); }).filter(Boolean);
+    let tokens = nums.concat(rest);
+    if (!nums.length) {
+      const slug = raw.match(/academy-([a-z0-9-]+)\.eduson\.tv/i);
+      if (slug) tokens = slug[1].split('-').filter(function (s) { return s.length > 2; }).concat(rest);
+    }
+    return tokens.length ? tokens : null;
   }
 
   // Notion ищет searchQuery как ЦЕЛУЮ ФРАЗУ, не знает морфологии и не знает, что
-  // "автокад" == "autocad". Поэтому для каждого слова берём его варианты (рус/лат по словарю),
-  // запрашиваем каждый отдельно, объединяем карточки и оставляем те, где КАЖДОЕ слово
-  // нашлось поиском Notion или встречается корнем в тексте карточки.
+  // "автокад" == "autocad". Для каждого слова берём варианты (рус/лат, синонимы, опечатка),
+  // запрашиваем каждый, объединяем карточки; карточка проходит, если КАЖДОЕ слово нашлось
+  // поиском Notion или встречается корнем в тексте. Сортируем по релевантности.
   async function notionQuestionSearch(term) {
-    const words = String(term || '').trim().split(/\s+/).filter(function (w) { return w.length >= 2; }).slice(0, 3);
     const raw = String(term || '').trim();
-    const wordVariants = (words.length ? words : [raw]).map(faqVariants).filter(function (v) { return v.length; });
+    let rawWords = faqFromLink(raw);
+    if (!rawWords) {
+      rawWords = raw.toLowerCase().split(/\s+/).map(function (w) { return w.replace(/[^a-zа-яё0-9]+/gi, ''); }).filter(Boolean);
+      const meaningful = rawWords.filter(function (w) { return w.length >= 2 && !FAQ_STOP.has(faqFold(w)); });
+      if (meaningful.length) rawWords = meaningful;
+    }
+    const words = rawWords.filter(function (w) { return w.length >= 2; }).slice(0, 3);
+    if (!words.length) return [];
+
+    const wordVariants = words.map(faqVariants).filter(function (v) { return v.length; });
     if (!wordVariants.length) return [];
     const terms = [];
     wordVariants.forEach(function (vs) { vs.forEach(function (v) { if (terms.indexOf(v) === -1) terms.push(v); }); });
-    const use1 = terms.slice(0, 6);
+    const use1 = terms.slice(0, 7);
     const results = await Promise.all(use1.map(notionQuerySingle));
     const blocks = {};
     results.forEach(function (r) { Object.assign(blocks, r.blocks); });
@@ -4488,22 +4554,29 @@
     use1.forEach(function (t, i) { termSet[t] = new Set(results[i].ids); });
     const seen = {}, order = [];
     results.forEach(function (r) { r.ids.forEach(function (id) { if (!seen[id]) { seen[id] = 1; order.push(id); } }); });
-    if (wordVariants.length < 2) return order.slice(0, 20).map(function (id) { return faqRow(id, blocks); });
+
     const variantStems = wordVariants.map(function (vs) { return vs.map(faqStem).filter(Boolean); });
     const scored = order.map(function (id) {
       const row = faqRow(id, blocks);
-      const hay = faqFold(row.question + ' | ' + row.answer + ' | ' + row.lesson);
-      let hits = 0;
+      const inQ = faqFold(row.question), inA = faqFold(row.answer), inL = faqFold(row.lesson);
+      let hits = 0, score = 0;
       wordVariants.forEach(function (vs, wi) {
+        const stems = variantStems[wi];
+        const q = stems.some(function (s) { return inQ.indexOf(s) !== -1; });
+        const a = stems.some(function (s) { return inA.indexOf(s) !== -1; });
+        const l = stems.some(function (s) { return inL.indexOf(s) !== -1; });
         const inSet = vs.some(function (v) { return termSet[v] && termSet[v].has(id); });
-        const inText = variantStems[wi].some(function (s) { return hay.indexOf(s) !== -1; });
-        if (inSet || inText) hits++;
+        if (q || a || l || inSet) hits++;
+        if (q) score += 4; else if (l) score += 3; else if (a) score += 2; else if (inSet) score += 1;
       });
-      return { row: row, hits: hits };
+      if (row.answer) score += 1;
+      if (row.done) score += 2;
+      return { row: row, hits: hits, score: score };
     });
-    let use = scored.filter(function (s) { return s.hits >= wordVariants.length; });
-    if (!use.length) use = scored.filter(function (s) { return s.hits >= wordVariants.length - 1; });
-    use.sort(function (a, b) { return b.hits - a.hits; });
+    const strict = scored.filter(function (s) { return s.hits >= wordVariants.length; });
+    const loose = scored.filter(function (s) { return s.hits >= Math.max(1, wordVariants.length - 1); });
+    const use = strict.length >= 5 ? strict : loose;
+    use.sort(function (a, b) { return (b.score - a.score) || (b.hits - a.hits); });
     return use.slice(0, 20).map(function (s) { return s.row; });
   }
 
