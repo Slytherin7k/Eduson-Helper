@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.79.0
+// @version      0.80.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.79.0';
+  const VER = '0.80.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3056,7 +3056,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.79.0'; // синхр. с Хэлпером
+  const VER = '0.80.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4185,6 +4185,91 @@
     const any = rows.find(function (tr) { return uidOf(tr); });
     return any ? uidOf(any) : '';
   }
+
+  // super_user HTML → ВСЕ суб-аккаунты [{uid,email,phone,company}] (у студента бывает несколько:
+  // напр. основная программа + бонусное «Трудоустройство» — это РАЗНЫЕ аккаунты/кабинеты).
+  function subUsersFromSuper(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    let tbl = null;
+    doc.querySelectorAll('table').forEach(function (t) {
+      const head = ((t.querySelector('tr') || {}).textContent || '').toLowerCase();
+      if (head.indexOf('email') !== -1 && head.indexOf('first name') !== -1) tbl = t;
+    });
+    if (!tbl) return [];
+    const trs = [].slice.call(tbl.querySelectorAll('tr'));
+    const heads = [].slice.call(trs[0].querySelectorAll('th,td')).map(function (x) { return x.textContent.trim().toLowerCase(); });
+    const iE = heads.indexOf('email'), iP = heads.indexOf('phone'), iC = heads.indexOf('company');
+    return trs.slice(1).map(function (tr) {
+      const a = tr.querySelector('a[href*="/admin/users/"]');
+      const m = a && a.getAttribute('href').match(/\/admin\/users\/(\d+)/);
+      if (!m) return null;
+      const c = [].slice.call(tr.querySelectorAll('td')).map(function (td) { return td.textContent.replace(/\s+/g, ' ').trim(); });
+      return { uid: m[1], email: (c[iE] || '').toLowerCase(), phone: c[iP] || '', company: iC >= 0 ? (c[iC] || '') : '' };
+    }).filter(Boolean);
+  }
+
+  // выбрать суб-аккаунт под поле «Курс» карточки (по колонке Company). '' если совпадение слабое.
+  function subUidByCourse(subs, course) {
+    const n = docNorm(course); if (!n || !subs.length) return '';
+    const cw = n.split(' ').filter(function (w) { return w.length >= 3; });
+    let best = '', bs = 0;
+    subs.forEach(function (s) {
+      const co = docNorm(s.company); if (!co) return;
+      let sc;
+      if (co === n || co.indexOf(n) !== -1 || n.indexOf(co) !== -1) sc = 99;
+      else { const cow = co.split(' '); sc = cw.filter(function (w) { return cow.indexOf(w) !== -1; }).length; }
+      if (sc > bs) { bs = sc; best = s.uid; }
+    });
+    return bs >= 2 ? best : '';
+  }
+
+  // Итоговый аккаунт обучающегося. Приоритет: суб-аккаунт под «Курс» карточки (через супер) →
+  // прямая ссылка admin/users/ из карточки → email/тел → первый. Возвращает {uid, subs, course}.
+  // (Прямая ссылка в карточке бывает на «не тот» суб-аккаунт — напр. на бонусное «Трудоустройство».)
+  async function resolveStudentAccount() {
+    const ids = adminUserSuperIds();
+    if (!ids.users.length && !ids.supers.length) throw new Error('в карточке нет ссылки на админку — нажми магнит 🧲');
+    const u = readUser();
+    const course = readCourse();
+    let subs = [];
+    for (let i = 0; i < ids.supers.length && !subs.length; i++) {
+      const sHtml = await gmText(superUserUrl2(ids.supers[i]));
+      if (looksLikeAdminLogin(sHtml)) throw new Error('NOAUTH');
+      subs = subUsersFromSuper(sHtml);
+    }
+    if (subs.length) {
+      const byCourse = subUidByCourse(subs, course);
+      if (byCourse) return { uid: byCourse, subs: subs, course: course };
+      const byLink = subs.find(function (x) { return ids.users.indexOf(x.uid) !== -1; });
+      if (byLink) return { uid: byLink.uid, subs: subs, course: course };
+      const wE = String(u.email || '').toLowerCase().trim(), wP = digits10(u.phone);
+      const byC = subs.find(function (x) { return (wE && x.email === wE) || (wP && digits10(x.phone) === wP); });
+      if (byC) return { uid: byC.uid, subs: subs, course: course };
+      return { uid: subs[0].uid, subs: subs, course: course };
+    }
+    if (ids.users.length) return { uid: ids.users[0], subs: [], course: course };
+    throw new Error('не нашла обучающегося в супере');
+  }
+
+  // uid обучающегося в академии по конкретному suid: /admin/users/<uid> → кабинет → stats → план
+  // под courseHint → [{id,name}] верхнеуровневых курсов. Кэш по uid (страница юзера ~1.3 МБ — тяжёлая).
+  const _acctLessons = {};
+  async function accountLessons(uid, courseHint) {
+    if (_acctLessons[uid]) return _acctLessons[uid];
+    const cHtml = await gmText(EDU_ADMIN + '/admin/users/' + uid + '?language=ru');
+    if (looksLikeAdminLogin(cHtml)) throw new Error('NOAUTH');
+    const cabUrl = cabinetUrlFromUserCard(cHtml);
+    if (!cabUrl) throw new Error('нет кабинета у этого аккаунта');
+    const statsHtml = await gmText(cabUrl);
+    if (looksLikeAdminLogin(statsHtml)) throw new Error('NOAUTH');
+    const plans = plansFromStats(statsHtml, cabUrl);
+    if (!plans.length) throw new Error('нет учебных планов');
+    const picked = pickPlan(plans, courseHint) || plans[0];
+    const planHtml = await gmText(picked.url);
+    const res = { planName: picked.name, lessons: lessonsFromPlan(planHtml) };
+    _acctLessons[uid] = res;
+    return res;
+  }
   // admin/users/<uid> HTML → https://academy-*.eduson.tv/ru/users/<uid>/stats
   function cabinetUrlFromUserCard(html) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
@@ -4277,15 +4362,11 @@
     if (lessonCache && lessonCache.caseId === cid) return lessonCache;
     const ids = adminUserSuperIds();
     if (!ids.users.length && !ids.supers.length) throw new Error('в карточке нет ссылки на админку — нажми сначала магнит 🧲');
-    const u = readUser();
 
-    let userIds = ids.users.slice();
-    for (let i = 0; i < ids.supers.length && !userIds.length; i++) {
-      const sHtml = await gmText(superUserUrl2(ids.supers[i]));
-      if (looksLikeAdminLogin(sHtml)) throw new Error('NOAUTH');
-      const uid = subUserUidFromSuper(sHtml, u.email, u.phone);
-      if (uid) userIds.push(uid);
-    }
+    // аккаунт под поле «Курс» карточки (супер важнее прямой ссылки — она бывает на бонусный аккаунт)
+    let acct = null;
+    try { acct = await resolveStudentAccount(); } catch (e) { if (e && e.message === 'NOAUTH') throw e; }
+    let userIds = acct ? [acct.uid] : ids.users.slice();
     if (!userIds.length) throw new Error('не нашла обучающегося в супере');
 
     let cabUrl = '';
@@ -4322,7 +4403,8 @@
 
     lessonCache = {
       caseId: cid, domain: domain, lessons: lessons, planName: picked.name, plans: plans, note: note,
-      planKey: picked.url, deep: deep, deepDone: deepDone
+      planKey: picked.url, deep: deep, deepDone: deepDone,
+      uid: userIds[0], subs: (acct && acct.subs) || []
     };
     return lessonCache;
   }
@@ -4670,21 +4752,8 @@
     }).catch(function () { return ''; });
   }
 
-  // uid обучающегося в админке Эдюсон (из поля АДМИНКА карточки; через супер-юзер — по email/тел).
-  async function resolveStudentUid() {
-    const ids = adminUserSuperIds();
-    if (!ids.users.length && !ids.supers.length) throw new Error('в карточке нет ссылки на админку — нажми магнит 🧲');
-    const u = readUser();
-    let userIds = ids.users.slice();
-    for (let i = 0; i < ids.supers.length && !userIds.length; i++) {
-      const sHtml = await gmText(superUserUrl2(ids.supers[i]));
-      if (looksLikeAdminLogin(sHtml)) throw new Error('NOAUTH');
-      const uid = subUserUidFromSuper(sHtml, u.email, u.phone);
-      if (uid) userIds.push(uid);
-    }
-    if (!userIds.length) throw new Error('не нашла обучающегося в супере');
-    return userIds[0];
-  }
+  // uid обучающегося в админке Эдюсон под поле «Курс» карточки (см. resolveStudentAccount).
+  async function resolveStudentUid() { return (await resolveStudentAccount()).uid; }
 
   // Список верхнеуровневых курсов конкретной программы студента (страница плана → [{id,name}]).
   // Кэш по URL плана — переключение программы во вкладке «Прогресс_80» не качает одно и то же дважды.
@@ -4710,9 +4779,9 @@
     const main = elt('div', '');
     body.appendChild(main);
 
-    let uid = '', token = '', student = '';
+    let uid = '', token = '', student = '', acctUid = '';
 
-    resolveStudentUid().then(function (u) { uid = u; return fetchAdminMeta(u); }).then(function (meta) {
+    resolveStudentAccount().then(function (a) { uid = a.uid; acctUid = a.uid; return fetchAdminMeta(a.uid); }).then(function (meta) {
       bar.done(); setTimeout(function () { if (bar.el.parentNode) bar.el.remove(); }, 400);
       status.style.display = 'none';
       token = meta.token; student = meta.studentName || readUser().name || '?';
@@ -4729,7 +4798,7 @@
     function doComplete(logEl, id, name) {
       const line = elt('div', 'color:#6B7280;font-weight:700;', '… ' + id + (name ? (' «' + name + '»') : '') + ' — отправляю');
       logEl.appendChild(line);
-      gmPostForm(EDU_ADMIN + '/admin/users/' + uid + '/create_course_diploma?language=ru', {
+      gmPostForm(EDU_ADMIN + '/admin/users/' + (acctUid || uid) + '/create_course_diploma?language=ru', {
         authenticity_token: token, course_id: id, commit: 'Завершить курс'
       }).then(function (r) {
         if (r.noauth) { line.textContent = '✗ ' + id + ' — не пустило в админку'; line.style.color = '#B91C1C'; }
@@ -4755,7 +4824,9 @@
     function buildUI() {
       main.innerHTML = '';
       main.appendChild(elt('div', S.stu, 'Студент: ' + student));
-      main.appendChild(elt('div', S.sid, 'ID в админке ' + uid + ' · проверь, что это тот студент'));
+      const sidEl = elt('div', S.sid, 'ID в админке ' + uid + ' · проверь, что это тот студент');
+      main.appendChild(sidEl);
+      const setSid = function () { sidEl.textContent = 'ID в админке ' + (acctUid || uid) + ' · проверь, что это тот студент'; };
 
       const log = elt('div', S.log);
 
@@ -4804,34 +4875,55 @@
 
       // курсы ВЫБРАННОЙ программы (источник для совпадений «нет в списке»); в сам список не идут
       let stuCourses = [];
-      const setStuFromPlan = function (planUrl) {
-        const ls = _planLessons[planUrl] || [];
-        stuCourses = ls.filter(function (l) { return !seen[l.id]; })
+      const setStu = function (lessons) {
+        stuCourses = (lessons || []).filter(function (l) { return !seen[l.id]; })
           .map(function (l) { return { id: l.id, n: l.name, stu: true }; });
         drawList();
       };
       loadLessons().then(function (d) {
+        if (d.planKey && !_planLessons[d.planKey]) _planLessons[d.planKey] = d.lessons || [];
+        setStu(d.lessons);
+        const subs = d.subs || [];
         const plans = d.plans || [];
-        const curUrl = d.planKey || (plans[0] && plans[0].url) || '';
-        if (curUrl && !_planLessons[curUrl]) _planLessons[curUrl] = d.lessons || [];
-        setStuFromPlan(curUrl);
-        if (plans.length > 1) {
+        const note = elt('div', 'font-size:9.5px;color:#9CA3AF;font-weight:700;margin-top:2px;', '');
+
+        if (subs.length > 1) {
+          // у студента несколько программ = РАЗНЫХ аккаунтов (осн. + бонусные). Переключаем аккаунт:
+          // меняется и поиск «нет в списке», и куда уходит «завершить курс».
+          planWrap.appendChild(elt('div', fieldLabel, 'Программа студента'));
+          const sel = elt('select', inputCss + 'padding:6px 8px;');
+          subs.forEach(function (s) {
+            const o = elt('option', '', s.company || ('аккаунт ' + s.uid)); o.value = s.uid;
+            if (s.uid === d.uid) o.selected = true;
+            sel.appendChild(o);
+          });
+          note.textContent = d.planName ? ('курс: ' + d.planName) : '';
+          sel.onchange = function () {
+            const su = sel.value; acctUid = su; setSid();
+            if (su === d.uid) { setStu(_planLessons[d.planKey] || d.lessons); note.textContent = d.planName ? ('курс: ' + d.planName) : ''; return; }
+            if (_acctLessons[su]) { setStu(_acctLessons[su].lessons); note.textContent = 'курс: ' + _acctLessons[su].planName; return; }
+            note.textContent = 'загружаю курсы этой программы… (может занять до минуты)';
+            accountLessons(su, readCourse()).then(function (r) { note.textContent = 'курс: ' + r.planName; setStu(r.lessons); })
+              .catch(function (e) { note.textContent = 'не вышло: ' + ((e && e.message) || 'ошибка') + ' — используй поле со ссылкой ниже'; });
+          };
+          planWrap.appendChild(sel); planWrap.appendChild(note);
+        } else if (plans.length > 1) {
+          // один аккаунт, но несколько учебных планов — переключаем план
           planWrap.appendChild(elt('div', fieldLabel, 'Программа студента (для поиска курса не из списка)'));
           const sel = elt('select', inputCss + 'padding:6px 8px;');
           plans.forEach(function (p) {
             const o = elt('option', '', p.name); o.value = p.url;
-            if (p.url === curUrl) o.selected = true;
+            if (p.url === d.planKey) o.selected = true;
             sel.appendChild(o);
           });
-          const selNote = elt('div', 'font-size:9.5px;color:#9CA3AF;font-weight:700;margin-top:2px;', '');
           sel.onchange = function () {
             const u2 = sel.value;
-            if (_planLessons[u2]) { setStuFromPlan(u2); selNote.textContent = ''; return; }
-            selNote.textContent = 'загружаю курсы программы…';
-            lessonsForPlan(u2).then(function () { selNote.textContent = ''; setStuFromPlan(u2); })
-              .catch(function () { selNote.textContent = 'не вышло загрузить эту программу'; });
+            if (_planLessons[u2]) { setStu(_planLessons[u2]); note.textContent = ''; return; }
+            note.textContent = 'загружаю курсы программы…';
+            lessonsForPlan(u2).then(function (ls) { note.textContent = ''; setStu(ls); })
+              .catch(function () { note.textContent = 'не вышло загрузить эту программу'; });
           };
-          planWrap.appendChild(sel); planWrap.appendChild(selNote);
+          planWrap.appendChild(sel); planWrap.appendChild(note);
         } else if (d.planName) {
           planWrap.appendChild(elt('div', 'font-size:9.5px;color:#9CA3AF;font-weight:700;', 'Программа студента: ' + d.planName));
         }
