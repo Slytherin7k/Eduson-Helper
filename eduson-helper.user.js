@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.96.0
+// @version      0.97.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -119,7 +119,7 @@
 
   /* ================================================ */
 
-  const VER = '0.96.0';
+  const VER = '0.97.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3059,7 +3059,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.96.0'; // синхр. с Хэлпером
+  const VER = '0.97.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4439,28 +4439,70 @@
   // "autocad установка" не находит ничего, хотя нужная карточка есть ("...инструкцию по установке...").
   // Поэтому: запрашиваем КАЖДОЕ слово отдельно, объединяем карточки, и оставляем те, где
   // каждое слово запроса либо нашлось поиском Notion, либо встречается корнем в тексте карточки.
+  var FAQ_TRANSLIT = {
+    'автокад': 'autocad', 'автокада': 'autocad', 'автокаде': 'autocad', 'автокадом': 'autocad',
+    'автодеск': 'autodesk', 'ревит': 'revit', 'ревите': 'revit', 'архикад': 'archicad',
+    'скетчап': 'sketchup', 'блендер': 'blender', 'корел': 'coreldraw',
+    'эксель': 'excel', 'экселе': 'excel', 'экселя': 'excel', 'экселем': 'excel',
+    'ворд': 'word', 'ворде': 'word', 'поверпоинт': 'powerpoint', 'пауэрпоинт': 'powerpoint',
+    'аутлук': 'outlook', 'оутлук': 'outlook', 'визио': 'visio',
+    'повербиай': 'power bi', 'пауэрбиай': 'power bi',
+    'фотошоп': 'photoshop', 'фотошопе': 'photoshop', 'иллюстратор': 'illustrator',
+    'индизайн': 'indesign', 'фигма': 'figma', 'фигме': 'figma', 'тильда': 'tilda', 'тильде': 'tilda',
+    'питон': 'python', 'пайтон': 'python', 'джаваскрипт': 'javascript',
+    'скл': 'sql', 'эскюэль': 'sql', 'гитхаб': 'github', 'докер': 'docker',
+    'табло': 'tableau', 'ноушн': 'notion', 'ноушен': 'notion', 'миро': 'miro',
+    'джира': 'jira', 'жира': 'jira', 'зум': 'zoom', 'зуме': 'zoom', 'слак': 'slack',
+    'битрикс': 'bitrix', 'амо': 'amocrm', 'амосрм': 'amocrm',
+    'чатгпт': 'chatgpt', 'миджорни': 'midjourney'
+  };
+  function faqVariants(word) {
+    const w = faqFold(word).replace(/[^a-zа-я0-9]+/g, '');
+    if (!w) return [];
+    const out = [w];
+    if (FAQ_TRANSLIT[w]) { out.push(FAQ_TRANSLIT[w]); }
+    else {
+      let best = null;
+      for (const k in FAQ_TRANSLIT) { if (FAQ_TRANSLIT[k] === w && (!best || k.length < best.length)) best = k; }
+      if (best) out.push(best);
+    }
+    return out;
+  }
+
+  // Notion ищет searchQuery как ЦЕЛУЮ ФРАЗУ, не знает морфологии и не знает, что
+  // "автокад" == "autocad". Поэтому для каждого слова берём его варианты (рус/лат по словарю),
+  // запрашиваем каждый отдельно, объединяем карточки и оставляем те, где КАЖДОЕ слово
+  // нашлось поиском Notion или встречается корнем в тексте карточки.
   async function notionQuestionSearch(term) {
     const words = String(term || '').trim().split(/\s+/).filter(function (w) { return w.length >= 2; }).slice(0, 3);
-    const queries = words.length ? words : [String(term || '').trim()];
-    const results = await Promise.all(queries.map(notionQuerySingle));
+    const raw = String(term || '').trim();
+    const wordVariants = (words.length ? words : [raw]).map(faqVariants).filter(function (v) { return v.length; });
+    if (!wordVariants.length) return [];
+    const terms = [];
+    wordVariants.forEach(function (vs) { vs.forEach(function (v) { if (terms.indexOf(v) === -1) terms.push(v); }); });
+    const use1 = terms.slice(0, 6);
+    const results = await Promise.all(use1.map(notionQuerySingle));
     const blocks = {};
     results.forEach(function (r) { Object.assign(blocks, r.blocks); });
-    const sets = results.map(function (r) { return new Set(r.ids); });
+    const termSet = {};
+    use1.forEach(function (t, i) { termSet[t] = new Set(results[i].ids); });
     const seen = {}, order = [];
     results.forEach(function (r) { r.ids.forEach(function (id) { if (!seen[id]) { seen[id] = 1; order.push(id); } }); });
-    if (queries.length < 2) return order.map(function (id) { return faqRow(id, blocks); });
-    const stems = queries.map(faqStem);
+    if (wordVariants.length < 2) return order.slice(0, 20).map(function (id) { return faqRow(id, blocks); });
+    const variantStems = wordVariants.map(function (vs) { return vs.map(faqStem).filter(Boolean); });
     const scored = order.map(function (id) {
       const row = faqRow(id, blocks);
-      const hay = faqFold(row.question + '  ' + row.answer + '  ' + row.lesson);
+      const hay = faqFold(row.question + ' | ' + row.answer + ' | ' + row.lesson);
       let hits = 0;
-      queries.forEach(function (w, i) {
-        if (sets[i].has(id) || (stems[i] && hay.indexOf(stems[i]) !== -1)) hits++;
+      wordVariants.forEach(function (vs, wi) {
+        const inSet = vs.some(function (v) { return termSet[v] && termSet[v].has(id); });
+        const inText = variantStems[wi].some(function (s) { return hay.indexOf(s) !== -1; });
+        if (inSet || inText) hits++;
       });
       return { row: row, hits: hits };
     });
-    let use = scored.filter(function (s) { return s.hits >= queries.length; });
-    if (!use.length) use = scored.filter(function (s) { return s.hits >= queries.length - 1; });
+    let use = scored.filter(function (s) { return s.hits >= wordVariants.length; });
+    if (!use.length) use = scored.filter(function (s) { return s.hits >= wordVariants.length - 1; });
     use.sort(function (a, b) { return b.hits - a.hits; });
     return use.slice(0, 20).map(function (s) { return s.row; });
   }
@@ -4485,28 +4527,49 @@
       if (only.checked) rows = rows.filter(function (r) { return r.answer; });
       rows.sort(function (a, b) { return (b.answer ? 1 : 0) - (a.answer ? 1 : 0); });
       if (!rows.length) { host.appendChild(elt('div', 'color:#9CA3AF;font-weight:700;font-size:12px;padding:12px 0;text-align:center;', lastRows.length ? 'С ответом ничего нет — сними галочку' : 'Ничего не нашлось')); return; }
+      const single = rows.length === 1;
       rows.forEach(function (r) {
         const card = elt('div', 'border:1px solid #E5E7EB;border-radius:11px;padding:9px 11px;margin-bottom:7px;');
-        card.appendChild(elt('div', 'font-weight:700;font-size:12px;color:#111827;line-height:1.35;', r.question || '(без текста вопроса)'));
-        const meta = elt('div', 'display:flex;flex-wrap:wrap;gap:4px 8px;margin-top:3px;align-items:center;');
+
+        const head = elt('div', 'display:flex;gap:7px;align-items:flex-start;cursor:pointer;');
+        const chev = elt('span', 'font-size:11px;color:#9CA3AF;line-height:1.5;flex:0 0 auto;user-select:none;', '▸');
+        const qt = elt('div', 'flex:1 1 auto;font-weight:700;font-size:12px;color:#111827;line-height:1.35;', r.question || '(без текста вопроса)');
+        head.appendChild(chev); head.appendChild(qt);
+        card.appendChild(head);
+
+        const meta = elt('div', 'display:flex;flex-wrap:wrap;gap:4px 8px;margin-top:4px;align-items:center;');
         const st = elt('span', 'font-size:10px;font-weight:700;padding:1px 7px;border-radius:999px;color:#374151;', r.status || '—');
         st.style.background = r.done ? '#DCFCE7' : '#FEF3C7';
         meta.appendChild(st);
-        if (r.lesson) meta.appendChild(elt('span', 'font-size:10px;color:#6B7280;font-weight:600;', '📚 ' + (r.lesson.length > 60 ? r.lesson.slice(0, 60) + '…' : r.lesson)));
+        if (!r.answer) meta.appendChild(elt('span', 'font-size:10px;color:#9CA3AF;font-weight:600;', 'без ответа методиста'));
         card.appendChild(meta);
+
+        const details = elt('div', 'display:none;margin-top:6px;');
+        if (r.lesson) details.appendChild(elt('div', 'font-size:10px;color:#6B7280;font-weight:600;margin-bottom:5px;word-break:break-all;', '📚 ' + r.lesson));
         if (r.answer) {
-          const ans = elt('div', 'font-size:11px;color:#1F2937;font-weight:500;line-height:1.45;white-space:pre-wrap;background:#F9FAFB;border-radius:8px;padding:7px 9px;margin-top:6px;max-height:150px;overflow:auto;', r.answer);
-          card.appendChild(ans);
+          details.appendChild(elt('div', 'font-size:11px;color:#1F2937;font-weight:500;line-height:1.45;white-space:pre-wrap;background:#F9FAFB;border-radius:8px;padding:7px 9px;', r.answer));
           const cp = elt('div', 'margin-top:6px;text-align:center;background:' + ACC + ';color:#fff;font-weight:800;font-size:11px;padding:6px 0;border-radius:9px;cursor:pointer;', '📋 Копировать ответ');
-          cp.onclick = function () { copyText(r.answer); toast('Ответ методиста скопирован'); };
-          card.appendChild(cp);
+          cp.onclick = function (e) { e.stopPropagation(); copyText(r.answer); toast('Ответ методиста скопирован'); };
+          details.appendChild(cp);
         } else {
-          card.appendChild(elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;margin-top:5px;', 'Ответа методиста пока нет'));
+          details.appendChild(elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;', 'Ответа методиста пока нет'));
         }
         const open = elt('a', 'display:inline-block;margin-top:5px;font-size:10.5px;font-weight:700;color:' + ACC + ';text-decoration:none;', 'открыть карточку в Notion →');
         open.href = 'https://www.notion.so/' + r.id.replace(/-/g, '');
         open.target = '_blank'; open.rel = 'noopener';
-        card.appendChild(open);
+        open.onclick = function (e) { e.stopPropagation(); };
+        details.appendChild(open);
+        card.appendChild(details);
+
+        let openState = false;
+        function setOpen(v) {
+          openState = v;
+          details.style.display = v ? 'block' : 'none';
+          chev.textContent = v ? '▾' : '▸';
+        }
+        head.onclick = function () { setOpen(!openState); };
+        if (single) setOpen(true);
+
         host.appendChild(card);
       });
     }
