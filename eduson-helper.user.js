@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.89.0
+// @version      0.90.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -17,6 +17,9 @@
 // @connect      amocrm.ru
 // @connect      eduson.tv
 // @connect      docs.google.com
+// @connect      notion.so
+// @connect      www.notion.so
+// @connect      notion.com
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -116,7 +119,7 @@
 
   /* ================================================ */
 
-  const VER = '0.89.0';
+  const VER = '0.90.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3056,7 +3059,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.89.0'; // синхр. с Хэлпером
+  const VER = '0.90.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3700,6 +3703,63 @@
     amo: { label: 'Ссылка на сделку', ph: 'https://eduson.amocrm.ru/leads/detail/…' }
   };
 
+  /* ==================== NOTION: статус карточки вопроса ==================== */
+  // Ссылка на карточку «доски вопросов» лежит в переписке OmniDesk (заметка).
+  function findNotionCard() {
+    const rx = /(?:app\.notion\.com|notion\.so|notion\.site)\/[^\s"'<>()]*?([0-9a-f]{32})/i;
+    const nodes = document.querySelectorAll('a[href], .js_only_text_orig, .js_only_text, .chat_chat_win_note');
+    for (const n of nodes) {
+      const s = (n.getAttribute && n.getAttribute('href')) || n.href || n.textContent || '';
+      const m = String(s).match(rx);
+      if (m) {
+        const id = m[1].replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5');
+        return { url: (String(s).match(/https?:\/\/\S*?[0-9a-f]{32}\S*/i) || [m[0]])[0], id: id };
+      }
+    }
+    return null;
+  }
+  function notionPost(path, bodyObj) {
+    return new Promise(function (resolve, reject) {
+      GM_xmlhttpRequest({
+        method: 'POST', url: 'https://www.notion.so/api/v3/' + path, timeout: 15000,
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        data: JSON.stringify(bodyObj),
+        onload: function (r) {
+          if (r.status === 200) { try { resolve(JSON.parse(r.responseText)); } catch (e) { reject(new Error('bad-json')); } }
+          else if (r.status === 401 || r.status === 403) reject(new Error('NOAUTH'));
+          else reject(new Error('http-' + r.status));
+        },
+        onerror: function () { reject(new Error('net')); },
+        ontimeout: function () { reject(new Error('timeout')); }
+      });
+    });
+  }
+  function nUnwrap(rec) {
+    let v = rec;
+    for (let i = 0; i < 4; i++) {
+      if (v && v.value && (v.value.id || v.value.schema || v.value.properties)) return v.value;
+      v = v && v.value;
+    }
+    return v;
+  }
+  // → { status: 'текст', done: bool } | null
+  async function notionCardStatus(pageId) {
+    const j = await notionPost('loadPageChunk', { pageId: pageId, limit: 30, cursor: { stack: [] }, chunkNumber: 0, verticalColumns: false });
+    const rm = j.recordMap || {};
+    const blk = rm.block && rm.block[pageId] && nUnwrap(rm.block[pageId]);
+    if (!blk || !blk.properties) return null;
+    const collId = rm.collection && Object.keys(rm.collection)[0];
+    const coll = collId && nUnwrap(rm.collection[collId]);
+    const schema = coll && coll.schema;
+    if (!schema) return null;
+    const key = Object.keys(schema).find(function (k) { return /статус по вопросу/i.test(schema[k].name); });
+    if (!key) return null;
+    const raw = blk.properties[key];
+    const txt = raw && raw[0] && raw[0][0];
+    if (!txt) return null;
+    return { status: txt, done: /отправлять студенту|студент принял/i.test(txt) };
+  }
+
   // Комбо-поле: можно ВПИСАТЬ (список фильтруется) или выбрать мышкой из выпадашки.
   // rows: [{label, value}]. onPick(cb) — вызывается при вводе и при выборе.
   function combo(rows, ph, initial) {
@@ -3708,7 +3768,7 @@
     inp.setAttribute('autocomplete', 'off');
     inp.placeholder = ph || '';
     if (initial != null) inp.value = initial;
-    const caret = elt('span', 'position:absolute;right:9px;top:11px;color:#9CA3AF;font-size:9px;pointer-events:none;', '▼');
+    const caret = elt('span', 'position:absolute;right:8px;top:8px;padding:3px;color:#9CA3AF;font-size:9px;cursor:pointer;', '▼');
     const menu = elt('div', 'position:absolute;left:0;right:0;top:calc(100% + 2px);z-index:9;background:#fff;border:1px solid #D1D5DB;border-radius:9px;box-shadow:0 10px 28px rgba(15,23,42,.18);max-height:230px;overflow:auto;display:none;');
     wrap.appendChild(inp); wrap.appendChild(caret); wrap.appendChild(menu);
     let cb = null;
@@ -3732,9 +3792,14 @@
       menu.style.display = menu.children.length ? 'block' : 'none';
     }
     let justFocused = false;
-    inp.onfocus = function () { justFocused = true; inp.select(); draw(''); };
+    function openAll() { draw(''); }                 // клик по полю/каретке → ВЕСЬ список
+    inp.onfocus = function () { justFocused = true; inp.select(); openAll(); };
     inp.onmouseup = function (e) { if (justFocused) { e.preventDefault(); justFocused = false; } };
-    inp.onclick = function () { if (menu.style.display === 'none') draw(inp.value === (initial || '') ? '' : inp.value); };
+    inp.onclick = function () { if (menu.style.display === 'none') openAll(); };
+    caret.onmousedown = function (e) {
+      e.preventDefault();
+      if (menu.style.display === 'none') { inp.focus(); openAll(); } else { menu.style.display = 'none'; }
+    };
     inp.oninput = function () { justFocused = false; draw(inp.value); if (cb) cb(); };
     inp.onkeydown = function (e) { if (e.key === 'Escape') menu.style.display = 'none'; };
     inp.onblur = function () { setTimeout(function () { menu.style.display = 'none'; }, 150); };
@@ -3884,6 +3949,28 @@
       linkInput.placeholder = lm.ph;
       linkInput.value = autoLink(ping.linkKind);
       body.appendChild(linkInput);
+    }
+
+    // --- Notion: статус карточки вопроса (только «Завис вопрос») ---
+    if (isLead) {
+      const card = findNotionCard();
+      const nEl = elt('div', 'font-size:11px;font-weight:700;margin-top:5px;line-height:1.35;color:#9CA3AF;', '');
+      body.appendChild(nEl);
+      if (card) {
+        if (linkInput && !linkInput.value) linkInput.value = card.url;
+        nEl.textContent = 'Notion: читаю статус карточки…';
+        notionCardStatus(card.id).then(function (st) {
+          if (!st) { nEl.textContent = 'Notion: статус карточки прочитать не удалось'; return; }
+          nEl.textContent = (st.done ? '✅ ' : '⏳ ') + 'Статус карточки: ' + st.status;
+          nEl.style.color = st.done ? '#16A34A' : '#B45309';
+        }).catch(function (e) {
+          nEl.textContent = (e && e.message === 'NOAUTH')
+            ? 'Notion: не вижу вход — открой notion.so в соседней вкладке и вернись'
+            : 'Notion: не получилось прочитать статус';
+        });
+      } else {
+        nEl.textContent = 'Notion: ссылки на карточку в чате не нашла';
+      }
     }
 
     // --- Превью ---
