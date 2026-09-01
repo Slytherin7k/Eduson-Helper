@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.1.0
+// @version      1.2.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -119,7 +119,7 @@
 
   /* ================================================ */
 
-  const VER = '1.1.0';
+  const VER = '1.2.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3059,7 +3059,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.1.0'; // синхр. с Хэлпером
+  const VER = '1.2.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4397,7 +4397,7 @@
   const FAQ_COLLECTION = 'bfbd127e-e247-4986-aa26-8be168843382';
   const FAQ_VIEW = 'daff7453-0dfa-43fd-a93c-4a4ebe64e31e';
   const FAQ_SPACE = '816a0709-d1b1-494e-8060-6340ffac6df1';
-  const FAQ_KEYS = { question: 'Vi>N', answer: 'rc:R', lesson: 'F{w>', status: 'VO}v' };
+  const FAQ_KEYS = { question: 'Vi>N', answer: 'rc:R', lesson: 'F{w>', status: 'VO}v', course: 'AZ?p' };
   async function notionQuerySingle(q) {
     const j = await notionPost('queryCollection', {
       collection: { id: FAQ_COLLECTION, spaceId: FAQ_SPACE },
@@ -4433,8 +4433,37 @@
       answer: t(FAQ_KEYS.answer),
       lesson: t(FAQ_KEYS.lesson),
       status: status,
+      course: t(FAQ_KEYS.course),
+      edited: (b && b.last_edited_time) || 0,
       done: /отправлять студенту|студент принял/i.test(status)
     };
+  }
+
+  function faqPad(n) { return (n < 10 ? '0' : '') + n; }
+  // Дата ответа: из текста ответа ("Ответ от 21.04") или дата последнего изменения карточки.
+  function faqAnswerDate(r) {
+    const m = (r.answer || '').match(/ответ(?:\s+(?:от|дан[ао]?))?\s*[:—-]?\s*(\d{1,2})[.\/](\d{1,2})(?:[.\/](\d{2,4}))?/i);
+    let ts = 0, d = '';
+    if (m) {
+      let y = m[3] || '';
+      if (y.length === 2) y = '20' + y;
+      if (!y) y = String(new Date(r.edited || Date.now()).getFullYear());
+      d = faqPad(+m[1]) + '.' + faqPad(+m[2]) + '.' + y;
+      ts = Date.parse(y + '-' + faqPad(+m[2]) + '-' + faqPad(+m[1]));
+    } else if (r.edited) {
+      const dt = new Date(r.edited);
+      d = faqPad(dt.getDate()) + '.' + faqPad(dt.getMonth() + 1) + '.' + dt.getFullYear();
+      ts = r.edited;
+    }
+    if (!d) return null;
+    return { text: d, stale: ts > 0 && (Date.now() - ts) > 270 * 864e5 };
+  }
+  function faqCourseLabel(r) {
+    if (r.course) return r.course;
+    const s = (r.lesson || '').match(/academy-([a-z0-9-]+)\.eduson\.tv/i);
+    if (s) return s[1];
+    const c = (r.lesson || '').match(/courses?\/(\d{3,7})/i);
+    return c ? ('курс ' + c[1]) : '';
   }
 
   // Иногда методист пишет ответ не в поле «Ответ методиста», а в теле карточки.
@@ -4693,16 +4722,45 @@
     opts.appendChild(only); opts.appendChild(document.createTextNode('только с ответом методиста'));
     body.appendChild(opts);
     body.appendChild(elt('div', 'font-size:10px;color:#9CA3AF;font-weight:600;margin-bottom:6px;', 'Ищет по доске «Вопросы студентов [актуальная доска]» в Notion'));
+
+    const filt = elt('input', 'width:100%;padding:6px 10px;border:1px solid #E5E7EB;border-radius:9px;font:600 11px ' + FONT + ';color:#111827;margin-bottom:5px;');
+    filt.type = 'search';
+    filt.placeholder = 'фильтр по результатам: курс, урок, слово…';
+    body.appendChild(filt);
+    const chipsBox = elt('div', 'display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;');
+    body.appendChild(chipsBox);
     const host = elt('div', '');
     body.appendChild(host);
 
-    let seq = 0, timer = null, lastRows = [];
+    let seq = 0, timer = null, lastRows = [], activeCourse = '';
+    filt.addEventListener('input', paint);
+
+    function renderChips(rows) {
+      chipsBox.innerHTML = '';
+      const counts = {};
+      rows.forEach(function (r) { const c = faqCourseLabel(r) || '—'; counts[c] = (counts[c] || 0) + 1; });
+      if (activeCourse && !counts[activeCourse]) activeCourse = '';
+      const names = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; });
+      if (names.length < 2 && !activeCourse) return;
+      names.forEach(function (c) {
+        const on = activeCourse === c;
+        const chip = elt('span', 'font-size:10px;font-weight:700;padding:2px 8px;border-radius:999px;cursor:pointer;border:1px solid ' + (on ? ACC : '#E5E7EB') + ';background:' + (on ? ACC : '#fff') + ';color:' + (on ? '#fff' : '#6B7280') + ';', c + ' · ' + counts[c]);
+        chip.onclick = function () { activeCourse = on ? '' : c; paint(); };
+        chipsBox.appendChild(chip);
+      });
+    }
+
     function paint() {
-      host.innerHTML = '';
       let rows = lastRows.slice();
       if (only.checked) rows = rows.filter(function (r) { return r.answer; });
-      rows.sort(function (a, b) { return (b.answer ? 1 : 0) - (a.answer ? 1 : 0); });
-      if (!rows.length) { host.appendChild(elt('div', 'color:#9CA3AF;font-weight:700;font-size:12px;padding:12px 0;text-align:center;', lastRows.length ? 'С ответом ничего нет — сними галочку' : 'Ничего не нашлось')); return; }
+      renderChips(rows);
+      if (activeCourse) rows = rows.filter(function (r) { return (faqCourseLabel(r) || '—') === activeCourse; });
+      const fq = filt.value.trim().toLowerCase().replace(/ё/g, 'е');
+      if (fq) rows = rows.filter(function (r) {
+        return faqFold(r.question + ' ' + r.answer + ' ' + r.lesson + ' ' + r.course).indexOf(fq) !== -1;
+      });
+      host.innerHTML = '';
+      if (!rows.length) { host.appendChild(elt('div', 'color:#9CA3AF;font-weight:700;font-size:12px;padding:12px 0;text-align:center;', lastRows.length ? 'Под фильтр ничего не подошло' : 'Ничего не нашлось')); return; }
       rows.forEach(function (r) {
         const card = elt('div', 'border:1px solid #E5E7EB;border-radius:11px;padding:9px 11px;margin-bottom:7px;');
 
@@ -4728,12 +4786,21 @@
         const st = elt('span', 'font-size:10px;font-weight:700;padding:1px 7px;border-radius:999px;color:#374151;', r.status || '—');
         st.style.background = r.done ? '#DCFCE7' : '#FEF3C7';
         meta.appendChild(st);
+        const ad = r.answer ? faqAnswerDate(r) : null;
+        if (ad) {
+          const db = elt('span', 'font-size:10px;font-weight:700;padding:1px 7px;border-radius:999px;', '📅 ' + ad.text + (ad.stale ? ' · давний' : ''));
+          db.style.background = ad.stale ? '#FEE2E2' : '#EEF2FF';
+          db.style.color = ad.stale ? '#B91C1C' : '#4338CA';
+          if (ad.stale) db.title = 'ответ давно не обновлялся — стоит проверить актуальность';
+          meta.appendChild(db);
+        }
+        if (r.course) meta.appendChild(elt('span', 'font-size:10px;color:#6B7280;font-weight:700;', r.course));
         if (r.lesson) meta.appendChild(elt('span', 'font-size:10px;color:#6B7280;font-weight:600;word-break:break-all;', '📚 ' + (r.lesson.length > 70 ? r.lesson.slice(0, 70) + '…' : r.lesson)));
         card.appendChild(meta);
 
         // Ответ методиста — всегда виден.
         if (r.answer) {
-          if (r.answerFromBody) card.appendChild(elt('div', 'font-size:9.5px;color:#9CA3AF;font-weight:700;margin-top:6px;', 'ответ из текста карточки'));
+          if (r.answerFromBody) card.appendChild(elt('div', 'font-size:9.5px;color:#9CA3AF;font-weight:700;margin-top:6px;', 'ответ из тела карточки'));
           card.appendChild(elt('div', 'font-size:11px;color:#1F2937;font-weight:500;line-height:1.45;white-space:pre-wrap;background:#F9FAFB;border-radius:8px;padding:7px 9px;margin-top:6px;', r.answer));
           const cp = elt('div', 'margin-top:6px;text-align:center;background:' + ACC + ';color:#fff;font-weight:800;font-size:11px;padding:6px 0;border-radius:9px;cursor:pointer;', '📋 Копировать ответ');
           cp.onclick = function () { copyText(r.answer); toast('Ответ методиста скопирован'); };
