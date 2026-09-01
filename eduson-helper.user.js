@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.4.0
+// @version      1.5.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -119,7 +119,7 @@
 
   /* ================================================ */
 
-  const VER = '1.4.0';
+  const VER = '1.5.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3059,7 +3059,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.4.0'; // синхр. с Хэлпером
+  const VER = '1.5.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3657,6 +3657,7 @@
   function closePanel() {
     const p = document.getElementById(PANEL_ID);
     if (p) p.remove();
+    if (typeof setCatOpen === 'function') setCatOpen(false);
     document.removeEventListener('mousedown', outsideClose, true);
   }
   function outsideClose(e) {
@@ -3670,6 +3671,7 @@
   function togglePanel() {
     if (document.getElementById(PANEL_ID)) { closePanel(); return; }
     document.body.appendChild(buildPanel());
+    if (typeof setCatOpen === 'function') setCatOpen(true);
     setTimeout(function () { document.addEventListener('mousedown', outsideClose, true); }, 0);
   }
 
@@ -6063,20 +6065,68 @@
   }
 
   /* ==================== КНОПКА В ШАПКЕ ==================== */
-  // Вид кнопки — как у ключа/магнита Хэлпера, чтобы стояли ровным рядом с одинаковым зазором.
-  const BTN_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="232 514 563 418" width="24" height="18" style="display:block"><path fill="#fff" d="M750 923.1H275.5c-6.6 0-12-5.4-12-12V535.5c0-6.6 5.4-12 12-12H750c6.6 0 12 5.4 12 12v375.6c0 6.6-5.4 12-12 12z"/><path fill="currentColor" d="M750 926.1H275.5c-8.3 0-15-6.7-15-15V535.5c0-8.3 6.7-15 15-15H750c8.3 0 15 6.7 15 15v375.6c0 8.3-6.7 15-15 15zM275.5 526.5c-5 0-9 4-9 9v375.6c0 5 4 9 9 9H750c5 0 9-4 9-9V535.5c0-5-4-9-9-9H275.5z"/><path fill="#E0F2FE" d="M287.7 749.9c-12.9 18-33.9 18-46.8 0s-12.9-47.1 0-65c12.9-18 33.9-18 46.8 0 12.9 17.9 12.9 47 0 65z"/><path fill="currentColor" d="M264.3 766.4c-9.8 0-19-5.2-25.8-14.7-13.6-18.9-13.6-49.7 0-68.6 6.8-9.5 16-14.7 25.8-14.7s19 5.2 25.8 14.7c13.6 18.9 13.6 49.7 0 68.6-6.8 9.4-16 14.7-25.8 14.7z m0-92c-7.8 0-15.3 4.3-21 12.2-12.2 17-12.2 44.6 0 61.5 5.7 7.9 13.1 12.2 21 12.2s15.3-4.3 21-12.2c12.2-17 12.2-44.6 0-61.5-5.8-7.9-13.2-12.2-21-12.2z"/><path fill="#E0F2FE" d="M785.8 749.9c-12.9 18-33.9 18-46.8 0s-12.9-47.1 0-65c12.9-18 33.9-18 46.8 0 12.9 17.9 12.9 47 0 65z"/><path fill="currentColor" d="M762.4 766.4c-9.8 0-19-5.2-25.8-14.7-13.6-18.9-13.6-49.7 0-68.6 6.8-9.5 16-14.7 25.8-14.7s19 5.2 25.8 14.7c13.6 18.9 13.6 49.7 0 68.6-6.8 9.4-16 14.7-25.8 14.7z m0-92c-7.8 0-15.3 4.3-21 12.2-12.2 17-12.2 44.6 0 61.5 5.7 7.9 13.1 12.2 21 12.2s15.3-4.3 21-12.2c12.2-17 12.2-44.6 0-61.5-5.7-7.9-13.1-12.2-21-12.2z"/><path fill="#BAE6FD" d="M512.2 680.8m-126.4 0a126.4 126.4 0 1 0 252.8 0 126.4 126.4 0 1 0-252.8 0Z"/><path fill="currentColor" d="M512.2 810.7c-71.7 0-129.9-58.3-129.9-129.9 0-71.7 58.3-129.9 129.9-129.9s129.9 58.3 129.9 129.9c0 71.6-58.3 129.9-129.9 129.9z m0-252.8c-67.7 0-122.8 55.1-122.8 122.8 0 67.7 55.1 122.8 122.8 122.8S635 748.5 635 680.8c0-67.8-55.1-122.9-122.8-122.9z"/><path fill="currentColor" d="M509.9 758c-29.8 0-54.1-24.3-54.1-54.1h7.1c0 25.9 21.1 47 47 47s47-21.1 47-47h7.1c0 29.8-24.3 54.1-54.1 54.1z"/><path fill="currentColor" d="M490.5 668.5h-7.1c0-25.9-21.1-47-47-47v-7.1c29.8 0 54.1 24.3 54.1 54.1zM541 663.8h-7.1c0-29.8 24.3-54.1 54.1-54.1v7.1c-25.9 0-47 21.1-47 47z"/></svg>';
+  // Кот в коробке: в покое видна коробка + завиток хвоста с бантом; при открытии Хэлпера
+  // из коробки выпрыгивает кот, хвост поднимается и виляет. Цвета — гамма панели.
+  const BTN_SVG = '<svg class="hp-catbox" viewBox="0 -128 200 278" xmlns="http://www.w3.org/2000/svg" style="position:absolute;left:50%;bottom:1px;transform:translateX(-50%);width:31px;height:49px;overflow:visible">' +
+    '<defs><clipPath id="hpccl"><rect x="-260" y="-720" width="720" height="751"/></clipPath></defs>' +
+    '<g clip-path="url(#hpccl)">' +
+    '<g class="hp-tail"><g class="hp-wag">' +
+    '<path d="M150 94 C 150 52, 194 44, 200 12 C 204 -8, 196 -24, 178 -24 C 164 -24, 162 -10, 176 -12" fill="none" stroke="#5F6368" stroke-width="13" stroke-linecap="round"/>' +
+    '<g transform="rotate(12 200 8)"><path d="M200 8 L177 -8 Q 170 8 177 24 Z" fill="#0284C7"/><path d="M200 8 L223 -8 Q 230 8 223 24 Z" fill="#0284C7"/><ellipse cx="200" cy="8" rx="6" ry="9" fill="#0369A1"/></g>' +
+    '</g></g>' +
+    '<g class="hp-cat"><g transform="translate(0 66)">' +
+    '<ellipse cx="100" cy="-60" rx="42" ry="35" fill="#fff"/>' +
+    '<g transform="translate(-47,-135) scale(0.386)"><g transform="translate(0,720) scale(0.1,-0.1)" fill="#5F6368">' +
+    '<path d="M2654 6546 c-96 -23 -165 -83 -211 -181 l-28 -60 -2 -705 c-1 -455 -6 -735 -13 -790 -6 -47 -10 -123 -8 -169 l3 -83 126 -2 126 -1 0 100 c0 118 12 186 58 317 132 377 405 689 685 782 115 38 186 46 421 46 288 0 386 -17 542 -97 168 -85 370 -309 491 -546 93 -182 136 -343 136 -504 l0 -98 125 0 124 0 6 50 c3 28 1 95 -6 150 -8 64 -14 358 -18 820 -6 702 -7 721 -27 771 -45 109 -119 174 -230 201 -85 21 -174 8 -244 -35 -26 -16 -164 -127 -308 -247 l-260 -217 -336 0 -335 0 -263 219 c-311 259 -314 261 -381 279 -62 16 -105 16 -173 0z m327 -423 l211 -176 -35 -17 c-59 -29 -172 -109 -236 -166 -54 -50 -171 -182 -228 -259 l-22 -30 -1 393 c0 379 1 393 20 412 44 44 65 32 291 -157z m1949 157 c19 -19 20 -33 20 -401 0 -213 -4 -379 -9 -377 -5 2 -35 37 -68 78 -120 151 -301 308 -404 350 -16 7 -29 18 -27 25 2 7 93 88 203 179 169 141 204 166 232 166 20 0 41 -8 53 -20z"/>' +
+    '</g></g>' +
+    '<circle cx="84" cy="-61" r="7" fill="#0284C7"/><circle cx="116" cy="-61" r="7" fill="#0284C7"/>' +
+    '<path d="M94 -49 q6 -7 12 0 q4 9 -6 12 q-10 -3 -6 -12z" fill="#0284C7"/>' +
+    '</g></g>' +
+    '</g>' +
+    '<g class="hp-box">' +
+    '<rect x="11" y="30" width="178" height="110" rx="10" fill="#fff" stroke="#5F6368" stroke-width="16"/>' +
+    '<path d="M11 54 h178" stroke="#5F6368" stroke-width="13"/>' +
+    '<rect x="122" y="98" width="46" height="13" rx="6.5" fill="#0284C7"/><rect x="122" y="118" width="46" height="13" rx="6.5" fill="#0284C7"/>' +
+    '</g></svg>';
+
+  const CATBOX_CSS =
+    '#curator-tools-btn,#eduson-hdr-btns,#curator-hdr{overflow:visible !important}' +
+    '#curator-tools-btn .hp-cat{transform:translateY(150px);transition:transform .5s cubic-bezier(.34,1.62,.5,1)}' +
+    '#curator-tools-btn .hp-tail{transform:translateY(6px);transition:transform .5s cubic-bezier(.34,1.5,.5,1)}' +
+    '#curator-tools-btn .hp-wag{transform-box:fill-box;transform-origin:left bottom}' +
+    '#curator-tools-btn.hp-on .hp-cat{transform:translateY(0)}' +
+    '#curator-tools-btn.hp-on .hp-tail{transform:translateY(-34px)}' +
+    '#curator-tools-btn.hp-on .hp-wag{animation:hp-wag-kf 1.1s ease-in-out infinite}' +
+    '@keyframes hp-wag-kf{0%,100%{transform:rotate(-7deg)}50%{transform:rotate(8deg)}}';
+
+  function catboxStyle() {
+    if (document.getElementById('eduson-catbox-css')) return;
+    try {
+      const st = document.createElement('style');
+      st.id = 'eduson-catbox-css';
+      st.textContent = CATBOX_CSS;
+      (document.head || document.documentElement).appendChild(st);
+    } catch (e) {}
+  }
+  // Синхронизировать «кот выпрыгнул / спрятался» с состоянием панели.
+  function setCatOpen(on) {
+    const b = document.getElementById('curator-tools-btn');
+    if (b) b.classList.toggle('hp-on', !!on);
+  }
 
   function makeCuratorBtn() {
+    catboxStyle();
     const btn = document.createElement('div');
     btn.id = 'curator-tools-btn';
     btn.title = 'Пинги в Телеграм и справочник тегов';
-    btn.style.cssText = 'width:30px;height:28px;flex:0 0 auto;box-sizing:border-box;display:flex;align-items:center;' +
-      'justify-content:center;cursor:pointer;background:#fff;border:1px solid #DADCE0;border-radius:5px;' +
-      'box-shadow:0 1px 2px rgba(0,0,0,.12);color:#5F6368;transition:background .15s;';
+    btn.style.cssText = 'width:30px;height:28px;flex:0 0 auto;box-sizing:border-box;position:relative;overflow:visible;' +
+      'cursor:pointer;background:#fff;border:1px solid #DADCE0;border-radius:5px;' +
+      'box-shadow:0 1px 2px rgba(0,0,0,.12);transition:background .15s;';
     btn.innerHTML = BTN_SVG;
     btn.onmouseenter = function () { btn.style.background = '#F1F3F4'; };
     btn.onmouseleave = function () { btn.style.background = '#fff'; };
     btn.onclick = function (e) { e.stopPropagation(); togglePanel(); };
+    if (document.getElementById(PANEL_ID)) btn.classList.add('hp-on');
     return btn;
   }
 
