@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.82.0
+// @version      0.83.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.82.0';
+  const VER = '0.83.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3056,7 +3056,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.82.0'; // синхр. с Хэлпером
+  const VER = '0.83.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3568,7 +3568,10 @@
     }
 
     const head = elt('div', 'display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;cursor:move;user-select:none;');
-    head.appendChild(elt('div', 'font-weight:800;font-size:11.5px;color:' + ACC + ';letter-spacing:.1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;', '⠿ Здесь могла быть ваша реклама😎'));
+    const ttl = elt('div', 'font-weight:800;font-size:11.5px;color:' + ACC + ';letter-spacing:.1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;');
+    ttl.appendChild(elt('span', '', '⠿ Хэлпер'));
+    ttl.appendChild(elt('span', 'font-weight:700;color:#9CA3AF;', '  ·  Здесь могла быть ваша реклама😎'));
+    head.appendChild(ttl);
     const x = elt('span', 'cursor:pointer;color:#9CA3AF;font-size:15px;line-height:1;', '✕');
     x.onclick = togglePanel;
     head.appendChild(x);
