@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.87.0
+// @version      0.88.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.87.0';
+  const VER = '0.88.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3056,7 +3056,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.87.0'; // синхр. с Хэлпером
+  const VER = '0.88.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3210,13 +3210,13 @@
   const DZ_DEFAULT = { name: 'Мария Старцева', tag: '@maria_startceva' };
   const DZ_REVIEWERS = [
     { name: 'Юлия Проняева', tag: '@yilya_pronyaeva' },
+    { name: 'Вадим Романенко', tag: '@vadim_romanenk0' },
+    { name: 'Нина Пилипенко', tag: '@Chosi88' },
+    { name: 'Даниил Тюрин', tag: '@TurinDE' },
     { name: 'Надя Шелест', tag: '@Nadya_Zhu' },
     { name: 'Ника Ожаровская', tag: '@nikaozharovskaya' },
     { name: 'Валерия Каторкина', tag: '@valeria_katt' },
-    { name: 'Екатерина', tag: '@rrinaa' },
-    { name: 'Даниил Тюрин', tag: '@TurinDE' },
-    { name: 'Вадим Романенко', tag: '@vadim_romanenk0' },
-    { name: 'Нина Пилипенко', tag: '@Chosi88' }
+    { name: 'Екатерина', tag: '@rrinaa' }
   ];
 
   const DIPLOMA_OWNER = { name: 'Антон Трепко', tag: '@anteneshe' };
@@ -3700,6 +3700,52 @@
     amo: { label: 'Ссылка на сделку', ph: 'https://eduson.amocrm.ru/leads/detail/…' }
   };
 
+  // Комбо-поле: можно ВПИСАТЬ (список фильтруется) или выбрать мышкой из выпадашки.
+  // rows: [{label, value}]. onPick(cb) — вызывается при вводе и при выборе.
+  function combo(rows, ph, initial) {
+    const wrap = elt('div', 'position:relative;');
+    const inp = elt('input', inputCss + 'padding-right:26px;');
+    inp.setAttribute('autocomplete', 'off');
+    inp.placeholder = ph || '';
+    if (initial != null) inp.value = initial;
+    const caret = elt('span', 'position:absolute;right:9px;top:11px;color:#9CA3AF;font-size:9px;pointer-events:none;', '▼');
+    const menu = elt('div', 'position:absolute;left:0;right:0;top:calc(100% + 2px);z-index:9;background:#fff;border:1px solid #D1D5DB;border-radius:9px;box-shadow:0 10px 28px rgba(15,23,42,.18);max-height:230px;overflow:auto;display:none;');
+    wrap.appendChild(inp); wrap.appendChild(caret); wrap.appendChild(menu);
+    let cb = null;
+    function draw(filter) {
+      menu.innerHTML = '';
+      const f = String(filter || '').toLowerCase().replace(/ё/g, 'е');
+      rows.forEach(function (r) {
+        const hay = (r.label + ' ' + (r.value || '')).toLowerCase().replace(/ё/g, 'е');
+        if (f && hay.indexOf(f) === -1) return;
+        const it = elt('div', 'padding:7px 10px;font:600 12px ' + FONT + ';color:#111827;cursor:pointer;border-bottom:1px solid #F3F4F6;', r.label);
+        it.onmouseenter = function () { it.style.background = '#F0F9FF'; };
+        it.onmouseleave = function () { it.style.background = '#fff'; };
+        it.onmousedown = function (e) {
+          e.preventDefault();
+          inp.value = r.value != null ? r.value : r.label;
+          menu.style.display = 'none';
+          if (cb) cb();
+        };
+        menu.appendChild(it);
+      });
+      menu.style.display = menu.children.length ? 'block' : 'none';
+    }
+    let justFocused = false;
+    inp.onfocus = function () { justFocused = true; inp.select(); draw(''); };
+    inp.onmouseup = function (e) { if (justFocused) { e.preventDefault(); justFocused = false; } };
+    inp.onclick = function () { if (menu.style.display === 'none') draw(inp.value === (initial || '') ? '' : inp.value); };
+    inp.oninput = function () { justFocused = false; draw(inp.value); if (cb) cb(); };
+    inp.onkeydown = function (e) { if (e.key === 'Escape') menu.style.display = 'none'; };
+    inp.onblur = function () { setTimeout(function () { menu.style.display = 'none'; }, 150); };
+    return {
+      el: wrap, input: inp,
+      get value() { return inp.value; },
+      set value(v) { inp.value = v; },
+      onPick: function (fn) { cb = fn; }
+    };
+  }
+
   function showPingResult(body, ping) {
     body.innerHTML = '';
     const back = elt('div', 'font-size:11px;font-weight:800;color:' + ACC + ';cursor:pointer;margin-bottom:6px;', '‹ назад к пингам');
@@ -3803,23 +3849,17 @@
     const manualTag = ping.suggest === 'paymanual' || isPkk;
     const needTag = ping.suggest !== 'none';
     const RESP_NONE = 'Нет ответственного — тег лида контента';
+    let respCombo = null;
     if (needTag && isLead) {
-      // «Завис вопрос»: одно поле — можно ВПИСАТЬ (поиск по имени) или выбрать из списка.
-      // Список: «нет ответственного» + все ответственные. Можно вписать любой @тег или имя.
+      // «Завис вопрос»: одно поле — можно ВПИСАТЬ (список фильтруется) ИЛИ выбрать мышкой.
+      // Клик по полю выделяет текст — сразу печатаешь поверх, удалять не нужно.
       body.appendChild(elt('div', fieldLabel, 'Ответственный по вопросу'));
-      const dl = elt('datalist');
-      dl.id = 'resp-dl-' + Math.random().toString(36).slice(2);
-      const o0 = document.createElement('option'); o0.value = RESP_NONE; dl.appendChild(o0);
-      QUESTION_RESPONSIBLES.forEach(function (p) {
-        const o = document.createElement('option'); o.value = p.name + ' — ' + p.tag; dl.appendChild(o);
-      });
-      body.appendChild(dl);
-      respSel = elt('input', inputCss);
-      respSel.setAttribute('list', dl.id);
-      respSel.setAttribute('autocomplete', 'off');
-      respSel.value = RESP_NONE;
-      respSel.placeholder = 'имя, @тег или «нет ответственного»';
-      body.appendChild(respSel);
+      const rows = [{ label: RESP_NONE, value: RESP_NONE }].concat(
+        QUESTION_RESPONSIBLES.map(function (p) { return { label: p.name + ' · ' + p.tag, value: p.name + ' — ' + p.tag }; })
+      );
+      respCombo = combo(rows, 'имя, @тег или «нет ответственного»', RESP_NONE);
+      body.appendChild(respCombo.el);
+      respSel = respCombo.input;
     }
     if (needTag && !isLead) {
       manualBox = elt('div', '');
@@ -3944,7 +3984,7 @@
 
     if (subSel) subSel.onchange = applySub;
     if (courseInput) courseInput.oninput = recompute;
-    if (respSel) { respSel.oninput = applyResp; respSel.onchange = applyResp; }
+    if (respCombo) respCombo.onPick(applyResp);
     if (clusterSel) clusterSel.onchange = function () {
       fillTagSel();
       if (isPkk && curSub && curSub.toRop && manualInput) {
@@ -3999,7 +4039,7 @@
       { title: 'Лиды контента', rows: leads },
       { title: 'Проверяющие ДЗ', rows: [{ name: DZ_DEFAULT.name, tag: DZ_DEFAULT.tag, note: 'по умолчанию' }]
         .concat(DZ_REVIEWERS.map(function (d) { return { name: d.name, tag: d.tag, note: '' }; })) },
-      { title: 'Кому писать за помощью', rows: ESCALATIONS.map(function (e) { return { name: e.name, tag: e.tag, note: e.note }; }) },
+      { title: 'Эскалация', rows: ESCALATIONS.map(function (e) { return { name: e.name, tag: e.tag, note: e.note }; }) },
       { title: 'Директора департаментов', rows: DIRECTORS.map(function (d) { return { name: d.name, tag: d.tag, note: d.note }; }) },
       { title: 'Команды продаж (МОП)', teams: teams }
     ];
