@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.88.0
+// @version      0.89.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.88.0';
+  const VER = '0.89.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3056,7 +3056,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.88.0'; // синхр. с Хэлпером
+  const VER = '0.89.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3852,12 +3852,12 @@
     let respCombo = null;
     if (needTag && isLead) {
       // «Завис вопрос»: одно поле — можно ВПИСАТЬ (список фильтруется) ИЛИ выбрать мышкой.
-      // Клик по полю выделяет текст — сразу печатаешь поверх, удалять не нужно.
+      // Поле пустое = «нет ответственного» (первый пункт списка). Клик по полю → выпадает список.
       body.appendChild(elt('div', fieldLabel, 'Ответственный по вопросу'));
       const rows = [{ label: RESP_NONE, value: RESP_NONE }].concat(
         QUESTION_RESPONSIBLES.map(function (p) { return { label: p.name + ' · ' + p.tag, value: p.name + ' — ' + p.tag }; })
       );
-      respCombo = combo(rows, 'имя, @тег или «нет ответственного»', RESP_NONE);
+      respCombo = combo(rows, 'имя, @тег или «нет ответственного»', '');
       body.appendChild(respCombo.el);
       respSel = respCombo.input;
     }
