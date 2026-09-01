@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.83.0
+// @version      0.84.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.83.0';
+  const VER = '0.84.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3056,7 +3056,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.83.0'; // синхр. с Хэлпером
+  const VER = '0.84.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3150,6 +3150,17 @@
   };
   const CLUSTER_NAMES = Object.keys(CLUSTERS);
 
+  // Кластер → РОП (руководитель отдела продаж). Для пинга в ПКК, когда МОП не найден.
+  const CLUSTER_ROP = {
+    'Менеджмент':                          { name: 'Александр Фоменко',    tag: '@av_fomenko' },
+    'Финансы':                             { name: 'Александр Кондратьев', tag: '@kondratev_av' },
+    'Бухгалтерия':                         { name: 'Александр Кондратьев', tag: '@kondratev_av' },
+    'Маркетинг и дизайн':                  { name: 'Владимир Толстов',     tag: '@Vladimir_Tolstov_m' },
+    'IT и Аналитика':                      { name: 'Денис Клементович',    tag: '@Klem_Den_lucky' },
+    'МПП (маркетплейсы, проекты, продакт)': { name: 'Александр Фоменко',   tag: '@av_fomenko' },
+    'HR и психология':                     { name: 'Александр Фоменко',    tag: '@av_fomenko' }
+  };
+
   // Команды продаж: руководитель → тег + список МОП
   // mops: строка «Фамилия Имя» — либо пара ['Фамилия Имя', '@личный_тег'].
   // Личные теги МОПов собраны 31.08.2026 из ТГ-чата «Передача клиентов кураторам»
@@ -3226,12 +3237,34 @@
     { name: 'Ленара Галялиева', tag: '@Lenara_Galyalieva', note: 'департамент B2B' }
   ];
 
+  // Ситуации для пинга в чат «Передача клиентов кураторам» (ПКК).
+  //   needsCourse — в тексте есть {курс} (подставляется из карточки, можно поправить).
+  //   toRop — пишем не МОПу, а РОПу кластера (тег из CLUSTER_ROP по кластеру сделки).
+  const PKK_SUBS = [
+    { id: 'wrote', label: 'Написал в амо и ждёт ответа',
+      text: '{тег}\nПривет! Клиент написал тебе в амо и ждёт ответа. Свяжись, пожалуйста.\n{ссылка}' },
+    { id: 'gift_choice', label: 'Подарочный 1+1 — нужна консультация по выбору',
+      text: '{тег}\nПривет! Клиент просит помочь с выбором подарочного курса по 1+1, не может определиться с направлением. Свяжись, пожалуйста.\n{ссылка}' },
+    { id: 'gift_promised', label: 'Подарочный 1+1 — обещали курс дороже основного', needsCourse: true,
+      text: '{тег}\nПривет! Клиент говорит, что при покупке обещали в подарок «{курс}» — он дороже основного. Подскажи, пожалуйста, что зафиксировано по сделке. Подключаем?\n{ссылка}' },
+    { id: 'paid_noaccess', label: 'Оплатил — доступа нет / сделка не реализована',
+      text: '{тег}\nПривет! Клиент пишет, что оплатил, а доступ ему не ушёл. Посмотри, пожалуйста, что со сделкой.\n{ссылка}' },
+    { id: 'blocked', label: 'Курсы заблокированы',
+      text: '{тег}\nПривет! У клиента заблокирован доступ к курсу, запросов нам не нашли. Подскажи, пожалуйста, в чём причина?\n{ссылка}' },
+    { id: 'upgrade', label: 'Хочет доплатить / апгрейд тарифа',
+      text: '{тег}\nПривет! Клиент хочет доплатить и повысить тариф / взять ещё курс. Свяжись, пожалуйста.\n{ссылка}' },
+    { id: 'swap', label: 'Замена курса с консультацией', needsCourse: true,
+      text: '{тег}\nПривет! Клиент хочет заменить курс «{курс}», нужна консультация по выбору. Свяжись, пожалуйста.\n{ссылка}' },
+    { id: 'torop', label: 'МОП не найден → писать РОПу', toRop: true,
+      text: '{тег}\nПривет! Не нашла менеджера по клиенту{мопназв}. Кластер — «{кластер}». Подскажите, пожалуйста, к кому направить.\n{ссылка}' }
+  ];
+
   // Пинги.
   //   suggest: 'leadcontent' (лид контента → продакт кластера), 'dz' (проверяющие),
-  //            'diploma' (всегда Антон Трепко), 'paymanual' (МОП по имени + тег вписывает куратор), 'none'
+  //            'diploma' (всегда Антон Трепко), 'pkk' (передача клиента МОПу/РОПу, выбор ситуации), 'none'
   //   linkKind: 'notion' | 'admin' (автозаполн. из поля АДМИНКА) | 'asana' | 'amo' (автозаполн. номером сделки)
   //   linkLabel: слово-метка перед ссылкой (в Телеграм-версии становится кликабельным)
-  //   {тег} {метка+ссылка} {моп} {цитата} {имя} {email} {телефон} — подставляются.
+  //   {тег} {метка+ссылка} {моп} {курс} {кластер} {мопназв} {цитата} {имя} {email} {телефон} — подставляются.
   const PINGS = [
     { id: 'question', title: 'Завис вопрос', suggest: 'leadcontent', linkKind: 'notion', linkLabel: 'Вопрос',
       text: '{тег}\nПривет! Подвис вопрос от студента — посмотри, пожалуйста.\n{ссылка}',
@@ -3240,8 +3273,8 @@
       text: '{тег}\nПривет! Подвисла проверка ДЗ — посмотри, пожалуйста.\n{ссылка}' },
     { id: 'sending', title: 'Задержка отправки диплома', suggest: 'diploma', linkKind: 'asana', linkLabel: 'Задача в Асане',
       text: '{тег}\nПривет! Подвисла отправка диплома, задержка уже большая — возьми, пожалуйста, в ближайшую очередь.\n{ссылка}' },
-    { id: 'payment', title: 'Вопрос по оплате / подарочному курсу', suggest: 'paymanual', linkKind: 'amo', linkLabel: 'Сделка',
-      text: '{тег}\nПривет! Студент написал в амо по оплате / подарочному курсу — свяжись с ним, пожалуйста.\n{ссылка}' },
+    { id: 'pkk', title: 'Пинг в ПКК (моп, роп)', suggest: 'pkk', linkKind: 'amo', linkLabel: 'Сделка',
+      subs: PKK_SUBS, text: PKK_SUBS[0].text },
     { id: 'lead', title: 'Новый лид', suggest: 'none', linkKind: 'none',
       text: '✳️ НОВЫЙ ЛИД ✳️\nВозьмите в работу, пожалуйста.\n\nСообщение клиента:\n«{цитата}»\n\n{имя}\n{email}\n{телефон}' }
   ];
@@ -3433,12 +3466,14 @@
   }
 
   // Возвращает { plain, html } — html-версия делает слово-метку кликабельной (для вставки в Telegram Desktop).
-  function pingFill(ping, tag, link, mop, noResp) {
+  function pingFill(ping, tag, link, mop, noResp, extra) {
+    extra = extra || {};
     const u = readUser();
     const quote = ping.id === 'lead' ? (firstClientMsg() || lastClientMsg()) : lastClientMsg();
     const lbl = ping.linkLabel || 'Ссылка';
     // «Завис вопрос» без ответственного — отдельный текст (см. ping.textNoResp).
-    const baseText = (noResp && ping.textNoResp) ? ping.textNoResp : ping.text;
+    // Для ПКК текст задаётся выбранной ситуацией (extra.baseText).
+    const baseText = extra.baseText || ((noResp && ping.textNoResp) ? ping.textNoResp : ping.text);
     const linkPlain = link ? (lbl + ': ' + link) : (lbl + ': {вставь ссылку}');
     const linkHtml = link
       ? ('<a href="' + escapeHtml(link) + '">' + escapeHtml(lbl) + '</a>')
@@ -3449,6 +3484,9 @@
         .replace('{тег}', tag || '{тег}')
         .replace('{ссылка}', linkPart)
         .replace('{моп}', mop || '{имя МОП}')
+        .replace('{курс}', extra.course || '{курс}')
+        .replace('{кластер}', extra.cluster || '{кластер}')
+        .replace('{мопназв}', extra.mopName ? (' (' + extra.mopName + ')') : '')
         .replace('{цитата}', quote || '{цитата из сообщения}')
         .replace('{имя}', u.name || '{имя}')
         .replace('{email}', u.email || '{email}')
@@ -3639,20 +3677,32 @@
     body.appendChild(elt('div', 'font-weight:800;font-size:13px;margin-bottom:2px;', ping.title));
 
     let lastHtml = '';
+    const isPkk = ping.suggest === 'pkk';
 
-    // --- Кластер (только для 'leadcontent') ---
+    // --- Ситуация (только для 'pkk') ---
+    let subSel = null, curSub = (ping.subs && ping.subs[0]) || null;
+    if (ping.subs && ping.subs.length) {
+      body.appendChild(elt('div', fieldLabel, 'Ситуация'));
+      subSel = elt('select', inputCss);
+      ping.subs.forEach(function (s, i) { subSel.appendChild(new Option(s.label, String(i))); });
+      body.appendChild(subSel);
+    }
+
+    // --- Кластер ('leadcontent' — всегда; 'pkk' — только когда пишем РОПу) ---
     let clusterSel = null;
-    if (ping.suggest === 'leadcontent') {
+    const clusterBox = elt('div', '');
+    body.appendChild(clusterBox);
+    if (ping.suggest === 'leadcontent' || isPkk) {
       const crs = readCourse();
       const byCourse = detectCluster(crs);
       const clLabel = elt('div', fieldLabel, 'Кластер' + (byCourse ? '' : ' — курс не распознан, выбери'));
-      body.appendChild(clLabel);
+      clusterBox.appendChild(clLabel);
       clusterSel = elt('select', inputCss);
       clusterSel.appendChild(new Option('— выбери кластер —', ''));
       CLUSTER_NAMES.forEach(function (n) { clusterSel.appendChild(new Option(n, n)); });
       clusterSel.value = byCourse || '';
-      body.appendChild(clusterSel);
-      if (crs) body.appendChild(elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;margin-top:2px;', 'курс: ' + crs));
+      clusterBox.appendChild(clusterSel);
+      if (crs) clusterBox.appendChild(elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;margin-top:2px;', 'курс: ' + crs));
       // надёжнее — поле «Кластер» самой сделки в амо; подтянется чуть позже,
       // но только если куратор к этому моменту ещё не выбрал что-то руками.
       const clInitial = byCourse || '';
@@ -3666,12 +3716,13 @@
           }
         });
       }
+      if (isPkk) clusterBox.style.display = 'none';
     }
 
-    // --- МОП (только для 'paymanual') — подсказка кому писать, в текст пинга НЕ идёт ---
-    let mopInput = null, mopNote = null;
-    if (ping.suggest === 'paymanual') {
-      body.appendChild(elt('div', fieldLabel, 'МОП сделки (для справки, в пинг не идёт)'));
+    // --- МОП сделки (для 'paymanual' и 'pkk') ---
+    let mopInput = null, mopNote = null, mopName = '';
+    if (ping.suggest === 'paymanual' || isPkk) {
+      body.appendChild(elt('div', fieldLabel, isPkk ? 'МОП сделки' : 'МОП сделки (для справки, в пинг не идёт)'));
       mopInput = elt('input', inputCss);
       mopInput.placeholder = 'кто вёл сделку';
       body.appendChild(mopInput);
@@ -3683,6 +3734,7 @@
         fetchMopName(deal).then(function (r) {
           if (r.name) {
             mopInput.value = r.name;
+            mopName = r.name;
             mopNote.textContent = r.sure ? 'из амо — кто продал сделку' : 'по данным амо — проверь, тот ли это МОП';
             applyMopTag(r.name);
             recompute();
@@ -3701,8 +3753,22 @@
       }
     }
 
+    // --- Курс (для 'pkk' — некоторым ситуациям; подтягивается из карточки) ---
+    let courseBox = null, courseInput = null;
+    if (isPkk) {
+      courseBox = elt('div', '');
+      courseBox.appendChild(elt('div', fieldLabel, 'Курс (для шаблона)'));
+      courseInput = elt('input', inputCss);
+      courseInput.value = readCourse() || '';
+      courseInput.placeholder = 'название курса';
+      courseBox.appendChild(courseInput);
+      courseBox.style.display = 'none';
+      body.appendChild(courseBox);
+    }
+
     // --- Кому (выбор тега) ---
     let tagSel = null, manualInput = null, respSel = null;
+    const manualTag = ping.suggest === 'paymanual' || isPkk;
     const needTag = ping.suggest !== 'none';
     if (needTag) {
       // Для «завис вопрос»: тег на лида контента идёт только когда ответственного нет.
@@ -3716,7 +3782,7 @@
       body.appendChild(elt('div', fieldLabel, ping.suggest === 'paymanual' ? 'Тег (впиши сам)' : 'Кому'));
       manualInput = elt('input', inputCss);
       manualInput.placeholder = '@тег';
-      if (ping.suggest !== 'paymanual') {
+      if (!manualTag) {
         tagSel = elt('select', inputCss);
         body.appendChild(tagSel);
         manualInput.style.cssText = inputCss + 'margin-top:5px;display:none;';
@@ -3740,10 +3806,11 @@
     const ta = elt('textarea', 'width:100%;box-sizing:border-box;min-height:150px;border:1px solid #D1D5DB;border-radius:10px;padding:8px 10px;font:500 12px/1.5 ' + FONT + ';color:#111827;resize:vertical;');
     body.appendChild(ta);
 
-    // Автоподстановка тега МОПа в поле «Тег» (для 'paymanual'). Не затираем то, что куратор уже вписал.
+    // Автоподстановка тега МОПа в поле «Тег» (для 'paymanual' и 'pkk'). Не затираем то, что куратор уже вписал.
     let mopTagBase = '';
     function applyMopTag(name) {
-      if (ping.suggest !== 'paymanual' || !manualInput) return;
+      if (!manualTag || !manualInput) return;
+      if (curSub && curSub.toRop) return; // пишем РОПу — тег из кластера, не от МОПа
       const mi = MOP_INDEX.get(name);
       const t = mi ? (mi.tag || mi.rg) : '';
       if (t && !manualInput.value.trim()) manualInput.value = t;
@@ -3764,9 +3831,33 @@
     }
     function recompute() {
       const noResp = !!(respSel && respSel.value === 'lead');
-      const r = pingFill(ping, chosenTag(), linkInput ? linkInput.value.trim() : '', mopInput ? mopInput.value.trim() : '', noResp);
+      const extra = {};
+      if (curSub) {
+        extra.baseText = curSub.text;
+        extra.course = courseInput ? courseInput.value.trim() : '';
+        extra.cluster = clusterSel ? clusterSel.value : '';
+        extra.mopName = mopName;
+      }
+      const r = pingFill(ping, chosenTag(), linkInput ? linkInput.value.trim() : '', mopInput ? mopInput.value.trim() : '', noResp, extra);
       ta.value = r.plain;
       lastHtml = r.html;
+    }
+    // Переключение ситуации ПКК: показать/скрыть курс и кластер, обновить тег.
+    function applySub() {
+      if (!subSel) return;
+      curSub = ping.subs[parseInt(subSel.value, 10)] || ping.subs[0];
+      if (courseBox) courseBox.style.display = curSub.needsCourse ? 'block' : 'none';
+      if (clusterBox && isPkk) clusterBox.style.display = curSub.toRop ? 'block' : 'none';
+      if (manualInput) {
+        if (curSub.toRop) {
+          const rop = CLUSTER_ROP[clusterSel && clusterSel.value] || null;
+          manualInput.value = rop ? rop.tag : '';
+        } else {
+          manualInput.value = '';
+          if (mopInput && mopInput.value.trim()) applyMopTag(mopInput.value.trim());
+        }
+      }
+      recompute();
     }
     function fillTagSel() {
       if (!tagSel) return;
@@ -3788,10 +3879,19 @@
     }
     fillTagSel();
     applyResp();
-    recompute();
+    if (subSel) applySub(); else recompute();
 
+    if (subSel) subSel.onchange = applySub;
+    if (courseInput) courseInput.oninput = recompute;
     if (respSel) respSel.onchange = applyResp;
-    if (clusterSel) clusterSel.onchange = function () { fillTagSel(); recompute(); };
+    if (clusterSel) clusterSel.onchange = function () {
+      fillTagSel();
+      if (isPkk && curSub && curSub.toRop && manualInput) {
+        const rop = CLUSTER_ROP[clusterSel.value] || null;
+        manualInput.value = rop ? rop.tag : '';
+      }
+      recompute();
+    };
     if (tagSel) tagSel.onchange = function () {
       if (!respSel) manualInput.style.display = tagSel.value === '__manual__' ? 'block' : 'none';
       recompute();
