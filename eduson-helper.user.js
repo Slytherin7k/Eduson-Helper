@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.80.0
+// @version      0.81.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.80.0';
+  const VER = '0.81.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3056,7 +3056,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.80.0'; // синхр. с Хэлпером
+  const VER = '0.81.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4779,9 +4779,9 @@
     const main = elt('div', '');
     body.appendChild(main);
 
-    let uid = '', token = '', student = '', acctUid = '';
+    let uid = '', token = '', student = '', acctUid = '', subs = [];
 
-    resolveStudentAccount().then(function (a) { uid = a.uid; acctUid = a.uid; return fetchAdminMeta(a.uid); }).then(function (meta) {
+    resolveStudentAccount().then(function (a) { uid = a.uid; acctUid = a.uid; subs = a.subs || []; return fetchAdminMeta(a.uid); }).then(function (meta) {
       bar.done(); setTimeout(function () { if (bar.el.parentNode) bar.el.remove(); }, 400);
       status.style.display = 'none';
       token = meta.token; student = meta.studentName || readUser().name || '?';
@@ -4795,17 +4795,39 @@
     });
 
     /* ---------- отправка ---------- */
-    function doComplete(logEl, id, name) {
+    // На какой суб-аккаунт слать завершение курса из блока/списка. career-курсы («Работа мечты»)
+    // и презентации живут на ОТДЕЛЬНОМ бонусном аккаунте студента, не на аккаунте из графы «Курс».
+    function acctForCat(cat) {
+      if (!subs || subs.length < 2) return acctUid || uid;
+      const pat = cat === 'career' ? /трудоустройств|получить работу|работу мечты|карьер/i
+                : cat === 'present' ? /презентац/i : null;
+      if (pat) { const s = subs.find(function (x) { return pat.test(x.company || ''); }); if (s) return s.uid; }
+      return acctUid || uid;
+    }
+    // возвращает промис (для последовательного завершения блока)
+    function doComplete(logEl, id, name, targetUid) {
+      const tu = targetUid || acctUid || uid;
       const line = elt('div', 'color:#6B7280;font-weight:700;', '… ' + id + (name ? (' «' + name + '»') : '') + ' — отправляю');
       logEl.appendChild(line);
-      gmPostForm(EDU_ADMIN + '/admin/users/' + (acctUid || uid) + '/create_course_diploma?language=ru', {
+      return gmPostForm(EDU_ADMIN + '/admin/users/' + tu + '/create_course_diploma?language=ru', {
         authenticity_token: token, course_id: id, commit: 'Завершить курс'
       }).then(function (r) {
         if (r.noauth) { line.textContent = '✗ ' + id + ' — не пустило в админку'; line.style.color = '#B91C1C'; }
         else if (r.csrf) { line.textContent = '✗ ' + id + ' — токен устарел, открой панель заново'; line.style.color = '#B91C1C'; }
         else if (r.ok || r.maybe) { line.textContent = '✓ ' + id + (name ? (' «' + name + '»') : '') + ' — завершено'; line.style.color = '#16A34A'; toast('Курс завершён'); }
         else { line.textContent = '✗ ' + id + ' — не отправилось (код ' + (r.code || '?') + ')'; line.style.color = '#B91C1C'; }
+        return r;
       });
+    }
+    // блок курсов — ПО ОЧЕРЕДИ (параллельный залп даёт 500 от админки)
+    function completeSeq(logEl, items, targetUid) {
+      let i = 0;
+      const step = function () {
+        if (i >= items.length) { logEl.appendChild(elt('div', 'color:#6B7280;font-weight:800;margin-top:2px;', 'Готово: ' + items.length)); return; }
+        const x = items[i++];
+        doComplete(logEl, x.id, x.n, targetUid).then(function () { setTimeout(step, 400); });
+      };
+      step();
     }
 
     const S = {
@@ -4858,7 +4880,7 @@
       const btnCat = { career: 1, present: 1 };
       const seen = {};
       const lib = COURSE_LIB.filter(function (x) { if (seen[x.id]) return false; seen[x.id] = 1; return true; })
-        .map(function (x) { return { id: x.id, n: x.n, f: x.f || 0, inBtn: !!btnCat[x.c] }; });
+        .map(function (x) { return { id: x.id, n: x.n, f: x.f || 0, inBtn: !!btnCat[x.c], cat: x.c }; });
 
       // выбор программы студента: по умолчанию — та, что в графе «Курс» карточки; можно
       // переключить (в супер-юзере бывает несколько). Поиск «нет в списке» идёт по выбранной.
@@ -4883,16 +4905,17 @@
       loadLessons().then(function (d) {
         if (d.planKey && !_planLessons[d.planKey]) _planLessons[d.planKey] = d.lessons || [];
         setStu(d.lessons);
-        const subs = d.subs || [];
+        if ((d.subs || []).length) subs = d.subs;
+        const dsubs = subs || [];
         const plans = d.plans || [];
         const note = elt('div', 'font-size:9.5px;color:#9CA3AF;font-weight:700;margin-top:2px;', '');
 
-        if (subs.length > 1) {
+        if (dsubs.length > 1) {
           // у студента несколько программ = РАЗНЫХ аккаунтов (осн. + бонусные). Переключаем аккаунт:
           // меняется и поиск «нет в списке», и куда уходит «завершить курс».
           planWrap.appendChild(elt('div', fieldLabel, 'Программа студента'));
           const sel = elt('select', inputCss + 'padding:6px 8px;');
-          subs.forEach(function (s) {
+          dsubs.forEach(function (s) {
             const o = elt('option', '', s.company || ('аккаунт ' + s.uid)); o.value = s.uid;
             if (s.uid === d.uid) o.selected = true;
             sel.appendChild(o);
@@ -4948,7 +4971,7 @@
               if (g && g.id) doComplete(log, g.id, g.name || GIFT_NAME);
               else log.appendChild(elt('div', 'color:#B45309;font-weight:700;', 'Не нашла анкету — открой вкладку «Урок» (прогреется) и попробуй снова, либо вставь ссылку ниже.'));
             });
-          } else doComplete(log, x.id, x.n);
+          } else doComplete(log, x.id, x.n, x.stu ? acctUid : acctForCat(x.cat));
         };
         return r;
       };
@@ -4990,7 +5013,10 @@
       fbGo.onclick = function () {
         const ids = parseCourseIds(fbTa.value);
         if (!ids.length) { toast('Не нашла ссылку на курс или ID'); return; }
-        ids.forEach(function (id) { const nm = (COURSE_LIB.find(function (c) { return String(c.id) === String(id); }) || {}).n || ''; doComplete(log, id, nm); });
+        ids.forEach(function (id) {
+          const hit = COURSE_LIB.find(function (c) { return String(c.id) === String(id); }) || {};
+          doComplete(log, id, hit.n || '', hit.c ? acctForCat(hit.c) : acctUid);
+        });
       };
       moreBox.appendChild(fbTa); moreBox.appendChild(fbGo);
       main.appendChild(more); main.appendChild(moreBox);
@@ -5002,14 +5028,19 @@
       const back = elt('div', S.back, '‹ назад'); back.onclick = buildUI;
       main.appendChild(back);
       main.appendChild(elt('div', S.stu, ttl));
-      main.appendChild(elt('div', S.sid, student + ' · ID ' + uid));
+      const tu = acctForCat(cat);
+      const acctName = (subs.find(function (s) { return s.uid === tu; }) || {}).company || '';
+      main.appendChild(elt('div', S.sid, student + ' · завершится на аккаунте ' + tu + (acctName ? (' («' + acctName + '»)') : '')));
+      if (subs.length > 1 && !(subs.find(function (s) { return s.uid === tu; }) || {}).company) {
+        main.appendChild(elt('div', 'font-size:9.5px;color:#B45309;font-weight:700;margin-bottom:6px;', 'Не нашла у студента отдельный аккаунт под этот блок — завершаю на текущем. Если будут ошибки 500 — курсов этого блока у студента может не быть.'));
+      }
       const log = elt('div', S.log);
       const rows = COURSE_LIB.filter(function (x) { return x.c === cat; });
       const list = elt('div', S.list);
-      rows.forEach(function (x) { const r = elt('div', S.row, x.n); r.onclick = function () { doComplete(log, x.id, x.n); }; list.appendChild(r); });
+      rows.forEach(function (x) { const r = elt('div', S.row, x.n); r.onclick = function () { doComplete(log, x.id, x.n, tu); }; list.appendChild(r); });
       main.appendChild(list);
       const all = elt('div', S.go, 'Завершить весь блок (' + rows.length + ')');
-      all.onclick = function () { rows.forEach(function (x) { doComplete(log, x.id, x.n); }); };
+      all.onclick = function () { all.style.pointerEvents = 'none'; all.style.opacity = '.6'; completeSeq(log, rows, tu); };
       main.appendChild(all);
       main.appendChild(log);
     }
