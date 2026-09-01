@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.91.0
+// @version      0.92.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -119,7 +119,7 @@
 
   /* ================================================ */
 
-  const VER = '0.91.0';
+  const VER = '0.92.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3059,7 +3059,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.91.0'; // синхр. с Хэлпером
+  const VER = '0.92.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3704,19 +3704,23 @@
   };
 
   /* ==================== NOTION: статус карточки вопроса ==================== */
-  // Ссылка на карточку «доски вопросов» лежит в переписке OmniDesk (заметка).
-  function findNotionCard() {
-    const rx = /(?:app\.notion\.com|notion\.so|notion\.site)\/[^\s"'<>()]*?([0-9a-f]{32})/i;
+  // Ссылки на карточки «доски вопросов» лежат в переписке OmniDesk (заметки). Бывает несколько.
+  function findNotionCards() {
     const nodes = document.querySelectorAll('a[href], .js_only_text_orig, .js_only_text, .chat_chat_win_note');
+    const seen = {}, out = [];
     for (const n of nodes) {
       const s = (n.getAttribute && n.getAttribute('href')) || n.href || n.textContent || '';
-      const m = String(s).match(rx);
-      if (m) {
+      const re = /(?:app\.notion\.com|notion\.so|notion\.site)\/[a-z0-9%/_-]*?([0-9a-f]{32})/ig;
+      let m;
+      while ((m = re.exec(String(s)))) {
         const id = m[1].replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5');
-        return { url: (String(s).match(/https?:\/\/\S*?[0-9a-f]{32}\S*/i) || [m[0]])[0], id: id };
+        if (seen[id]) continue;
+        seen[id] = 1;
+        out.push({ id: id, url: 'https://' + m[0] });
+        if (out.length >= 4) return out;
       }
     }
-    return null;
+    return out;
   }
   // API Notion сейчас на app.notion.com (не www.notion.so — там нет авторизации).
   function notionPost(path, bodyObj) {
@@ -3993,36 +3997,40 @@
       body.appendChild(linkInput);
     }
 
-    // --- Notion: оунер + статус карточки вопроса (только «Завис вопрос») ---
+    // --- Notion: оунер + статус карточки(-чек) вопроса (только «Завис вопрос») ---
     if (isLead) {
-      const card = findNotionCard();
+      const cards = findNotionCards();
       const nBox = elt('div', 'font-size:11px;font-weight:700;margin-top:5px;line-height:1.5;color:#9CA3AF;', '');
       body.appendChild(nBox);
-      if (!card) {
+      if (!cards.length) {
         nBox.textContent = 'Notion: ссылки на карточку в чате не нашла';
       } else {
-        if (linkInput && !linkInput.value) linkInput.value = card.url;
-        nBox.textContent = 'Notion: читаю карточку…';
-        notionCard(card.id).then(function (r) {
-          nBox.innerHTML = '';
-          if (r.err) { nBox.textContent = 'Notion: ' + r.err; return; }
-          if (r.ownerChecked) {
-            if (r.ownerName) {
+        if (linkInput && !linkInput.value) linkInput.value = cards[0].url;
+        const multi = cards.length > 1;
+        if (multi) nBox.appendChild(elt('div', 'color:#6B7280;', 'В чате ' + cards.length + ' карточки Notion — статус по каждой:'));
+        cards.forEach(function (card, i) {
+          const pre = multi ? ('#' + (i + 1) + ' ') : '';
+          const row = elt('div', 'margin-top:2px;color:#9CA3AF;', pre + 'читаю карточку…');
+          nBox.appendChild(row);
+          notionCard(card.id).then(function (r) {
+            row.innerHTML = '';
+            if (r.err) { row.textContent = pre + 'Notion: ' + r.err; return; }
+            const untouched = respCombo && !respCombo.value.trim();
+            if (r.ownerChecked && r.ownerName) {
               const p = ownerToTag(r.ownerName);
-              nBox.appendChild(elt('div', 'color:#374151;', '👤 Оунер: ' + r.ownerName + (p ? ' → ' + p.tag : ' (тег не нашла, впиши сам)')));
-              if (p && respCombo && !respCombo.value.trim()) { respCombo.value = p.name + ' — ' + p.tag; applyResp(); }
-            } else {
-              nBox.appendChild(elt('div', 'color:#374151;', '👤 Оунер от контента не назначен → нет ответственного'));
+              row.appendChild(elt('div', 'color:#374151;', pre + '👤 Оунер: ' + r.ownerName + (p ? ' → ' + p.tag : ' (тег не нашла, впиши сам)')));
+              if (i === 0 && p && untouched) { respCombo.value = p.name + ' — ' + p.tag; applyResp(); }
+            } else if (r.ownerChecked) {
+              row.appendChild(elt('div', 'color:#374151;', pre + '👤 Оунер от контента не назначен → нет ответственного'));
+              if (i === 0 && untouched) { respCombo.value = RESP_NONE; applyResp(); }
             }
-          }
-          if (r.status) {
-            const s = elt('div', '', (r.done ? '✅ ' : '⏳ ') + 'Статус: ' + r.status);
-            s.style.color = r.done ? '#16A34A' : '#B45309';
-            nBox.appendChild(s);
-          }
-          if (!r.status && !r.ownerChecked) nBox.textContent = 'Notion: в карточке нет полей «Статус» / «Оунер»';
-        }).catch(function () {
-          nBox.textContent = 'Notion: не получилось прочитать карточку';
+            if (r.status) {
+              const s = elt('div', '', pre + (r.done ? '✅ ' : '⏳ ') + 'Статус: ' + r.status);
+              s.style.color = r.done ? '#16A34A' : '#B45309';
+              row.appendChild(s);
+            }
+            if (!r.status && !r.ownerChecked) row.textContent = pre + 'Notion: в карточке нет полей «Статус» / «Оунер»';
+          }).catch(function () { row.textContent = pre + 'Notion: не получилось прочитать карточку'; });
         });
       }
     }
