@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.92.0
+// @version      0.93.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -119,7 +119,7 @@
 
   /* ================================================ */
 
-  const VER = '0.92.0';
+  const VER = '0.93.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3059,7 +3059,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.92.0'; // синхр. с Хэлпером
+  const VER = '0.93.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3616,11 +3616,23 @@
   }
 
   const PANEL_ID = 'curator-panel';
+  function closePanel() {
+    const p = document.getElementById(PANEL_ID);
+    if (p) p.remove();
+    document.removeEventListener('mousedown', outsideClose, true);
+  }
+  function outsideClose(e) {
+    const p = document.getElementById(PANEL_ID);
+    if (!p) { document.removeEventListener('mousedown', outsideClose, true); return; }
+    if (p.contains(e.target)) return;
+    const b = document.getElementById('curator-tools-btn');
+    if (b && b.contains(e.target)) return;
+    closePanel();
+  }
   function togglePanel() {
-    let p = document.getElementById(PANEL_ID);
-    if (p) { p.remove(); return; }
-    p = buildPanel();
-    document.body.appendChild(p);
+    if (document.getElementById(PANEL_ID)) { closePanel(); return; }
+    document.body.appendChild(buildPanel());
+    setTimeout(function () { document.addEventListener('mousedown', outsideClose, true); }, 0);
   }
 
   function buildPanel() {
@@ -3769,7 +3781,25 @@
     }
     return null;
   }
-  // → { status, done, ownerName, err }
+  // id текущего пользователя Notion (кто залогинен в браузере)
+  async function notionMe() {
+    try { const j = await notionPost('getSpaces', {}); return Object.keys(j || {})[0] || ''; }
+    catch (e) { return ''; }
+  }
+  const _nUserCache = {};
+  async function notionUserName(id) {
+    if (!id) return '';
+    if (_nUserCache[id] !== undefined) return _nUserCache[id];
+    let name = '';
+    try {
+      const u = await notionPost('syncRecordValues', { requests: [{ pointer: { table: 'notion_user', id: id }, version: -1 }] });
+      const nu = nUnwrap(((u.recordMap || {}).notion_user || {})[id]);
+      name = (nu && nu.name) || '';
+    } catch (e) { /* некритично */ }
+    _nUserCache[id] = name;
+    return name;
+  }
+  // → { status, done, ownerChecked, ownerId, createdBy, createdTime, days, err }
   async function notionCard(pageId) {
     let j;
     try { j = await notionPost('loadPageChunk', { pageId: pageId, limit: 30, cursor: { stack: [] }, chunkNumber: 0, verticalColumns: false }); }
@@ -3781,7 +3811,11 @@
     const collId = rm.collection && Object.keys(rm.collection)[0];
     const schema = collId && (nUnwrap(rm.collection[collId]) || {}).schema;
     if (!schema) return { err: 'схему не прочитала' };
-    const out = {};
+    const out = {
+      createdBy: blk.created_by_id || '',
+      createdTime: blk.created_time || 0,
+      days: blk.created_time ? Math.max(0, Math.floor((Date.now() - blk.created_time) / 86400000)) : null
+    };
     const stKey = Object.keys(schema).find(function (k) { return /статус по вопросу/i.test(schema[k].name); });
     if (stKey) {
       const t = blk.properties[stKey];
@@ -3790,15 +3824,9 @@
     }
     const owKey = Object.keys(schema).find(function (k) { return /оунер от контент/i.test(schema[k].name); });
     if (owKey) {
-      const m = JSON.stringify(blk.properties[owKey] || '').match(/"u","([0-9a-f-]{36})"/);
-      if (m) {
-        try {
-          const u = await notionPost('syncRecordValues', { requests: [{ pointer: { table: 'notion_user', id: m[1] }, version: -1 }] });
-          const nu = nUnwrap(((u.recordMap || {}).notion_user || {})[m[1]]);
-          out.ownerName = nu && nu.name;
-        } catch (e) { /* оунер не критичен */ }
-      }
       out.ownerChecked = true;
+      const m = JSON.stringify(blk.properties[owKey] || '').match(/"u","([0-9a-f-]{36})"/);
+      if (m) out.ownerId = m[1];
     }
     return out;
   }
@@ -3997,7 +4025,8 @@
       body.appendChild(linkInput);
     }
 
-    // --- Notion: оунер + статус карточки(-чек) вопроса (только «Завис вопрос») ---
+    // --- Notion: одна карточка вопроса (только «Завис вопрос»). Если ссылок 2+ — берём ту,
+    //     что внёс(ла) текущий куратор («Кто внес» = created_by), иначе самую свежую. ---
     if (isLead) {
       const cards = findNotionCards();
       const nBox = elt('div', 'font-size:11px;font-weight:700;margin-top:5px;line-height:1.5;color:#9CA3AF;', '');
@@ -4005,33 +4034,45 @@
       if (!cards.length) {
         nBox.textContent = 'Notion: ссылки на карточку в чате не нашла';
       } else {
-        if (linkInput && !linkInput.value) linkInput.value = cards[0].url;
-        const multi = cards.length > 1;
-        if (multi) nBox.appendChild(elt('div', 'color:#6B7280;', 'В чате ' + cards.length + ' карточки Notion — статус по каждой:'));
-        cards.forEach(function (card, i) {
-          const pre = multi ? ('#' + (i + 1) + ' ') : '';
-          const row = elt('div', 'margin-top:2px;color:#9CA3AF;', pre + 'читаю карточку…');
-          nBox.appendChild(row);
-          notionCard(card.id).then(function (r) {
-            row.innerHTML = '';
-            if (r.err) { row.textContent = pre + 'Notion: ' + r.err; return; }
-            const untouched = respCombo && !respCombo.value.trim();
-            if (r.ownerChecked && r.ownerName) {
-              const p = ownerToTag(r.ownerName);
-              row.appendChild(elt('div', 'color:#374151;', pre + '👤 Оунер: ' + r.ownerName + (p ? ' → ' + p.tag : ' (тег не нашла, впиши сам)')));
-              if (i === 0 && p && untouched) { respCombo.value = p.name + ' — ' + p.tag; applyResp(); }
-            } else if (r.ownerChecked) {
-              row.appendChild(elt('div', 'color:#374151;', pre + '👤 Оунер от контента не назначен → нет ответственного'));
-              if (i === 0 && untouched) { respCombo.value = RESP_NONE; applyResp(); }
-            }
-            if (r.status) {
-              const s = elt('div', '', pre + (r.done ? '✅ ' : '⏳ ') + 'Статус: ' + r.status);
-              s.style.color = r.done ? '#16A34A' : '#B45309';
-              row.appendChild(s);
-            }
-            if (!r.status && !r.ownerChecked) row.textContent = pre + 'Notion: в карточке нет полей «Статус» / «Оунер»';
-          }).catch(function () { row.textContent = pre + 'Notion: не получилось прочитать карточку'; });
-        });
+        nBox.textContent = 'Notion: читаю карточку…';
+        (async function () {
+          let chosen;
+          if (cards.length === 1) {
+            chosen = { card: cards[0], data: await notionCard(cards[0].id) };
+          } else {
+            const me = await notionMe();
+            const all = await Promise.all(cards.map(async function (c) { return { card: c, data: await notionCard(c.id) }; }));
+            const ok = all.filter(function (x) { return x.data && !x.data.err; });
+            chosen = ok.find(function (x) { return me && x.data.createdBy === me; })
+              || ok.slice().sort(function (a, b) { return (b.data.createdTime || 0) - (a.data.createdTime || 0); })[0]
+              || all[0];
+          }
+          nBox.innerHTML = '';
+          const r = chosen.data;
+          if (linkInput && !linkInput.value) linkInput.value = chosen.card.url;
+          if (r.err) { nBox.textContent = 'Notion: ' + r.err; return; }
+          if (cards.length > 1) nBox.appendChild(elt('div', 'color:#6B7280;', 'В чате ' + cards.length + ' карточки — показываю ту, что внесла ты:'));
+
+          const untouched = respCombo && !respCombo.value.trim();
+          if (r.ownerChecked && r.ownerId) {
+            const oname = await notionUserName(r.ownerId);
+            const p = ownerToTag(oname);
+            nBox.appendChild(elt('div', 'color:#374151;', '👤 Оунер: ' + oname + (p ? ' → ' + p.tag : ' (тег не нашла, впиши сам)')));
+            if (p && untouched) { respCombo.value = p.name + ' — ' + p.tag; applyResp(); }
+          } else if (r.ownerChecked) {
+            nBox.appendChild(elt('div', 'color:#374151;', '👤 Оунер от контента не назначен → нет ответственного'));
+            if (untouched) { respCombo.value = RESP_NONE; applyResp(); }
+          }
+          if (r.status) {
+            const s = elt('div', '', (r.done ? '✅ ' : '⏳ ') + 'Статус: ' + r.status);
+            s.style.color = r.done ? '#16A34A' : '#B45309';
+            nBox.appendChild(s);
+          }
+          if (r.days != null) nBox.appendChild(elt('div', 'color:#374151;', '📅 Вопрос в работе: ' + r.days + ' дн.'));
+          const cname = await notionUserName(r.createdBy);
+          if (cname) nBox.appendChild(elt('div', 'color:#9CA3AF;', '✍️ Внесла карточку: ' + cname));
+          if (!r.status && !r.ownerChecked) nBox.appendChild(elt('div', '', 'Notion: в карточке нет полей «Статус» / «Оунер»'));
+        })().catch(function () { nBox.textContent = 'Notion: не получилось прочитать карточку'; });
       }
     }
 
