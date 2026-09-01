@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.0.0
+// @version      1.1.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -119,7 +119,7 @@
 
   /* ================================================ */
 
-  const VER = '1.0.0';
+  const VER = '1.1.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3059,7 +3059,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.0.0'; // синхр. с Хэлпером
+  const VER = '1.1.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4437,6 +4437,55 @@
     };
   }
 
+  // Иногда методист пишет ответ не в поле «Ответ методиста», а в теле карточки.
+  // Достаём текст блоков карточки и берём его как ответ (если поле пустое).
+  var _faqBodyCache = {};
+  function faqUnwrapBlock(rec) {
+    let v = rec;
+    for (let i = 0; i < 5; i++) {
+      if (v && v.value && (v.value.type || v.value.properties || v.value.content)) return v.value;
+      v = v && v.value;
+    }
+    return null;
+  }
+  async function faqBodyAnswer(pageId) {
+    if (_faqBodyCache[pageId] !== undefined) return _faqBodyCache[pageId];
+    let text = '';
+    try {
+      const j = await notionPost('loadPageChunk', { pageId: pageId, limit: 60, cursor: { stack: [] }, chunkNumber: 0, verticalColumns: false });
+      const bm = (j.recordMap && j.recordMap.block) || {};
+      const page = faqUnwrapBlock(bm[pageId]);
+      const content = (page && page.content) || [];
+      let n = 0;
+      const parts = content.map(function (cid) {
+        const b = faqUnwrapBlock(bm[cid]);
+        if (!b) return '';
+        const t = (((b.properties && b.properties.title) || []).map(function (s) { return s[0]; }).join('')).replace(/[​‎‏﻿]/g, '').trim();
+        if (!t) { n = 0; return ''; }
+        if (b.type === 'numbered_list') { n++; return n + '. ' + t; }
+        n = 0;
+        if (b.type === 'bulleted_list' || b.type === 'to_do') return '• ' + t;
+        return t;
+      }).filter(Boolean);
+      const body = parts.join('\n').trim();
+      const head = body.slice(0, 90).toLowerCase();
+      const tail = body.slice(-260).toLowerCase();
+      const looksAnswer = /здравствуй|добрый день|добрый вечер|доброе утро|коллеги/.test(head)
+        || /желаем|хорошего дня|с уважением|обращайтесь|рады помочь|команда|благодарим/.test(tail);
+      if (body.length > 20 && looksAnswer) text = body;
+    } catch (e) { text = ''; }
+    _faqBodyCache[pageId] = text;
+    return text;
+  }
+  async function faqFillBodyAnswers(rows) {
+    const need = rows.filter(function (r) { return !r.answer; }).slice(0, 12);
+    await Promise.all(need.map(function (r) {
+      return faqBodyAnswer(r.id).then(function (t) {
+        if (t) { r.answer = t; r.answerFromBody = true; }
+      });
+    }));
+  }
+
   // Notion ищет searchQuery как ЦЕЛУЮ ФРАЗУ и не понимает русскую морфологию:
   // "autocad установка" не находит ничего, хотя нужная карточка есть ("...инструкцию по установке...").
   // Поэтому: запрашиваем КАЖДОЕ слово отдельно, объединяем карточки, и оставляем те, где
@@ -4508,23 +4557,63 @@
     return out.slice(0, 4);
   }
 
-  // Из вставленной ссылки на урок достаём номера курса/урока и slug — по ним и ищем.
-  function faqFromLink(raw) {
-    if (!/https?:\/\/|eduson\.tv/i.test(raw)) return null;
-    const nums = [];
-    const add = function (n) { if (n && nums.indexOf(n) === -1) nums.push(n); };
-    const mc = raw.match(/courses?\/(\d+)/i); if (mc) add(mc[1]);
-    const ml = raw.match(/(?:lesson|lessons|task|tasks|assignment|assignments|step|steps)\/(\d+)/i); if (ml) add(ml[1]);
-    (raw.match(/\/(\d{3,})(?=[\/?#]|$)/g) || []).forEach(function (m) { add(m.slice(1)); });
-    const rest = raw
+  // Разбор запроса: номер курса из ссылки/цифр, slug области, обычные слова.
+  function faqTarget(raw) {
+    const isUrl = /https?:\/\/|eduson\.tv/i.test(raw);
+    let courseId = null;
+    const mc = raw.match(/courses?\/(\d{3,7})/i);
+    if (mc) courseId = mc[1];
+    if (!courseId) { const bare = raw.trim().match(/^\s*(\d{3,7})\s*$/); if (bare) courseId = bare[1]; }
+    if (!courseId && !isUrl) return null;
+    let rest = raw
       .replace(/https?:\/\/\S+/ig, ' ').replace(/\S*eduson\.tv\S*/ig, ' ')
-      .toLowerCase().split(/\s+/).map(function (w) { return w.replace(/[^a-zа-яё0-9]+/gi, ''); }).filter(Boolean);
-    let tokens = nums.concat(rest);
-    if (!nums.length) {
+      .replace(/\d{3,}/g, ' ')
+      .toLowerCase().split(/\s+/).map(function (w) { return w.replace(/[^a-zа-яё0-9]+/gi, ''); })
+      .filter(function (w) { return w.length >= 2 && !FAQ_STOP.has(faqFold(w)); });
+    if (!rest.length && !courseId) {
       const slug = raw.match(/academy-([a-z0-9-]+)\.eduson\.tv/i);
-      if (slug) tokens = slug[1].split('-').filter(function (s) { return s.length > 2; }).concat(rest);
+      if (slug) rest = slug[1].split('-').filter(function (s) { return s.length > 2; });
     }
-    return tokens.length ? tokens : null;
+    return { courseId: courseId, words: rest.slice(0, 3) };
+  }
+
+  // Поиск по номеру курса: карточки с точной ссылкой /courses/<id> — вперёд.
+  async function faqSearchByCourse(tgt) {
+    const queries = [];
+    if (tgt.courseId) queries.push(tgt.courseId);
+    tgt.words.forEach(function (w) { faqVariants(w).forEach(function (v) { if (queries.indexOf(v) === -1) queries.push(v); }); });
+    if (!queries.length) return [];
+    const results = await Promise.all(queries.slice(0, 6).map(notionQuerySingle));
+    const blocks = {};
+    results.forEach(function (r) { Object.assign(blocks, r.blocks); });
+    const seen = {}, order = [];
+    results.forEach(function (r) { r.ids.forEach(function (id) { if (!seen[id]) { seen[id] = 1; order.push(id); } }); });
+    const wordStems = tgt.words.map(function (w) { return faqVariants(w).map(faqStem).filter(Boolean); });
+    const cidRe = tgt.courseId ? new RegExp('/courses?/' + tgt.courseId + '(?![0-9])') : null;
+    const scored = order.map(function (id) {
+      const row = faqRow(id, blocks);
+      const L = faqFold(row.lesson), Q = faqFold(row.question), A = faqFold(row.answer);
+      let score = 0, exact = false, near = false;
+      if (cidRe) {
+        const firstCourse = (row.lesson.match(/courses?\/(\d{3,7})/i) || [])[1];
+        if (firstCourse === tgt.courseId) { exact = true; score += 100; }        // основной курс карточки
+        else if (cidRe.test(row.lesson)) { exact = true; score += 40; }          // курс упомянут, но не основной
+        else if (L.indexOf(tgt.courseId) !== -1) { near = true; score += 15; }
+        else if ((Q + ' ' + A).indexOf(tgt.courseId) !== -1) { near = true; score += 3; }
+      }
+      wordStems.forEach(function (stems) {
+        if (stems.some(function (s) { return Q.indexOf(s) !== -1; })) score += 5;
+        else if (stems.some(function (s) { return L.indexOf(s) !== -1 || A.indexOf(s) !== -1; })) score += 2;
+      });
+      if (row.answer) score += 1;
+      if (row.done) score += 1;
+      return { row: row, score: score, exact: exact, near: near };
+    });
+    let use = scored.filter(function (s) { return s.exact; });
+    if (use.length < 2) use = scored.filter(function (s) { return s.exact || s.near; });
+    if (!use.length) use = scored.filter(function (s) { return s.score > 0; });
+    use.sort(function (a, b) { return b.score - a.score; });
+    return use.slice(0, 15).map(function (s) { return s.row; });
   }
 
   // Notion ищет searchQuery как ЦЕЛУЮ ФРАЗУ, не знает морфологии и не знает, что
@@ -4533,13 +4622,13 @@
   // поиском Notion или встречается корнем в тексте. Сортируем по релевантности.
   async function notionQuestionSearch(term) {
     const raw = String(term || '').trim();
-    let rawWords = faqFromLink(raw);
-    const isLink = !!rawWords;
-    if (!rawWords) {
-      rawWords = raw.toLowerCase().split(/\s+/).map(function (w) { return w.replace(/[^a-zа-яё0-9]+/gi, ''); }).filter(Boolean);
-      const meaningful = rawWords.filter(function (w) { return w.length >= 2 && !FAQ_STOP.has(faqFold(w)); });
-      if (meaningful.length) rawWords = meaningful;
-    }
+    const tgt = faqTarget(raw);
+    if (tgt && (tgt.courseId || tgt.words.length)) return await faqSearchByCourse(tgt);
+
+    let rawWords = raw.toLowerCase().split(/\s+/).map(function (w) { return w.replace(/[^a-zа-яё0-9]+/gi, ''); }).filter(Boolean);
+    const meaningful = rawWords.filter(function (w) { return w.length >= 2 && !FAQ_STOP.has(faqFold(w)); });
+    if (meaningful.length) rawWords = meaningful;
+    const isLink = false;
     const words = rawWords.filter(function (w) { return w.length >= 2; }).slice(0, 3);
     if (!words.length) return [];
 
@@ -4644,6 +4733,7 @@
 
         // Ответ методиста — всегда виден.
         if (r.answer) {
+          if (r.answerFromBody) card.appendChild(elt('div', 'font-size:9.5px;color:#9CA3AF;font-weight:700;margin-top:6px;', 'ответ из текста карточки'));
           card.appendChild(elt('div', 'font-size:11px;color:#1F2937;font-weight:500;line-height:1.45;white-space:pre-wrap;background:#F9FAFB;border-radius:8px;padding:7px 9px;margin-top:6px;', r.answer));
           const cp = elt('div', 'margin-top:6px;text-align:center;background:' + ACC + ';color:#fff;font-weight:800;font-size:11px;padding:6px 0;border-radius:9px;cursor:pointer;', '📋 Копировать ответ');
           cp.onclick = function () { copyText(r.answer); toast('Ответ методиста скопирован'); };
@@ -4676,6 +4766,9 @@
       }
       if (my !== seq) return;
       lastRows = rows;
+      paint();
+      try { await faqFillBodyAnswers(rows); } catch (e) {}
+      if (my !== seq) return;
       paint();
     }
     q.addEventListener('input', function () {
