@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.85.0
+// @version      0.86.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.85.0';
+  const VER = '0.86.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3056,7 +3056,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.85.0'; // синхр. с Хэлпером
+  const VER = '0.86.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3271,9 +3271,9 @@
   const PKK_SUBS = [
     { id: 'wrote', label: 'Написал в амо и ждёт ответа',
       text: '{тег}\nПривет! Клиент написал тебе в амо и ждёт ответа. Свяжись, пожалуйста.\n{ссылка}' },
-    { id: 'gift_choice', label: 'Подарочный 1+1 — нужна консультация по выбору',
+    { id: 'gift_choice', label: '1+1 — нужна консультация по выбору',
       text: '{тег}\nПривет! Клиент просит помочь с выбором подарочного курса по 1+1, не может определиться с направлением. Свяжись, пожалуйста.\n{ссылка}' },
-    { id: 'gift_promised', label: 'Подарочный 1+1 — обещали курс дороже основного', needsCourse: true,
+    { id: 'gift_promised', label: '1+1 — обещали курс дороже основного', needsCourse: true,
       text: '{тег}\nПривет! Клиент говорит, что при покупке обещали в подарок «{курс}» — он дороже основного. Подскажи, пожалуйста, что зафиксировано по сделке. Подключаем?\n{ссылка}' },
     { id: 'paid_noaccess', label: 'Оплатил — доступа нет / сделка не реализована',
       text: '{тег}\nПривет! Клиент пишет, что оплатил, а доступ ему не ушёл. Посмотри, пожалуйста, что со сделкой.\n{ссылка}' },
@@ -3472,7 +3472,7 @@
   // Кого предложить в выборе тега.
   function suggestTags(ping, cluster) {
     if (ping.suggest === 'dz') {
-      return [{ label: DZ_DEFAULT.name + ' — по умолчанию', tag: DZ_DEFAULT.tag }]
+      return [{ label: DZ_DEFAULT.name, tag: DZ_DEFAULT.tag }]
         .concat(DZ_REVIEWERS.map(function (d) { return { label: d.name, tag: d.tag }; }));
     }
     if (ping.suggest === 'diploma') {
@@ -3706,6 +3706,7 @@
 
     let lastHtml = '';
     const isPkk = ping.suggest === 'pkk';
+    const isLead = ping.suggest === 'leadcontent';
 
     // --- Ситуация (только для 'pkk') ---
     let subSel = null, curSub = (ping.subs && ping.subs[0]) || null;
@@ -3795,40 +3796,34 @@
     }
 
     // --- Кому (выбор тега) ---
-    let tagSel = null, manualInput = null, respSel = null;
+    let tagSel = null, manualInput = null, respSel = null, manualBox = null;
     const manualTag = ping.suggest === 'paymanual' || isPkk;
     const needTag = ping.suggest !== 'none';
     if (needTag) {
-      // Для «завис вопрос»: тег на лида контента идёт только когда ответственного нет.
-      if (ping.suggest === 'leadcontent') {
+      // «Завис вопрос»: один список — «нет ответственного» + все ответственные (поиск по имени
+      // печатью первых букв) + «вписать другой тег».
+      if (isLead) {
         body.appendChild(elt('div', fieldLabel, 'Ответственный по вопросу'));
         respSel = elt('select', inputCss);
         respSel.appendChild(new Option('Нет ответственного — тег лида контента', 'lead'));
-        respSel.appendChild(new Option('Есть ответственный — впишу тег сам', 'own'));
+        QUESTION_RESPONSIBLES.forEach(function (p) {
+          respSel.appendChild(new Option(p.name + ' — ' + p.tag, p.tag));
+        });
+        respSel.appendChild(new Option('— вписать другой тег —', '__manual__'));
         body.appendChild(respSel);
       }
-      body.appendChild(elt('div', fieldLabel, ping.suggest === 'paymanual' ? 'Тег (впиши сам)' : 'Кому'));
+      manualBox = elt('div', '');
+      body.appendChild(manualBox);
+      manualBox.appendChild(elt('div', fieldLabel, ping.suggest === 'paymanual' ? 'Тег (впиши сам)' : 'Кому'));
       manualInput = elt('input', inputCss);
-      manualInput.placeholder = '@тег';
-      if (!manualTag) {
+      manualInput.placeholder = isLead ? 'имя или @тег' : '@тег';
+      if (!manualTag && !isLead) {
         tagSel = elt('select', inputCss);
-        body.appendChild(tagSel);
+        manualBox.appendChild(tagSel);
         manualInput.style.cssText = inputCss + 'margin-top:5px;display:none;';
       }
-      // «Завис вопрос», режим «есть ответственный» — выпадающий список ответственных + поиск по имени.
-      if (ping.suggest === 'leadcontent') {
-        const dl = elt('datalist');
-        dl.id = 'resp-dl-' + Math.random().toString(36).slice(2);
-        QUESTION_RESPONSIBLES.forEach(function (p) {
-          const o = document.createElement('option');
-          o.value = p.name + ' — ' + p.tag;
-          dl.appendChild(o);
-        });
-        body.appendChild(dl);
-        manualInput.setAttribute('list', dl.id);
-        manualInput.placeholder = 'имя ответственного или @тег';
-      }
-      body.appendChild(manualInput);
+      manualBox.appendChild(manualInput);
+      if (isLead) manualBox.style.display = 'none'; // видно только при «вписать другой»
     }
 
     // --- Ссылка (для «Новый лид» ссылки нет — linkKind 'none') ---
@@ -3876,7 +3871,15 @@
     }
     function chosenTag() {
       if (!needTag) return '';
-      if (respSel && respSel.value === 'own') return resolveRespTag(manualInput.value);
+      if (isLead && respSel) {
+        const v = respSel.value;
+        if (v === '__manual__') return resolveRespTag(manualInput.value);
+        if (v === 'lead') {
+          const c = clusterSel && CLUSTERS[clusterSel.value];
+          return c ? ((c.lead && c.lead.tag) || c.product.tag) : '';
+        }
+        return v; // @тег выбранного ответственного
+      }
       if (tagSel && tagSel.value !== '__manual__') return tagSel.value;
       return manualInput.value.trim();
     }
@@ -3920,12 +3923,13 @@
       tagSel.value = opts.length ? opts[0].tag : '';
       if (!respSel) manualInput.style.display = 'none';
     }
-    // «есть / нет ответственного» — переключает выбор лида контента ↔ ручной тег.
+    // Смена «Ответственного по вопросу»: показать поле ручного тега только для «вписать другой»,
+    // кластер — только когда ответственного нет (тег лида контента берётся по кластеру).
     function applyResp() {
       if (!respSel) return;
-      const own = respSel.value === 'own';
-      if (tagSel) tagSel.style.display = own ? 'none' : 'block';
-      manualInput.style.display = own ? 'block' : 'none';
+      const v = respSel.value;
+      if (manualBox) manualBox.style.display = v === '__manual__' ? 'block' : 'none';
+      if (clusterBox && isLead) clusterBox.style.display = v === 'lead' ? 'block' : 'none';
       recompute();
     }
     fillTagSel();
