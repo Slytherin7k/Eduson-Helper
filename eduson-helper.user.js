@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.81.0
+// @version      0.82.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -116,7 +116,7 @@
 
   /* ================================================ */
 
-  const VER = '0.81.0';
+  const VER = '0.82.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3056,7 +3056,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.81.0'; // синхр. с Хэлпером
+  const VER = '0.82.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4266,7 +4266,10 @@
     if (!plans.length) throw new Error('нет учебных планов');
     const picked = pickPlan(plans, courseHint) || plans[0];
     const planHtml = await gmText(picked.url);
-    const res = { planName: picked.name, lessons: lessonsFromPlan(planHtml) };
+    const res = {
+      planName: picked.name, lessons: lessonsFromPlan(planHtml), plans: plans,
+      domain: (cabUrl.match(/^https?:\/\/[^/]+/) || [''])[0], planKey: picked.url
+    };
     _acctLessons[uid] = res;
     return res;
   }
@@ -4439,15 +4442,70 @@
       loadBar.done(); setTimeout(function () { if (loadBar.el.parentNode) loadBar.el.remove(); }, 400);
       status.style.display = 'none';
       searchLabel.style.display = ''; search.style.display = '';
-      searchLabel.textContent = 'Название урока · курс: ' + data.planName + ' · уроков: ' + data.lessons.length;
       if (data.note) { status.style.display = ''; status.style.color = '#B45309'; status.textContent = '⚠️ ' + data.note; }
 
-      if (!data.deep) data.deep = [];          // накопленные вложенные лекции (кэш в lessonCache)
-      if (!data.deepDone) data.deepDone = {};  // {courseId:1} — какие уроки уже открывали
+      // рабочий набор (можно переключать программу/аккаунт студента) — lessonCache не трогаем
+      const cur = {
+        domain: data.domain, lessons: data.lessons, planName: data.planName, planKey: data.planKey,
+        deep: data.deep || [], deepDone: data.deepDone || {}
+      };
+      const setLabel = function () { searchLabel.textContent = 'Название урока · курс: ' + cur.planName + ' · уроков: ' + cur.lessons.length; };
+      setLabel();
+
       let scanRun = 0, scanning = false, scanTerms = '';
-      const scanDone = function () { return Object.keys(data.deepDone).length >= data.lessons.length; };
+      const scanDone = function () { return Object.keys(cur.deepDone).length >= cur.lessons.length; };
       const stopScan = function () { scanRun++; scanning = false; scanLine.style.display = 'none'; scanBar.el.style.display = 'none'; };
       scanStop.onclick = stopScan;
+
+      // --- переключатель программы/аккаунта студента ---
+      const loadDeepCache = function () {
+        cur.deep = []; cur.deepDone = {};
+        try {
+          const gc = JSON.parse(GM_getValue('curator_lessons_' + cur.planKey) || 'null');
+          if (gc && Date.now() - gc.ts < 14 * 864e5 && Array.isArray(gc.deep)) { cur.deep = gc.deep; cur.deepDone = gc.deepDone || {}; }
+        } catch (e) { /* нет кэша */ }
+      };
+      const applyProg = function (p) {
+        stopScan();
+        cur.domain = p.domain; cur.lessons = p.lessons; cur.planName = p.planName; cur.planKey = p.planKey;
+        loadDeepCache();
+        setLabel(); search.value = ''; listBox.style.display = 'none'; listBox.innerHTML = '';
+      };
+      const progSubs = (data.subs || []);
+      const progPlans = (data.plans || []);
+      if (progSubs.length > 1 || progPlans.length > 1) {
+        const pl = elt('div', 'margin:2px 0 8px;');
+        pl.appendChild(elt('div', fieldLabel, 'Программа студента (в ней ищем уроки)'));
+        const psel = elt('select', inputCss + 'padding:6px 8px;');
+        const pnote = elt('div', 'font-size:9.5px;color:#9CA3AF;font-weight:700;margin-top:2px;', '');
+        const opts = [];
+        if (progSubs.length > 1) {
+          progSubs.forEach(function (s) { opts.push({ v: 'a:' + s.uid, t: s.company || ('аккаунт ' + s.uid), def: s.uid === data.uid }); });
+        } else {
+          progPlans.forEach(function (p) { opts.push({ v: 'p:' + p.url, t: p.name, def: p.url === cur.planKey }); });
+        }
+        opts.forEach(function (o) { const e = elt('option', '', o.t); e.value = o.v; if (o.def) e.selected = true; psel.appendChild(e); });
+        psel.onchange = function () {
+          const v = psel.value;
+          if (v.slice(0, 2) === 'p:') {
+            const url = v.slice(2);
+            if (_planLessons[url]) { applyProg({ domain: cur.domain, lessons: _planLessons[url], planName: (progPlans.find(function (p) { return p.url === url; }) || {}).name || cur.planName, planKey: url }); pnote.textContent = ''; return; }
+            pnote.textContent = 'загружаю уроки программы…';
+            lessonsForPlan(url).then(function (ls) { pnote.textContent = ''; applyProg({ domain: cur.domain, lessons: ls, planName: (progPlans.find(function (p) { return p.url === url; }) || {}).name || cur.planName, planKey: url }); })
+              .catch(function () { pnote.textContent = 'не вышло загрузить'; });
+          } else {
+            const su = v.slice(2);
+            if (su === data.uid) { applyProg({ domain: data.domain, lessons: data.lessons, planName: data.planName, planKey: data.planKey }); pnote.textContent = ''; return; }
+            const hint = (progSubs.find(function (s) { return s.uid === su; }) || {}).company || '';
+            if (_acctLessons[su]) { applyProg(_acctLessons[su]); pnote.textContent = 'курс: ' + _acctLessons[su].planName; return; }
+            pnote.textContent = 'загружаю программу этого аккаунта… (до минуты)';
+            accountLessons(su, hint).then(function (r) { pnote.textContent = 'курс: ' + r.planName; applyProg(r); })
+              .catch(function (e) { pnote.textContent = 'не вышло: ' + ((e && e.message) || 'ошибка'); });
+          }
+        };
+        pl.appendChild(psel); pl.appendChild(pnote);
+        body.insertBefore(pl, searchLabel);
+      }
 
       const nameDiv = function (name) { return elt('div', 'font-size:12px;font-weight:700;color:#111827;line-height:1.35;', name); };
       const urlDiv = function (url) { return elt('div', 'font-size:10px;color:#6B7280;font-weight:600;margin-top:2px;word-break:break-all;', url); };
@@ -4466,7 +4524,7 @@
 
       // Строка урока верхнего уровня + кнопка «▾» раскрытия вложенных лекций.
       const courseRowWithExpand = function (l) {
-        const url = data.domain + '/ru/courses/' + l.id;
+        const url = cur.domain + '/ru/courses/' + l.id;
         const wrap = elt('div', 'border-bottom:1px solid #F3F4F6;');
         const row = elt('div', 'padding:8px 11px;display:flex;gap:8px;align-items:flex-start;');
         const main = elt('div', 'flex:1;min-width:0;cursor:pointer;');
@@ -4479,11 +4537,11 @@
         exp.onclick = function () {
           if (sub.style.display === 'block') { sub.style.display = 'none'; exp.textContent = '▾'; return; }
           sub.style.display = 'block'; exp.textContent = '…';
-          fetchCourseLectures(data.domain, l.id).then(function (arr) {
+          fetchCourseLectures(cur.domain, l.id).then(function (arr) {
             exp.textContent = '▴'; sub.innerHTML = '';
             if (!arr.length) { sub.appendChild(elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;padding:4px 0;', 'вложенных уроков нет — бери ссылку выше')); return; }
             arr.forEach(function (lc) {
-              const lu = data.domain + lc.path;
+              const lu = cur.domain + lc.path;
               const sr = elt('div', 'padding:6px 0;cursor:pointer;border-top:1px solid #F3F4F6;');
               sr.appendChild(elt('div', 'font-size:11.5px;font-weight:700;color:#111827;line-height:1.3;', lc.name));
               sr.appendChild(elt('div', 'font-size:9.5px;color:#6B7280;font-weight:600;margin-top:1px;word-break:break-all;', lu));
@@ -4505,8 +4563,8 @@
         curTerms = docNorm(search.value).split(' ').filter(Boolean);
         listBox.innerHTML = '';
         if (!curTerms.length) { listBox.style.display = 'none'; stopScan(); return; }
-        const courseHits = data.lessons.filter(function (l) { return matchName(l.name); }).slice(0, 40);
-        const lectHits = data.deep.filter(function (x) { return matchName(x.name); }).slice(0, 40);
+        const courseHits = cur.lessons.filter(function (l) { return matchName(l.name); }).slice(0, 40);
+        const lectHits = cur.deep.filter(function (x) { return matchName(x.name); }).slice(0, 40);
         courseHits.forEach(function (l) { listBox.appendChild(courseRowWithExpand(l)); });
         lectHits.forEach(function (x) { listBox.appendChild(lessonRow(x.name, x.url, x.parent)); });
         if (!courseHits.length && !lectHits.length) {
@@ -4526,7 +4584,7 @@
         const key = curTerms.join(' ');
         if (scanDone() || !curTerms.length) return;
         if (scanning && key === scanTerms) return;
-        const pending = data.lessons.filter(function (l) { return !data.deepDone[l.id]; });
+        const pending = cur.lessons.filter(function (l) { return !cur.deepDone[l.id]; });
         if (!pending.length) return;
         scanTerms = key;
         pending.sort(function (a, b) {
@@ -4540,10 +4598,10 @@
         scanning = true;
         const myRun = ++scanRun;
         const t0 = Date.now();
-        const total = data.lessons.length;
+        const total = cur.lessons.length;
         scanLine.style.display = 'flex'; scanBar.el.style.display = 'block';
         const tickUI = function () {
-          const d = Object.keys(data.deepDone).length;
+          const d = Object.keys(cur.deepDone).length;
           scanTxt.textContent = 'ищу во вложенных уроках… ' + d + ' / ' + total;
           scanBar.set(d, total);
         };
@@ -4553,18 +4611,18 @@
           if (myRun !== scanRun || Date.now() - t0 > 45000) return Promise.resolve();
           const l = queue.shift();
           if (!l) return Promise.resolve();
-          if (data.deepDone[l.id]) return worker();
-          return fetchCourseLectures(data.domain, l.id).then(function (arr) {
-            data.deepDone[l.id] = 1;
+          if (cur.deepDone[l.id]) return worker();
+          return fetchCourseLectures(cur.domain, l.id).then(function (arr) {
+            cur.deepDone[l.id] = 1;
             let hit = false;
             arr.forEach(function (lc) {
-              const u = data.domain + lc.path;
-              if (data.deep.some(function (x) { return x.url === u; })) return;
-              data.deep.push({ name: lc.name, url: u, parent: l.name });
+              const u = cur.domain + lc.path;
+              if (cur.deep.some(function (x) { return x.url === u; })) return;
+              cur.deep.push({ name: lc.name, url: u, parent: l.name });
               if (matchName(lc.name)) hit = true;
             });
             if (hit) scheduleDraw();
-          }).catch(function () { data.deepDone[l.id] = 1; }).then(function () {
+          }).catch(function () { cur.deepDone[l.id] = 1; }).then(function () {
             if (++n % 3 === 0) tickUI();
             return worker();
           });
@@ -4573,7 +4631,7 @@
         for (let i = 0; i < 15; i++) ws.push(worker());
         Promise.all(ws).then(function () {
           // сохраняем накопленный индекс в GM (даже частичный — на след. раз продолжим)
-          try { GM_setValue('curator_lessons_' + data.planKey, JSON.stringify({ ts: Date.now(), deep: data.deep, deepDone: data.deepDone })); } catch (e) {}
+          try { GM_setValue('curator_lessons_' + cur.planKey, JSON.stringify({ ts: Date.now(), deep: cur.deep, deepDone: cur.deepDone })); } catch (e) {}
           if (myRun !== scanRun) return;
           scanning = false;
           tickUI();
@@ -4582,9 +4640,8 @@
         });
       }
 
-      const others = (data.plans || []).map(function (p) { return p.name; }).filter(function (n) { return n !== data.planName; });
       hint.textContent = 'Печатай название урока или имя спикера. Скрипт сам заглядывает внутрь уроков и показывает совпадения по мере нахождения — кликни нужное или нажми «стоп». «▾» — раскрыть вложенные лекции урока. Работает, пока ты залогинена в www.eduson.tv.' +
-        (others.length ? ' Другие курсы студента: ' + others.join('; ') + '.' : '');
+        ((data.subs || []).length > 1 ? ' У студента несколько программ — переключай в списке выше.' : '');
     }).catch(function (e) {
       loadBar.fail();
       status.style.color = '#B45309';
