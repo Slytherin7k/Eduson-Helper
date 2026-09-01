@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.95.0
+// @version      0.96.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -119,7 +119,7 @@
 
   /* ================================================ */
 
-  const VER = '0.95.0';
+  const VER = '0.96.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3059,7 +3059,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.95.0'; // синхр. с Хэлпером
+  const VER = '0.96.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3606,11 +3606,30 @@
     };
   }
 
+  // Держим панель в пределах экрана и подгоняем высоту под свободное место снизу.
+  function clampPanel(box) {
+    const w = box.offsetWidth || 336;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    let left = parseFloat(box.style.left);
+    if (!isFinite(left)) {
+      const r = box.getBoundingClientRect();
+      left = r.left;
+    }
+    left = Math.max(6, Math.min(left, vw - w - 6));
+    let top = parseFloat(box.style.top);
+    if (!isFinite(top)) top = 64;
+    top = Math.max(6, Math.min(top, vh - 44));
+    box.style.left = left + 'px';
+    box.style.top = top + 'px';
+    box.style.right = 'auto';
+    box.style.maxHeight = Math.max(160, vh - top - 12) + 'px';
+  }
+
   // Панель можно таскать за шапку; позиция запоминается (curatorPanelPos).
   function makePanelDraggable(box, handle) {
     let sx, sy, ox, oy, drag = false;
     handle.addEventListener('mousedown', function (e) {
-      if (e.target && e.target.tagName === 'SPAN') return; // крестик закрытия
+      if (e.target && e.target.closest && e.target.closest('[data-hp-close]')) return; // крестик закрытия
       drag = true;
       const r = box.getBoundingClientRect();
       sx = e.clientX; sy = e.clientY; ox = r.left; oy = r.top;
@@ -3618,16 +3637,20 @@
     });
     document.addEventListener('mousemove', function (e) {
       if (!drag) return;
+      const w = box.offsetWidth || 336;
       let nx = ox + (e.clientX - sx), ny = oy + (e.clientY - sy);
-      nx = Math.max(4, Math.min(nx, window.innerWidth - 60));
-      ny = Math.max(4, Math.min(ny, window.innerHeight - 30));
+      nx = Math.max(6, Math.min(nx, window.innerWidth - w - 6));
+      ny = Math.max(6, Math.min(ny, window.innerHeight - 44));
       box.style.left = nx + 'px'; box.style.top = ny + 'px'; box.style.right = 'auto';
+      box.style.maxHeight = Math.max(160, window.innerHeight - ny - 12) + 'px';
     });
     document.addEventListener('mouseup', function () {
       if (!drag) return;
       drag = false;
       try { GM_setValue('curatorPanelPos', JSON.stringify({ x: parseInt(box.style.left, 10), y: parseInt(box.style.top, 10) })); } catch (e) {}
     });
+    const onResize = function () { if (document.body.contains(box)) clampPanel(box); };
+    window.addEventListener('resize', onResize);
   }
 
   const PANEL_ID = 'curator-panel';
@@ -3651,7 +3674,7 @@
   }
 
   function buildPanel() {
-    const p = elt('div', 'position:fixed;z-index:2147483646;width:336px;max-height:82vh;overflow-x:hidden;overflow-y:auto;' +
+    const p = elt('div', 'position:fixed;z-index:2147483646;width:min(360px,calc(100vw - 20px));max-height:82vh;overflow-x:hidden;overflow-y:auto;' +
       'background:#fff;color:#1F2937;border:1px solid #E5E7EB;border-radius:14px;box-shadow:0 18px 48px rgba(15,23,42,.24);' +
       'font-family:' + FONT + ';padding:9px 11px;');
     p.id = PANEL_ID;
@@ -3660,18 +3683,21 @@
     let pos = null;
     try { pos = JSON.parse(GM_getValue('curatorPanelPos') || 'null'); } catch (e) { pos = null; }
     if (pos && isFinite(pos.x) && isFinite(pos.y)) {
-      p.style.left = Math.max(4, Math.min(pos.x, window.innerWidth - 60)) + 'px';
-      p.style.top = Math.max(4, Math.min(pos.y, window.innerHeight - 30)) + 'px';
+      p.style.left = pos.x + 'px';
+      p.style.top = pos.y + 'px';
     } else {
-      p.style.right = '18px'; p.style.top = '64px';
+      p.style.left = Math.max(6, window.innerWidth - 378) + 'px';
+      p.style.top = '64px';
     }
+    setTimeout(function () { clampPanel(p); }, 0);
 
     const head = elt('div', 'display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;cursor:move;user-select:none;');
     const ttl = elt('div', 'font-weight:800;font-size:11.5px;color:' + ACC + ';letter-spacing:.1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;');
     ttl.appendChild(elt('span', '', '⠿ Хэлпер'));
     ttl.appendChild(elt('span', 'font-weight:700;color:#9CA3AF;', '  ·  Здесь могла быть ваша реклама😎'));
     head.appendChild(ttl);
-    const x = elt('span', 'cursor:pointer;color:#9CA3AF;font-size:15px;line-height:1;', '✕');
+    const x = elt('span', 'cursor:pointer;color:#9CA3AF;font-size:15px;line-height:1;padding:2px 4px;', '✕');
+    x.dataset.hpClose = '1';
     x.onclick = togglePanel;
     head.appendChild(x);
     p.appendChild(head);
@@ -4372,34 +4398,71 @@
   const FAQ_VIEW = 'daff7453-0dfa-43fd-a93c-4a4ebe64e31e';
   const FAQ_SPACE = '816a0709-d1b1-494e-8060-6340ffac6df1';
   const FAQ_KEYS = { question: 'Vi>N', answer: 'rc:R', lesson: 'F{w>', status: 'VO}v' };
-  async function notionQuestionSearch(term) {
+  async function notionQuerySingle(q) {
     const j = await notionPost('queryCollection', {
       collection: { id: FAQ_COLLECTION, spaceId: FAQ_SPACE },
       collectionView: { id: FAQ_VIEW, spaceId: FAQ_SPACE },
-      loader: { type: 'reducer', reducers: { collection_group_results: { type: 'results', limit: 20 } }, searchQuery: term, userTimeZone: 'Europe/Moscow' }
+      loader: { type: 'reducer', reducers: { collection_group_results: { type: 'results', limit: 40 } }, searchQuery: q, userTimeZone: 'Europe/Moscow' }
     });
     const rr = j.result && j.result.reducerResults && j.result.reducerResults.collection_group_results;
-    const ids = (rr && rr.blockIds) || [];
-    const blocks = j.recordMap.block || {};
-    return ids.map(function (id) {
-      let b = blocks[id];
-      for (let i = 0; i < 4; i++) { if (b && b.value && b.value.properties) { b = b.value; break; } b = b && b.value; }
-      const P = (b && b.properties) || {};
-      const t = function (k) {
-        const v = P[k];
-        if (!v) return '';
-        return v.map(function (s) { return s[0]; }).join('').replace(/[​‎‏﻿]/g, '').trim();
-      };
-      const status = t(FAQ_KEYS.status);
-      return {
-        id: id,
-        question: t(FAQ_KEYS.question),
-        answer: t(FAQ_KEYS.answer),
-        lesson: t(FAQ_KEYS.lesson),
-        status: status,
-        done: /отправлять студенту|студент принял/i.test(status)
-      };
+    return { ids: (rr && rr.blockIds) || [], blocks: j.recordMap.block || {} };
+  }
+
+  function faqFold(s) { return String(s || '').toLowerCase().replace(/ё/g, 'е'); }
+  // корень слова для нестрогого совпадения: "установка"/"установке"/"установить" → "установ"
+  function faqStem(w) {
+    w = faqFold(w).replace(/[^a-zа-я0-9]+/g, '');
+    if (w.length <= 5) return w;
+    return w.slice(0, Math.max(5, Math.ceil(w.length * 0.7)));
+  }
+  function faqRow(id, blocks) {
+    let b = blocks[id];
+    for (let i = 0; i < 4; i++) { if (b && b.value && b.value.properties) { b = b.value; break; } b = b && b.value; }
+    const P = (b && b.properties) || {};
+    const t = function (k) {
+      const v = P[k];
+      if (!v) return '';
+      return v.map(function (s) { return s[0]; }).join('').replace(/[​‎‏﻿]/g, '').trim();
+    };
+    const status = t(FAQ_KEYS.status);
+    return {
+      id: id,
+      question: t(FAQ_KEYS.question),
+      answer: t(FAQ_KEYS.answer),
+      lesson: t(FAQ_KEYS.lesson),
+      status: status,
+      done: /отправлять студенту|студент принял/i.test(status)
+    };
+  }
+
+  // Notion ищет searchQuery как ЦЕЛУЮ ФРАЗУ и не понимает русскую морфологию:
+  // "autocad установка" не находит ничего, хотя нужная карточка есть ("...инструкцию по установке...").
+  // Поэтому: запрашиваем КАЖДОЕ слово отдельно, объединяем карточки, и оставляем те, где
+  // каждое слово запроса либо нашлось поиском Notion, либо встречается корнем в тексте карточки.
+  async function notionQuestionSearch(term) {
+    const words = String(term || '').trim().split(/\s+/).filter(function (w) { return w.length >= 2; }).slice(0, 3);
+    const queries = words.length ? words : [String(term || '').trim()];
+    const results = await Promise.all(queries.map(notionQuerySingle));
+    const blocks = {};
+    results.forEach(function (r) { Object.assign(blocks, r.blocks); });
+    const sets = results.map(function (r) { return new Set(r.ids); });
+    const seen = {}, order = [];
+    results.forEach(function (r) { r.ids.forEach(function (id) { if (!seen[id]) { seen[id] = 1; order.push(id); } }); });
+    if (queries.length < 2) return order.map(function (id) { return faqRow(id, blocks); });
+    const stems = queries.map(faqStem);
+    const scored = order.map(function (id) {
+      const row = faqRow(id, blocks);
+      const hay = faqFold(row.question + '  ' + row.answer + '  ' + row.lesson);
+      let hits = 0;
+      queries.forEach(function (w, i) {
+        if (sets[i].has(id) || (stems[i] && hay.indexOf(stems[i]) !== -1)) hits++;
+      });
+      return { row: row, hits: hits };
     });
+    let use = scored.filter(function (s) { return s.hits >= queries.length; });
+    if (!use.length) use = scored.filter(function (s) { return s.hits >= queries.length - 1; });
+    use.sort(function (a, b) { return b.hits - a.hits; });
+    return use.slice(0, 20).map(function (s) { return s.row; });
   }
 
   function renderQuestions(body) {
