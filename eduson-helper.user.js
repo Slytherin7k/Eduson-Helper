@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.97.0
+// @version      0.98.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -119,7 +119,7 @@
 
   /* ================================================ */
 
-  const VER = '0.97.0';
+  const VER = '0.98.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3059,7 +3059,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.97.0'; // синхр. с Хэлпером
+  const VER = '0.98.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4527,48 +4527,47 @@
       if (only.checked) rows = rows.filter(function (r) { return r.answer; });
       rows.sort(function (a, b) { return (b.answer ? 1 : 0) - (a.answer ? 1 : 0); });
       if (!rows.length) { host.appendChild(elt('div', 'color:#9CA3AF;font-weight:700;font-size:12px;padding:12px 0;text-align:center;', lastRows.length ? 'С ответом ничего нет — сними галочку' : 'Ничего не нашлось')); return; }
-      const single = rows.length === 1;
       rows.forEach(function (r) {
         const card = elt('div', 'border:1px solid #E5E7EB;border-radius:11px;padding:9px 11px;margin-bottom:7px;');
 
-        const head = elt('div', 'display:flex;gap:7px;align-items:flex-start;cursor:pointer;');
-        const chev = elt('span', 'font-size:11px;color:#9CA3AF;line-height:1.5;flex:0 0 auto;user-select:none;', '▸');
-        const qt = elt('div', 'flex:1 1 auto;font-weight:700;font-size:12px;color:#111827;line-height:1.35;', r.question || '(без текста вопроса)');
-        head.appendChild(chev); head.appendChild(qt);
+        // Вопрос студента — свёрнут (он длинный). Клик по строке раскрывает полный текст.
+        const qLine = (r.question || '(без текста вопроса)').replace(/\s+/g, ' ').trim();
+        const head = elt('div', 'display:flex;gap:6px;align-items:flex-start;cursor:pointer;');
+        const chev = elt('span', 'font-size:10px;color:#9CA3AF;line-height:1.5;flex:0 0 auto;user-select:none;', '▸');
+        const qPrev = elt('div', 'flex:1 1 auto;font-weight:600;font-size:10.5px;color:#6B7280;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;', 'Вопрос: ' + qLine);
+        head.appendChild(chev); head.appendChild(qPrev);
         card.appendChild(head);
+        const qFull = elt('div', 'display:none;font-size:11px;color:#374151;font-weight:500;line-height:1.4;white-space:pre-wrap;background:#F3F4F6;border-radius:8px;padding:7px 9px;margin-top:5px;', r.question || '(без текста вопроса)');
+        card.appendChild(qFull);
+        let qOpen = false;
+        head.onclick = function () {
+          qOpen = !qOpen;
+          qFull.style.display = qOpen ? 'block' : 'none';
+          qPrev.style.whiteSpace = qOpen ? 'normal' : 'nowrap';
+          qPrev.textContent = qOpen ? 'Вопрос студента:' : ('Вопрос: ' + qLine);
+          chev.textContent = qOpen ? '▾' : '▸';
+        };
 
-        const meta = elt('div', 'display:flex;flex-wrap:wrap;gap:4px 8px;margin-top:4px;align-items:center;');
+        const meta = elt('div', 'display:flex;flex-wrap:wrap;gap:4px 8px;margin-top:5px;align-items:center;');
         const st = elt('span', 'font-size:10px;font-weight:700;padding:1px 7px;border-radius:999px;color:#374151;', r.status || '—');
         st.style.background = r.done ? '#DCFCE7' : '#FEF3C7';
         meta.appendChild(st);
-        if (!r.answer) meta.appendChild(elt('span', 'font-size:10px;color:#9CA3AF;font-weight:600;', 'без ответа методиста'));
+        if (r.lesson) meta.appendChild(elt('span', 'font-size:10px;color:#6B7280;font-weight:600;word-break:break-all;', '📚 ' + (r.lesson.length > 70 ? r.lesson.slice(0, 70) + '…' : r.lesson)));
         card.appendChild(meta);
 
-        const details = elt('div', 'display:none;margin-top:6px;');
-        if (r.lesson) details.appendChild(elt('div', 'font-size:10px;color:#6B7280;font-weight:600;margin-bottom:5px;word-break:break-all;', '📚 ' + r.lesson));
+        // Ответ методиста — всегда виден.
         if (r.answer) {
-          details.appendChild(elt('div', 'font-size:11px;color:#1F2937;font-weight:500;line-height:1.45;white-space:pre-wrap;background:#F9FAFB;border-radius:8px;padding:7px 9px;', r.answer));
+          card.appendChild(elt('div', 'font-size:11px;color:#1F2937;font-weight:500;line-height:1.45;white-space:pre-wrap;background:#F9FAFB;border-radius:8px;padding:7px 9px;margin-top:6px;', r.answer));
           const cp = elt('div', 'margin-top:6px;text-align:center;background:' + ACC + ';color:#fff;font-weight:800;font-size:11px;padding:6px 0;border-radius:9px;cursor:pointer;', '📋 Копировать ответ');
-          cp.onclick = function (e) { e.stopPropagation(); copyText(r.answer); toast('Ответ методиста скопирован'); };
-          details.appendChild(cp);
+          cp.onclick = function () { copyText(r.answer); toast('Ответ методиста скопирован'); };
+          card.appendChild(cp);
         } else {
-          details.appendChild(elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;', 'Ответа методиста пока нет'));
+          card.appendChild(elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;margin-top:6px;', 'Ответа методиста пока нет'));
         }
         const open = elt('a', 'display:inline-block;margin-top:5px;font-size:10.5px;font-weight:700;color:' + ACC + ';text-decoration:none;', 'открыть карточку в Notion →');
         open.href = 'https://www.notion.so/' + r.id.replace(/-/g, '');
         open.target = '_blank'; open.rel = 'noopener';
-        open.onclick = function (e) { e.stopPropagation(); };
-        details.appendChild(open);
-        card.appendChild(details);
-
-        let openState = false;
-        function setOpen(v) {
-          openState = v;
-          details.style.display = v ? 'block' : 'none';
-          chev.textContent = v ? '▾' : '▸';
-        }
-        head.onclick = function () { setOpen(!openState); };
-        if (single) setOpen(true);
+        card.appendChild(open);
 
         host.appendChild(card);
       });
