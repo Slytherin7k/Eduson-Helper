@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.2.0
+// @version      1.3.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -119,7 +119,7 @@
 
   /* ================================================ */
 
-  const VER = '1.2.0';
+  const VER = '1.3.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3059,7 +3059,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.2.0'; // синхр. с Хэлпером
+  const VER = '1.3.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4398,6 +4398,21 @@
   const FAQ_VIEW = 'daff7453-0dfa-43fd-a93c-4a4ebe64e31e';
   const FAQ_SPACE = '816a0709-d1b1-494e-8060-6340ffac6df1';
   const FAQ_KEYS = { question: 'Vi>N', answer: 'rc:R', lesson: 'F{w>', status: 'VO}v', course: 'AZ?p' };
+  // состояние вкладки «Вопросы» — переживает сворачивание/открытие панели
+  var _faqState = { q: '', course: '', link: '', only: true, rows: null };
+  var _faqCourses = null; // список названий курсов из базы (кэш)
+  async function faqLoadCourses() {
+    if (_faqCourses) return _faqCourses;
+    try {
+      const j = await notionPost('syncRecordValues', { requests: [{ pointer: { table: 'collection', id: FAQ_COLLECTION, spaceId: FAQ_SPACE }, version: -1 }] });
+      const rec = j.recordMap.collection[FAQ_COLLECTION];
+      const cv = (rec.value && rec.value.value) ? rec.value.value : rec.value;
+      const sc = (cv && cv.schema) || {};
+      const opts = (sc[FAQ_KEYS.course] && sc[FAQ_KEYS.course].options) || [];
+      _faqCourses = opts.map(function (o) { return o.value; }).filter(Boolean).sort(function (a, b) { return a.localeCompare(b, 'ru'); });
+    } catch (e) { _faqCourses = []; }
+    return _faqCourses;
+  }
   async function notionQuerySingle(q) {
     const j = await notionPost('queryCollection', {
       collection: { id: FAQ_COLLECTION, spaceId: FAQ_SPACE },
@@ -4456,7 +4471,7 @@
       ts = r.edited;
     }
     if (!d) return null;
-    return { text: d, stale: ts > 0 && (Date.now() - ts) > 270 * 864e5 };
+    return { text: d, stale: ts > 0 && (Date.now() - ts) > 548 * 864e5 }; // ~1,5 года
   }
   function faqCourseLabel(r) {
     if (r.course) return r.course;
@@ -4712,55 +4727,72 @@
     return use.slice(0, 12).map(function (s) { return s.row; });
   }
 
+  function faqSameCourse(a, b) {
+    a = faqFold(a); b = faqFold(b);
+    if (!a || !b) return false;
+    return a === b || a.indexOf(b) !== -1 || b.indexOf(a) !== -1;
+  }
+  // Все вопросы выбранного курса (когда задан только курс) — свежие ответы сверху.
+  async function faqByCourse(name) {
+    const w = name.split(/\s+/).filter(function (x) { return x.length >= 3; }).sort(function (a, b) { return b.length - a.length; })[0] || name;
+    const r = await notionQuerySingle(w);
+    let rows = (r.ids || []).map(function (id) { return faqRow(id, r.blocks); });
+    rows = rows.filter(function (x) { return faqSameCourse(x.course, name); });
+    rows.sort(function (a, b) { return (b.edited || 0) - (a.edited || 0); });
+    return rows.slice(0, 20);
+  }
+
   function renderQuestions(body) {
-    const q = elt('input', 'width:100%;padding:8px 11px;border:1px solid #D1D5DB;border-radius:10px;font:600 13px ' + FONT + ';color:#111827;');
+    const ANYC = '— любой курс —';
+    const mkLabel = function (t) { return elt('div', 'font-size:10px;font-weight:800;color:#6B7280;margin:6px 0 2px;', t); };
+    const inCss = 'width:100%;padding:7px 10px;border:1px solid #D1D5DB;border-radius:9px;font:600 12px ' + FONT + ';color:#111827;';
+
+    body.appendChild(mkLabel('Текстовое поле'));
+    const q = elt('input', inCss);
     q.type = 'search';
-    q.placeholder = 'слово, ссылка на урок, кусок вопроса…';
+    q.placeholder = 'слово, кусок вопроса…';
+    q.value = _faqState.q || '';
     body.appendChild(q);
-    const opts = elt('label', 'display:flex;align-items:center;gap:5px;font-size:10.5px;color:#6B7280;font-weight:600;margin:5px 0 6px;cursor:pointer;');
-    const only = elt('input', ''); only.type = 'checkbox'; only.checked = true;
+
+    body.appendChild(mkLabel('Выберите курс'));
+    const courseRows = [{ label: ANYC, value: '' }];
+    const courseCombo = combo(courseRows, 'начните вводить название курса…', _faqState.course || '');
+    body.appendChild(courseCombo.el);
+    faqLoadCourses().then(function (list) {
+      list.forEach(function (c) { courseRows.push({ label: c, value: c }); });
+    });
+
+    body.appendChild(mkLabel('Ссылка на урок'));
+    const linkInp = elt('input', inCss);
+    linkInp.type = 'search';
+    linkInp.placeholder = 'вставьте ссылку на урок';
+    linkInp.value = _faqState.link || '';
+    body.appendChild(linkInp);
+
+    const opts = elt('label', 'display:flex;align-items:center;gap:5px;font-size:10.5px;color:#6B7280;font-weight:600;margin:7px 0 4px;cursor:pointer;');
+    const only = elt('input', ''); only.type = 'checkbox'; only.checked = _faqState.only !== false;
     opts.appendChild(only); opts.appendChild(document.createTextNode('только с ответом методиста'));
     body.appendChild(opts);
     body.appendChild(elt('div', 'font-size:10px;color:#9CA3AF;font-weight:600;margin-bottom:6px;', 'Ищет по доске «Вопросы студентов [актуальная доска]» в Notion'));
 
-    const filt = elt('input', 'width:100%;padding:6px 10px;border:1px solid #E5E7EB;border-radius:9px;font:600 11px ' + FONT + ';color:#111827;margin-bottom:5px;');
-    filt.type = 'search';
-    filt.placeholder = 'фильтр по результатам: курс, урок, слово…';
-    body.appendChild(filt);
-    const chipsBox = elt('div', 'display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;');
-    body.appendChild(chipsBox);
     const host = elt('div', '');
     body.appendChild(host);
 
-    let seq = 0, timer = null, lastRows = [], activeCourse = '';
-    filt.addEventListener('input', paint);
+    let seq = 0, timer = null, lastRows = (_faqState.rows && _faqState.rows.slice()) || [];
 
-    function renderChips(rows) {
-      chipsBox.innerHTML = '';
-      const counts = {};
-      rows.forEach(function (r) { const c = faqCourseLabel(r) || '—'; counts[c] = (counts[c] || 0) + 1; });
-      if (activeCourse && !counts[activeCourse]) activeCourse = '';
-      const names = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; });
-      if (names.length < 2 && !activeCourse) return;
-      names.forEach(function (c) {
-        const on = activeCourse === c;
-        const chip = elt('span', 'font-size:10px;font-weight:700;padding:2px 8px;border-radius:999px;cursor:pointer;border:1px solid ' + (on ? ACC : '#E5E7EB') + ';background:' + (on ? ACC : '#fff') + ';color:' + (on ? '#fff' : '#6B7280') + ';', c + ' · ' + counts[c]);
-        chip.onclick = function () { activeCourse = on ? '' : c; paint(); };
-        chipsBox.appendChild(chip);
-      });
+    function saveState() {
+      _faqState.q = q.value.trim();
+      _faqState.course = courseCombo.value.trim();
+      _faqState.link = linkInp.value.trim();
+      _faqState.only = only.checked;
+      _faqState.rows = lastRows;
     }
 
     function paint() {
       let rows = lastRows.slice();
       if (only.checked) rows = rows.filter(function (r) { return r.answer; });
-      renderChips(rows);
-      if (activeCourse) rows = rows.filter(function (r) { return (faqCourseLabel(r) || '—') === activeCourse; });
-      const fq = filt.value.trim().toLowerCase().replace(/ё/g, 'е');
-      if (fq) rows = rows.filter(function (r) {
-        return faqFold(r.question + ' ' + r.answer + ' ' + r.lesson + ' ' + r.course).indexOf(fq) !== -1;
-      });
       host.innerHTML = '';
-      if (!rows.length) { host.appendChild(elt('div', 'color:#9CA3AF;font-weight:700;font-size:12px;padding:12px 0;text-align:center;', lastRows.length ? 'Под фильтр ничего не подошло' : 'Ничего не нашлось')); return; }
+      if (!rows.length) { host.appendChild(elt('div', 'color:#9CA3AF;font-weight:700;font-size:12px;padding:12px 0;text-align:center;', lastRows.length ? 'С ответом ничего нет — сними галочку' : 'Ничего не нашлось')); return; }
       rows.forEach(function (r) {
         const card = elt('div', 'border:1px solid #E5E7EB;border-radius:11px;padding:9px 11px;margin-bottom:7px;');
 
@@ -4816,14 +4848,24 @@
         host.appendChild(card);
       });
     }
-    only.onchange = paint;
-    async function run(term) {
+    only.onchange = function () { saveState(); paint(); };
+
+    async function run() {
       const my = ++seq;
+      const text = q.value.trim();
+      const link = linkInp.value.trim();
+      let course = courseCombo.value.trim();
+      if (course === ANYC) course = '';
+      saveState();
+      if (!link && !course && text.length < 3) { lastRows = []; _faqState.rows = []; host.innerHTML = ''; return; }
       host.innerHTML = '';
       host.appendChild(elt('div', 'font-size:11px;color:#9CA3AF;font-weight:600;padding:8px 0;', 'ищу в Notion…'));
       let rows;
-      try { rows = await notionQuestionSearch(term); }
-      catch (e) {
+      try {
+        if (link) rows = await notionQuestionSearch(link);
+        else if (text) rows = await notionQuestionSearch(text);
+        else rows = await faqByCourse(course);
+      } catch (e) {
         if (my !== seq) return;
         host.innerHTML = '';
         host.appendChild(elt('div', 'font-size:11px;color:#9CA3AF;font-weight:600;', e.message === 'NOAUTH'
@@ -4832,18 +4874,21 @@
         return;
       }
       if (my !== seq) return;
-      lastRows = rows;
+      if (course && (link || text)) rows = rows.filter(function (r) { return faqSameCourse(r.course, course); });
+      lastRows = rows; saveState();
       paint();
       try { await faqFillBodyAnswers(rows); } catch (e) {}
       if (my !== seq) return;
+      lastRows = rows; saveState();
       paint();
     }
-    q.addEventListener('input', function () {
-      clearTimeout(timer);
-      const term = q.value.trim();
-      if (term.length < 3) { host.innerHTML = ''; lastRows = []; return; }
-      timer = setTimeout(function () { run(term); }, 450);
-    });
+
+    q.addEventListener('input', function () { clearTimeout(timer); timer = setTimeout(run, 450); });
+    linkInp.addEventListener('input', function () { clearTimeout(timer); timer = setTimeout(run, 500); });
+    courseCombo.onPick(function () { clearTimeout(timer); run(); });
+
+    if (lastRows.length) paint();
+    else if (_faqState.q || _faqState.link || _faqState.course) run();
   }
 
   /* ==================== ВКЛАДКА «ДОКУМЕНТ» ====================
