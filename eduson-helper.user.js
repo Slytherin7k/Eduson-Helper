@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.99.0
+// @version      1.0.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -119,7 +119,7 @@
 
   /* ================================================ */
 
-  const VER = '0.99.0';
+  const VER = '1.0.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3059,7 +3059,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.99.0'; // синхр. с Хэлпером
+  const VER = '1.0.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4534,6 +4534,7 @@
   async function notionQuestionSearch(term) {
     const raw = String(term || '').trim();
     let rawWords = faqFromLink(raw);
+    const isLink = !!rawWords;
     if (!rawWords) {
       rawWords = raw.toLowerCase().split(/\s+/).map(function (w) { return w.replace(/[^a-zа-яё0-9]+/gi, ''); }).filter(Boolean);
       const meaningful = rawWords.filter(function (w) { return w.length >= 2 && !FAQ_STOP.has(faqFold(w)); });
@@ -4556,28 +4557,41 @@
     results.forEach(function (r) { r.ids.forEach(function (id) { if (!seen[id]) { seen[id] = 1; order.push(id); } }); });
 
     const variantStems = wordVariants.map(function (vs) { return vs.map(faqStem).filter(Boolean); });
+    const N = wordVariants.length;
     const scored = order.map(function (id) {
       const row = faqRow(id, blocks);
       const inQ = faqFold(row.question), inA = faqFold(row.answer), inL = faqFold(row.lesson);
-      let hits = 0, score = 0;
+      // qHits — слово в САМОМ вопросе студента (это и есть «по теме»);
+      // textHits — слово хоть где-то в тексте карточки (вопрос/ответ/урок).
+      let qHits = 0, textHits = 0, score = 0;
       wordVariants.forEach(function (vs, wi) {
         const stems = variantStems[wi];
         const q = stems.some(function (s) { return inQ.indexOf(s) !== -1; });
         const a = stems.some(function (s) { return inA.indexOf(s) !== -1; });
         const l = stems.some(function (s) { return inL.indexOf(s) !== -1; });
         const inSet = vs.some(function (v) { return termSet[v] && termSet[v].has(id); });
-        if (q || a || l || inSet) hits++;
-        if (q) score += 4; else if (l) score += 3; else if (a) score += 2; else if (inSet) score += 1;
+        if (q) qHits++;
+        if (q || a || l) textHits++;
+        if (q) score += 5; else if (l) score += 3; else if (a) score += 2; else if (inSet) score += 0.5;
       });
       if (row.answer) score += 1;
-      if (row.done) score += 2;
-      return { row: row, hits: hits, score: score };
+      if (row.done) score += 1;
+      return { row: row, qHits: qHits, textHits: textHits, score: score };
     });
-    const strict = scored.filter(function (s) { return s.hits >= wordVariants.length; });
-    const loose = scored.filter(function (s) { return s.hits >= Math.max(1, wordVariants.length - 1); });
-    const use = strict.length >= 5 ? strict : loose;
-    use.sort(function (a, b) { return (b.score - a.score) || (b.hits - a.hits); });
-    return use.slice(0, 20).map(function (s) { return s.row; });
+
+    let use;
+    if (isLink || N < 2) {
+      // ссылка на урок / одно слово — показываем всё найденное, лучшее сверху
+      use = scored.filter(function (s) { return s.textHits >= 1; });
+    } else {
+      // несколько слов: каждое должно реально встречаться в карточке,
+      // и хотя бы одно — прямо в вопросе студента. Иначе это «мимо».
+      use = scored.filter(function (s) { return s.textHits >= N && s.qHits >= 1; });
+      if (use.length < 2) use = scored.filter(function (s) { return s.textHits >= N - 1 && s.qHits >= 1; });
+      if (use.length < 2) use = scored.filter(function (s) { return s.qHits >= 1 && s.textHits >= 1; });
+    }
+    use.sort(function (a, b) { return (b.qHits - a.qHits) || (b.score - a.score); });
+    return use.slice(0, 12).map(function (s) { return s.row; });
   }
 
   function renderQuestions(body) {
