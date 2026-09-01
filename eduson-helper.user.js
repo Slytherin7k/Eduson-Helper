@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.93.0
+// @version      0.94.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -119,7 +119,7 @@
 
   /* ================================================ */
 
-  const VER = '0.93.0';
+  const VER = '0.94.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3059,7 +3059,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.93.0'; // синхр. с Хэлпером
+  const VER = '0.94.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3526,8 +3526,23 @@
         .replace('{email}', u.email || '{email}')
         .replace('{телефон}', u.phone || '{телефон}');
     }
-    const html = escapeHtml(build('@@LINK@@')).replace('@@LINK@@', linkHtml).replace(/\n/g, '<br>');
-    return { plain: build(linkPlain), html: html };
+    // Карточка висит без ответа > 15 дней — жирная строка-тревога сразу после тега.
+    const alertTxt = extra.alertDays ? (ruDays(extra.alertDays) + '🚨🚨🚨') : '';
+    function withAlert(s, bold) {
+      if (!alertTxt) return s;
+      const line = bold ? ('<b>' + alertTxt + '</b>') : ('**' + alertTxt + '**');
+      const nl = s.indexOf('\n');
+      return nl === -1 ? (s + '\n' + line) : (s.slice(0, nl + 1) + line + '\n' + s.slice(nl + 1));
+    }
+    const html = withAlert(escapeHtml(build('@@LINK@@')).replace('@@LINK@@', linkHtml), true).replace(/\n/g, '<br>');
+    return { plain: withAlert(build(linkPlain), false), html: html };
+  }
+  function ruDays(n) {
+    const a = Math.abs(n) % 100, b = a % 10;
+    if (a > 10 && a < 20) return n + ' дней';
+    if (b === 1) return n + ' день';
+    if (b >= 2 && b <= 4) return n + ' дня';
+    return n + ' дней';
   }
 
   /* ==================== UI ==================== */
@@ -3892,6 +3907,7 @@
     let lastHtml = '';
     const isPkk = ping.suggest === 'pkk';
     const isLead = ping.suggest === 'leadcontent';
+    let notionDays = null, notionDone = false; // из карточки Notion (для строки-тревоги > 15 дней)
 
     // --- Ситуация (только для 'pkk') ---
     let subSel = null, curSub = (ping.subs && ping.subs[0]) || null;
@@ -4068,10 +4084,19 @@
             s.style.color = r.done ? '#16A34A' : '#B45309';
             nBox.appendChild(s);
           }
-          if (r.days != null) nBox.appendChild(elt('div', 'color:#374151;', '📅 Вопрос в работе: ' + r.days + ' дн.'));
+          if (r.days != null) {
+            const overdue = !r.done && r.days > 15;
+            const d = elt('div', '', (overdue ? '🚨 ' : '📅 ') + 'Вопрос в работе: ' + r.days + ' дн.' + (overdue ? ' — строка-тревога добавлена в пинг' : ''));
+            d.style.color = overdue ? '#DC2626' : '#374151';
+            nBox.appendChild(d);
+          }
           const cname = await notionUserName(r.createdBy);
           if (cname) nBox.appendChild(elt('div', 'color:#9CA3AF;', '✍️ Внесла карточку: ' + cname));
           if (!r.status && !r.ownerChecked) nBox.appendChild(elt('div', '', 'Notion: в карточке нет полей «Статус» / «Оунер»'));
+          // передаём в текст пинга
+          notionDays = (r.days != null) ? r.days : null;
+          notionDone = !!r.done;
+          recompute();
         })().catch(function () { nBox.textContent = 'Notion: не получилось прочитать карточку'; });
       }
     }
@@ -4130,6 +4155,7 @@
         extra.cluster = clusterSel ? clusterSel.value : '';
         extra.mopName = mopName;
       }
+      if (isLead && notionDays != null && !notionDone && notionDays > 15) extra.alertDays = notionDays;
       const r = pingFill(ping, chosenTag(), linkInput ? linkInput.value.trim() : '', mopInput ? mopInput.value.trim() : '', noResp, extra);
       ta.value = r.plain;
       lastHtml = r.html;
