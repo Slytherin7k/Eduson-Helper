@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.90.0
+// @version      0.91.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -17,9 +17,9 @@
 // @connect      amocrm.ru
 // @connect      eduson.tv
 // @connect      docs.google.com
-// @connect      notion.so
-// @connect      www.notion.so
+// @connect      app.notion.com
 // @connect      notion.com
+// @connect      notion.so
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -119,7 +119,7 @@
 
   /* ================================================ */
 
-  const VER = '0.90.0';
+  const VER = '0.91.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3059,7 +3059,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.90.0'; // синхр. с Хэлпером
+  const VER = '0.91.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3718,10 +3718,11 @@
     }
     return null;
   }
+  // API Notion сейчас на app.notion.com (не www.notion.so — там нет авторизации).
   function notionPost(path, bodyObj) {
     return new Promise(function (resolve, reject) {
       GM_xmlhttpRequest({
-        method: 'POST', url: 'https://www.notion.so/api/v3/' + path, timeout: 15000,
+        method: 'POST', url: 'https://app.notion.com/api/v3/' + path, timeout: 15000,
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
         data: JSON.stringify(bodyObj),
         onload: function (r) {
@@ -3737,27 +3738,65 @@
   function nUnwrap(rec) {
     let v = rec;
     for (let i = 0; i < 4; i++) {
-      if (v && v.value && (v.value.id || v.value.schema || v.value.properties)) return v.value;
+      if (v && v.value && (v.value.id || v.value.schema || v.value.properties || v.value.name !== undefined)) return v.value;
       v = v && v.value;
     }
     return v;
   }
-  // → { status: 'текст', done: bool } | null
-  async function notionCardStatus(pageId) {
-    const j = await notionPost('loadPageChunk', { pageId: pageId, limit: 30, cursor: { stack: [] }, chunkNumber: 0, verticalColumns: false });
+  // ru → латиница (для сверки имени из Notion с нашими справочниками)
+  function ruLat(s) {
+    const M = { 'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'e','ж':'zh','з':'z','и':'i','й':'i','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u','ф':'f','х':'kh','ц':'ts','ч':'ch','ш':'sh','щ':'shch','ъ':'','ь':'','ы':'y','э':'e','ю':'iu','я':'ia' };
+    return String(s).toLowerCase().replace(/[а-яё]/g, function (c) { return M[c] !== undefined ? M[c] : c; })
+      .replace(/[^a-z ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+  function ownerToTag(name) {
+    if (!name) return null;
+    const n = ruLat(name).split(' ').filter(Boolean).sort().join(' ');
+    const pool = QUESTION_RESPONSIBLES
+      .concat(CLUSTER_NAMES.map(function (c) { return CLUSTERS[c].lead; }).filter(Boolean))
+      .concat(CLUSTER_NAMES.map(function (c) { return CLUSTERS[c].product; }));
+    for (const p of pool) {
+      if (ruLat(p.name).split(' ').filter(Boolean).sort().join(' ') === n) return p;
+    }
+    const nws = ruLat(name).split(' ').filter(Boolean);
+    for (const p of pool) {
+      const pws = ruLat(p.name).split(' ').filter(Boolean);
+      if (pws.some(function (w) { return w.length > 4 && nws.indexOf(w) !== -1; })) return p;
+    }
+    return null;
+  }
+  // → { status, done, ownerName, err }
+  async function notionCard(pageId) {
+    let j;
+    try { j = await notionPost('loadPageChunk', { pageId: pageId, limit: 30, cursor: { stack: [] }, chunkNumber: 0, verticalColumns: false }); }
+    catch (e) { return { err: e.message === 'NOAUTH' ? 'нет входа в Notion' : 'не отвечает (' + e.message + ')' }; }
     const rm = j.recordMap || {};
-    const blk = rm.block && rm.block[pageId] && nUnwrap(rm.block[pageId]);
-    if (!blk || !blk.properties) return null;
+    if (!rm.block || !rm.block[pageId]) return { err: 'нет данных — проверь вход в Notion' };
+    const blk = nUnwrap(rm.block[pageId]);
+    if (!blk || !blk.properties) return { err: 'карточка без свойств' };
     const collId = rm.collection && Object.keys(rm.collection)[0];
-    const coll = collId && nUnwrap(rm.collection[collId]);
-    const schema = coll && coll.schema;
-    if (!schema) return null;
-    const key = Object.keys(schema).find(function (k) { return /статус по вопросу/i.test(schema[k].name); });
-    if (!key) return null;
-    const raw = blk.properties[key];
-    const txt = raw && raw[0] && raw[0][0];
-    if (!txt) return null;
-    return { status: txt, done: /отправлять студенту|студент принял/i.test(txt) };
+    const schema = collId && (nUnwrap(rm.collection[collId]) || {}).schema;
+    if (!schema) return { err: 'схему не прочитала' };
+    const out = {};
+    const stKey = Object.keys(schema).find(function (k) { return /статус по вопросу/i.test(schema[k].name); });
+    if (stKey) {
+      const t = blk.properties[stKey];
+      out.status = t && t[0] && t[0][0];
+      out.done = /отправлять студенту|студент принял/i.test(out.status || '');
+    }
+    const owKey = Object.keys(schema).find(function (k) { return /оунер от контент/i.test(schema[k].name); });
+    if (owKey) {
+      const m = JSON.stringify(blk.properties[owKey] || '').match(/"u","([0-9a-f-]{36})"/);
+      if (m) {
+        try {
+          const u = await notionPost('syncRecordValues', { requests: [{ pointer: { table: 'notion_user', id: m[1] }, version: -1 }] });
+          const nu = nUnwrap(((u.recordMap || {}).notion_user || {})[m[1]]);
+          out.ownerName = nu && nu.name;
+        } catch (e) { /* оунер не критичен */ }
+      }
+      out.ownerChecked = true;
+    }
+    return out;
   }
 
   // Комбо-поле: можно ВПИСАТЬ (список фильтруется) или выбрать мышкой из выпадашки.
@@ -3919,9 +3958,12 @@
       // «Завис вопрос»: одно поле — можно ВПИСАТЬ (список фильтруется) ИЛИ выбрать мышкой.
       // Поле пустое = «нет ответственного» (первый пункт списка). Клик по полю → выпадает список.
       body.appendChild(elt('div', fieldLabel, 'Ответственный по вопросу'));
-      const rows = [{ label: RESP_NONE, value: RESP_NONE }].concat(
-        QUESTION_RESPONSIBLES.map(function (p) { return { label: p.name + ' · ' + p.tag, value: p.name + ' — ' + p.tag }; })
-      );
+      const rows = [{ label: RESP_NONE, value: RESP_NONE }]
+        .concat(QUESTION_RESPONSIBLES.map(function (p) { return { label: p.name + ' · ' + p.tag, value: p.name + ' — ' + p.tag }; }))
+        .concat(CLUSTER_NAMES.filter(function (c) { return CLUSTERS[c].lead; }).map(function (c) {
+          const L = CLUSTERS[c].lead;
+          return { label: 'Лид ' + c + ' · ' + L.name + ' · ' + L.tag, value: L.name + ' — ' + L.tag };
+        }));
       respCombo = combo(rows, 'имя, @тег или «нет ответственного»', '');
       body.appendChild(respCombo.el);
       respSel = respCombo.input;
@@ -3951,25 +3993,37 @@
       body.appendChild(linkInput);
     }
 
-    // --- Notion: статус карточки вопроса (только «Завис вопрос») ---
+    // --- Notion: оунер + статус карточки вопроса (только «Завис вопрос») ---
     if (isLead) {
       const card = findNotionCard();
-      const nEl = elt('div', 'font-size:11px;font-weight:700;margin-top:5px;line-height:1.35;color:#9CA3AF;', '');
-      body.appendChild(nEl);
-      if (card) {
-        if (linkInput && !linkInput.value) linkInput.value = card.url;
-        nEl.textContent = 'Notion: читаю статус карточки…';
-        notionCardStatus(card.id).then(function (st) {
-          if (!st) { nEl.textContent = 'Notion: статус карточки прочитать не удалось'; return; }
-          nEl.textContent = (st.done ? '✅ ' : '⏳ ') + 'Статус карточки: ' + st.status;
-          nEl.style.color = st.done ? '#16A34A' : '#B45309';
-        }).catch(function (e) {
-          nEl.textContent = (e && e.message === 'NOAUTH')
-            ? 'Notion: не вижу вход — открой notion.so в соседней вкладке и вернись'
-            : 'Notion: не получилось прочитать статус';
-        });
+      const nBox = elt('div', 'font-size:11px;font-weight:700;margin-top:5px;line-height:1.5;color:#9CA3AF;', '');
+      body.appendChild(nBox);
+      if (!card) {
+        nBox.textContent = 'Notion: ссылки на карточку в чате не нашла';
       } else {
-        nEl.textContent = 'Notion: ссылки на карточку в чате не нашла';
+        if (linkInput && !linkInput.value) linkInput.value = card.url;
+        nBox.textContent = 'Notion: читаю карточку…';
+        notionCard(card.id).then(function (r) {
+          nBox.innerHTML = '';
+          if (r.err) { nBox.textContent = 'Notion: ' + r.err; return; }
+          if (r.ownerChecked) {
+            if (r.ownerName) {
+              const p = ownerToTag(r.ownerName);
+              nBox.appendChild(elt('div', 'color:#374151;', '👤 Оунер: ' + r.ownerName + (p ? ' → ' + p.tag : ' (тег не нашла, впиши сам)')));
+              if (p && respCombo && !respCombo.value.trim()) { respCombo.value = p.name + ' — ' + p.tag; applyResp(); }
+            } else {
+              nBox.appendChild(elt('div', 'color:#374151;', '👤 Оунер от контента не назначен → нет ответственного'));
+            }
+          }
+          if (r.status) {
+            const s = elt('div', '', (r.done ? '✅ ' : '⏳ ') + 'Статус: ' + r.status);
+            s.style.color = r.done ? '#16A34A' : '#B45309';
+            nBox.appendChild(s);
+          }
+          if (!r.status && !r.ownerChecked) nBox.textContent = 'Notion: в карточке нет полей «Статус» / «Оунер»';
+        }).catch(function () {
+          nBox.textContent = 'Notion: не получилось прочитать карточку';
+        });
       }
     }
 
