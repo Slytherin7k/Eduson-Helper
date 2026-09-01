@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      0.94.0
+// @version      0.95.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -119,7 +119,7 @@
 
   /* ================================================ */
 
-  const VER = '0.94.0';
+  const VER = '0.95.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3059,7 +3059,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '0.94.0'; // синхр. с Хэлпером
+  const VER = '0.95.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3526,13 +3526,13 @@
         .replace('{email}', u.email || '{email}')
         .replace('{телефон}', u.phone || '{телефон}');
     }
-    // Карточка висит без ответа > 15 дней — жирная строка-тревога сразу после тега.
+    // Карточка висит без ответа > 15 дней — строка-тревога первой, тег и текст на одной строке.
     const alertTxt = extra.alertDays ? (ruDays(extra.alertDays) + '🚨🚨🚨') : '';
     function withAlert(s, bold) {
       if (!alertTxt) return s;
-      const line = bold ? ('<b>' + alertTxt + '</b>') : ('**' + alertTxt + '**');
-      const nl = s.indexOf('\n');
-      return nl === -1 ? (s + '\n' + line) : (s.slice(0, nl + 1) + line + '\n' + s.slice(nl + 1));
+      const line = bold ? ('<b>' + alertTxt + '</b>') : alertTxt;
+      const p = s.split('\n');           // [0]=тег, [1]=приветствие, [2..]=ссылка
+      return line + '\n\n' + p[0] + ' ' + p.slice(1).join('\n');
     }
     const html = withAlert(escapeHtml(build('@@LINK@@')).replace('@@LINK@@', linkHtml), true).replace(/\n/g, '<br>');
     return { plain: withAlert(build(linkPlain), false), html: html };
@@ -3694,11 +3694,13 @@
     if (lessonCache && lessonCache.caseId !== ((location.pathname.match(/(\d{2,4}-\d{5,})/) || [])[1] || '')) { lessonCache = null; _lectCache = {}; }
     const tPing = mkTab('Пинги', renderPings);
     const tTag = mkTab('Теги', renderTags);
+    const tQ = mkTab('Вопросы', renderQuestions);
     const tDoc = mkTab('Документ', renderDoc);
     const tLesson = mkTab('Урок', renderLesson);
     const tProg = mkTab('Прогресс_80', renderProgress80);
     tabs.appendChild(tPing);
     tabs.appendChild(tTag);
+    tabs.appendChild(tQ);
     tabs.appendChild(tDoc);
     tabs.appendChild(tLesson);
     tabs.appendChild(tProg);
@@ -4086,7 +4088,7 @@
           }
           if (r.days != null) {
             const overdue = !r.done && r.days > 15;
-            const d = elt('div', '', (overdue ? '🚨 ' : '📅 ') + 'Вопрос в работе: ' + r.days + ' дн.' + (overdue ? ' — строка-тревога добавлена в пинг' : ''));
+            const d = elt('div', '', (overdue ? '🚨 ' : '📅 ') + 'Вопрос в работе: ' + r.days + ' дн.');
             d.style.color = overdue ? '#DC2626' : '#374151';
             nBox.appendChild(d);
           }
@@ -4363,6 +4365,113 @@
     }
     q.addEventListener('input', draw);
     draw();
+  }
+
+  /* ==================== ВКЛАДКА «ВОПРОСЫ» — поиск по доске Notion ==================== */
+  const FAQ_COLLECTION = 'bfbd127e-e247-4986-aa26-8be168843382';
+  const FAQ_VIEW = 'daff7453-0dfa-43fd-a93c-4a4ebe64e31e';
+  const FAQ_SPACE = '816a0709-d1b1-494e-8060-6340ffac6df1';
+  const FAQ_KEYS = { question: 'Vi>N', answer: 'rc:R', lesson: 'F{w>', status: 'VO}v' };
+  async function notionQuestionSearch(term) {
+    const j = await notionPost('queryCollection', {
+      collection: { id: FAQ_COLLECTION, spaceId: FAQ_SPACE },
+      collectionView: { id: FAQ_VIEW, spaceId: FAQ_SPACE },
+      loader: { type: 'reducer', reducers: { collection_group_results: { type: 'results', limit: 20 } }, searchQuery: term, userTimeZone: 'Europe/Moscow' }
+    });
+    const rr = j.result && j.result.reducerResults && j.result.reducerResults.collection_group_results;
+    const ids = (rr && rr.blockIds) || [];
+    const blocks = j.recordMap.block || {};
+    return ids.map(function (id) {
+      let b = blocks[id];
+      for (let i = 0; i < 4; i++) { if (b && b.value && b.value.properties) { b = b.value; break; } b = b && b.value; }
+      const P = (b && b.properties) || {};
+      const t = function (k) {
+        const v = P[k];
+        if (!v) return '';
+        return v.map(function (s) { return s[0]; }).join('').replace(/[​‎‏﻿]/g, '').trim();
+      };
+      const status = t(FAQ_KEYS.status);
+      return {
+        id: id,
+        question: t(FAQ_KEYS.question),
+        answer: t(FAQ_KEYS.answer),
+        lesson: t(FAQ_KEYS.lesson),
+        status: status,
+        done: /отправлять студенту|студент принял/i.test(status)
+      };
+    });
+  }
+
+  function renderQuestions(body) {
+    const q = elt('input', 'width:100%;padding:8px 11px;border:1px solid #D1D5DB;border-radius:10px;font:600 13px ' + FONT + ';color:#111827;');
+    q.type = 'search';
+    q.placeholder = 'слово, ссылка на урок, кусок вопроса…';
+    body.appendChild(q);
+    const opts = elt('label', 'display:flex;align-items:center;gap:5px;font-size:10.5px;color:#6B7280;font-weight:600;margin:5px 0 6px;cursor:pointer;');
+    const only = elt('input', ''); only.type = 'checkbox'; only.checked = true;
+    opts.appendChild(only); opts.appendChild(document.createTextNode('только с ответом методиста'));
+    body.appendChild(opts);
+    body.appendChild(elt('div', 'font-size:10px;color:#9CA3AF;font-weight:600;margin-bottom:6px;', 'Ищет по доске «Вопросы студентов [актуальная доска]» в Notion'));
+    const host = elt('div', '');
+    body.appendChild(host);
+
+    let seq = 0, timer = null, lastRows = [];
+    function paint() {
+      host.innerHTML = '';
+      let rows = lastRows.slice();
+      if (only.checked) rows = rows.filter(function (r) { return r.answer; });
+      rows.sort(function (a, b) { return (b.answer ? 1 : 0) - (a.answer ? 1 : 0); });
+      if (!rows.length) { host.appendChild(elt('div', 'color:#9CA3AF;font-weight:700;font-size:12px;padding:12px 0;text-align:center;', lastRows.length ? 'С ответом ничего нет — сними галочку' : 'Ничего не нашлось')); return; }
+      rows.forEach(function (r) {
+        const card = elt('div', 'border:1px solid #E5E7EB;border-radius:11px;padding:9px 11px;margin-bottom:7px;');
+        card.appendChild(elt('div', 'font-weight:700;font-size:12px;color:#111827;line-height:1.35;', r.question || '(без текста вопроса)'));
+        const meta = elt('div', 'display:flex;flex-wrap:wrap;gap:4px 8px;margin-top:3px;align-items:center;');
+        const st = elt('span', 'font-size:10px;font-weight:700;padding:1px 7px;border-radius:999px;color:#374151;', r.status || '—');
+        st.style.background = r.done ? '#DCFCE7' : '#FEF3C7';
+        meta.appendChild(st);
+        if (r.lesson) meta.appendChild(elt('span', 'font-size:10px;color:#6B7280;font-weight:600;', '📚 ' + (r.lesson.length > 60 ? r.lesson.slice(0, 60) + '…' : r.lesson)));
+        card.appendChild(meta);
+        if (r.answer) {
+          const ans = elt('div', 'font-size:11px;color:#1F2937;font-weight:500;line-height:1.45;white-space:pre-wrap;background:#F9FAFB;border-radius:8px;padding:7px 9px;margin-top:6px;max-height:150px;overflow:auto;', r.answer);
+          card.appendChild(ans);
+          const cp = elt('div', 'margin-top:6px;text-align:center;background:' + ACC + ';color:#fff;font-weight:800;font-size:11px;padding:6px 0;border-radius:9px;cursor:pointer;', '📋 Копировать ответ');
+          cp.onclick = function () { copyText(r.answer); toast('Ответ методиста скопирован'); };
+          card.appendChild(cp);
+        } else {
+          card.appendChild(elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;margin-top:5px;', 'Ответа методиста пока нет'));
+        }
+        const open = elt('a', 'display:inline-block;margin-top:5px;font-size:10.5px;font-weight:700;color:' + ACC + ';text-decoration:none;', 'открыть карточку в Notion →');
+        open.href = 'https://www.notion.so/' + r.id.replace(/-/g, '');
+        open.target = '_blank'; open.rel = 'noopener';
+        card.appendChild(open);
+        host.appendChild(card);
+      });
+    }
+    only.onchange = paint;
+    async function run(term) {
+      const my = ++seq;
+      host.innerHTML = '';
+      host.appendChild(elt('div', 'font-size:11px;color:#9CA3AF;font-weight:600;padding:8px 0;', 'ищу в Notion…'));
+      let rows;
+      try { rows = await notionQuestionSearch(term); }
+      catch (e) {
+        if (my !== seq) return;
+        host.innerHTML = '';
+        host.appendChild(elt('div', 'font-size:11px;color:#9CA3AF;font-weight:600;', e.message === 'NOAUTH'
+          ? 'Не вижу вход в Notion — открой app.notion.com в соседней вкладке и вернись'
+          : 'Notion не ответил, попробуй ещё раз'));
+        return;
+      }
+      if (my !== seq) return;
+      lastRows = rows;
+      paint();
+    }
+    q.addEventListener('input', function () {
+      clearTimeout(timer);
+      const term = q.value.trim();
+      if (term.length < 3) { host.innerHTML = ''; lastRows = []; return; }
+      timer = setTimeout(function () { run(term); }, 450);
+    });
   }
 
   /* ==================== ВКЛАДКА «ДОКУМЕНТ» ====================
