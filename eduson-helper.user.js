@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.7.3
+// @version      1.10.4
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -20,6 +20,8 @@
 // @connect      app.notion.com
 // @connect      notion.com
 // @connect      notion.so
+// @connect      amazonaws.com
+// @connect      s3.amazonaws.com
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -119,7 +121,7 @@
 
   /* ================================================ */
 
-  const VER = '1.7.3';
+  const VER = '1.7.17';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -1050,7 +1052,7 @@
       });
 
       const go = document.createElement('button');
-      go.style.cssText = 'display:block;width:100%;background:' + HP_ACC + ';border:none;color:#fff;border-radius:10px;padding:10px;cursor:pointer;font-size:13px;font-weight:700;font-family:inherit;margin-top:2px;';
+      go.style.cssText = 'display:block;width:100%;background:' + HP_ACC + ';border:none;color:#fff;border-radius:8px;padding:10px;cursor:pointer;font-size:13px;font-weight:700;font-family:inherit;margin-top:2px;';
       go.textContent = 'Вставить отмеченные';
       go.onclick = function () {
         box.remove();
@@ -2530,7 +2532,7 @@
       // Добавляем кнопку копирования отчета
       const reportBtn = document.createElement('button');
       reportBtn.textContent = 'Скопировать отчёт';
-      reportBtn.style.cssText = 'width:100%;margin-top:6px;padding:7px;background:#F3F4F6;border:1px solid #E5E7EB;border-radius:12px;cursor:pointer;font-size:11px;font-weight:700;color:#4B5563;font-family:' + HP_FONT + ';';
+      reportBtn.style.cssText = 'width:100%;margin-top:6px;padding:7px;background:#F3F4F6;border:1px solid #E5E7EB;border-radius:8px;cursor:pointer;font-size:11px;font-weight:700;color:#4B5563;font-family:' + HP_FONT + ';';
       reportBtn.onclick = function(e) {
         e.stopPropagation();
         copyReport();
@@ -2888,40 +2890,39 @@
     }
   }
 
-  // Кольцо-прогресс вокруг иконки шапки: .osc() крутится (непонятно сколько),
-  // .set(frac) заполняет по периметру, .done()/.fail() — цвет и убрать.
+  // Индикатор статуса на кнопке шапки (🔑 / 🧲): .osc() — «работаю» (пульс),
+  // .done() — зелёный, .fail() — красный, .set(1) — синий сплошной.
+  // Никакого отдельного SVG-оверлея (он всегда чуть промахивался мимо кнопки на разных
+  // масштабах — то торчал, то оставлял серую полоску). Вместо этого перекрашиваем и
+  // утолщаем САМУ рамку кнопки: `box-sizing:border-box` → внешний размер кнопки не меняется,
+  // рамка просто становится жирнее и цветной. Серому взяться неоткуда — это та же рамка.
+  const RING_BORDER_DEF = '1.5px solid #5F6368';
+  let ringCssDone = false;
+  function ringCss() {
+    if (ringCssDone) return; ringCssDone = true;
+    const s = document.createElement('style');
+    s.textContent = '@keyframes eduson-ring-pulse{0%,100%{box-shadow:0 0 0 0 rgba(2,132,199,.45)}50%{box-shadow:0 0 0 3px rgba(2,132,199,0)}}';
+    (document.head || document.documentElement).appendChild(s);
+  }
   function makeRing(btn) {
-    const NS = 'http://www.w3.org/2000/svg';
-    const svg = document.createElementNS(NS, 'svg');
-    svg.setAttribute('viewBox', '0 0 34 32');
-    svg.style.cssText = 'position:absolute;left:-2px;top:-2px;width:34px;height:32px;pointer-events:none;overflow:visible;display:none;';
-    const rect = document.createElementNS(NS, 'rect');
-    rect.setAttribute('x', '1'); rect.setAttribute('y', '1');
-    rect.setAttribute('width', '32'); rect.setAttribute('height', '30');
-    rect.setAttribute('rx', '6'); rect.setAttribute('fill', 'none');
-    rect.setAttribute('stroke', '#0284C7'); rect.setAttribute('stroke-width', '2.5');
-    rect.setAttribute('stroke-linecap', 'round'); rect.setAttribute('pathLength', '100');
-    svg.appendChild(rect);
-    btn.appendChild(svg);
-    let timer = 0, off = 0;
-    const stop = function () { clearInterval(timer); timer = 0; };
-    const hide = function () { stop(); svg.style.display = 'none'; };
+    ringCss();
+    const set = function (prop, val) { try { btn.style.setProperty(prop, val, 'important'); } catch (e) {} };
+    const clear = function () {
+      try {
+        btn.style.removeProperty('animation');
+        btn.style.removeProperty('box-shadow');
+        btn.style.removeProperty('border');
+        btn.style.border = RING_BORDER_DEF;
+      } catch (e) {}
+    };
+    const frame = function (color) { set('border', '2.5px solid ' + color); set('box-shadow', 'none'); set('animation', 'none'); };
+    const reset = function () { clear(); };
     return {
-      osc: function () {
-        stop(); svg.style.display = 'block';
-        rect.setAttribute('stroke', '#0284C7');
-        rect.setAttribute('stroke-dasharray', '26 100');
-        timer = setInterval(function () { off = (off - 3) % 100; rect.setAttribute('stroke-dashoffset', off); }, 45);
-      },
-      set: function (frac) {
-        stop(); svg.style.display = 'block';
-        rect.setAttribute('stroke', '#0284C7');
-        rect.setAttribute('stroke-dashoffset', '0');
-        rect.setAttribute('stroke-dasharray', Math.max(2, Math.min(100, frac * 100)) + ' 100');
-      },
-      done: function () { stop(); svg.style.display = 'block'; rect.setAttribute('stroke', '#16A34A'); rect.setAttribute('stroke-dashoffset', '0'); rect.setAttribute('stroke-dasharray', '100 100'); setTimeout(hide, 1400); },
-      fail: function () { stop(); svg.style.display = 'block'; rect.setAttribute('stroke', '#DC2626'); rect.setAttribute('stroke-dasharray', '100 100'); setTimeout(hide, 3000); },
-      hide: hide
+      osc: function () { set('border', '2px solid #0284C7'); set('animation', 'eduson-ring-pulse 1.1s ease-in-out infinite'); },
+      set: function () { frame('#0284C7'); },
+      done: function () { frame('#16A34A'); setTimeout(reset, 1400); },
+      fail: function () { frame('#DC2626'); setTimeout(reset, 3000); },
+      hide: reset
     };
   }
   function iconRing(id) { const b = document.getElementById(id); return b && b._ring; }
@@ -2995,8 +2996,8 @@
     const b = document.createElement('button');
     b.textContent = text;
     b.style.cssText = big
-      ? 'background:' + HP_ACC + ';color:#fff;border:none;border-radius:16px;padding:8px 16px;font-size:12px;font-weight:700;box-shadow:0 2px 8px rgba(2,132,199,.28);font-family:' + HP_FONT + ';transition:all 0.2s;cursor:pointer;'
-      : 'background:#fff;color:' + HP_ACC + ';border:1.5px solid ' + HP_ACC_BD + ';border-radius:999px;padding:4px 12px;font-size:10px;font-weight:700;cursor:pointer;font-family:' + HP_FONT + ';transition:all 0.2s;';
+      ? 'background:' + HP_ACC + ';color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:700;box-shadow:0 2px 8px rgba(2,132,199,.28);font-family:' + HP_FONT + ';transition:all 0.2s;cursor:pointer;'
+      : 'background:#fff;color:' + HP_ACC + ';border:1.5px solid ' + HP_ACC_BD + ';border-radius:8px;padding:4px 12px;font-size:10px;font-weight:700;cursor:pointer;font-family:' + HP_FONT + ';transition:all 0.2s;';
     b.onmouseenter = function () {
       b.style.opacity = '.85';
       b.style.transform = 'scale(0.98)';
@@ -3061,7 +3062,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.7.3'; // синхр. с Хэлпером
+  const VER = '1.7.17'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3683,6 +3684,13 @@
       'font-family:' + FONT + ';padding:9px 11px;');
     p.id = PANEL_ID;
 
+    // Не выпускаем нажатия клавиш из панели наружу — иначе горячие клавиши OmniDesk
+    // (напр. русская «т» = физическая N = «новое обращение») срабатывают прямо во время
+    // набора текста в наших полях и уводят со страницы.
+    ['keydown', 'keypress', 'keyup'].forEach(function (t) {
+      p.addEventListener(t, function (e) { e.stopPropagation(); }, false);
+    });
+
     // позиция: запомненная или по умолчанию (правый верх)
     let pos = null;
     try { pos = JSON.parse(GM_getValue('curatorPanelPos') || 'null'); } catch (e) { pos = null; }
@@ -3707,11 +3715,11 @@
     p.appendChild(head);
     makePanelDraggable(p, head);
 
-    // вкладки
-    const tabs = elt('div', 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;');
+    // вкладки — все 5 в одну строку
+    const tabs = elt('div', 'display:flex;gap:4px;margin-bottom:8px;');
     const body = elt('div', '');
     const mkTab = function (label, fn) {
-      const b = elt('div', 'flex:1 1 28%;text-align:center;cursor:pointer;font-weight:800;font-size:11px;padding:6px 2px;border-radius:999px;border:1.5px solid ' + ACC_BD + ';color:' + ACC + ';white-space:nowrap;', label);
+      const b = elt('div', 'flex:1 1 0;min-width:0;text-align:center;cursor:pointer;font-weight:800;font-size:10px;padding:6px 2px;border-radius:8px;border:1.5px solid ' + ACC_BD + ';color:' + ACC + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;', label);
       b.onclick = function () {
         Array.from(tabs.children).forEach(function (t) { t.style.background = '#fff'; t.style.color = ACC; });
         b.style.background = ACC; b.style.color = '#fff';
@@ -3723,17 +3731,15 @@
     // список уроков — свой у каждого студента; сбрасываем только при смене чата (иначе теряем прогрев)
     if (lessonCache && lessonCache.caseId !== ((location.pathname.match(/(\d{2,4}-\d{5,})/) || [])[1] || '')) { lessonCache = null; _lectCache = {}; }
     const tPing = mkTab('Пинги', renderPings);
-    const tTag = mkTab('Теги', renderTags);
     const tQ = mkTab('Вопросы', renderQuestions);
+    const tCourses = mkTab('Курсы', renderCourses);
     const tDoc = mkTab('Документ', renderDoc);
-    const tLesson = mkTab('Урок', renderLesson);
-    const tProg = mkTab('Прогресс_80', renderProgress80);
+    const tTag = mkTab('Теги', renderTags);
     tabs.appendChild(tPing);
-    tabs.appendChild(tTag);
     tabs.appendChild(tQ);
+    tabs.appendChild(tCourses);
     tabs.appendChild(tDoc);
-    tabs.appendChild(tLesson);
-    tabs.appendChild(tProg);
+    tabs.appendChild(tTag);
     p.appendChild(tabs);
     p.appendChild(body);
     tPing.onclick();
@@ -4254,7 +4260,7 @@
     if (linkInput) linkInput.oninput = recompute;
     ta.oninput = function () { lastHtml = ''; };
 
-    const copyB = elt('div', 'margin-top:9px;text-align:center;background:' + ACC + ';color:#fff;font-weight:800;font-size:12px;padding:9px 0;border-radius:12px;cursor:pointer;', '📋 Копировать');
+    const copyB = elt('div', 'margin-top:9px;text-align:center;background:' + ACC + ';color:#fff;font-weight:800;font-size:12px;padding:9px 0;border-radius:8px;cursor:pointer;', '📋 Копировать');
     copyB.onclick = function () {
       if (lastHtml) copyRich(ta.value, lastHtml); else copyText(ta.value);
       toast('Скопировано — вставь в нужный чат Телеграм');
@@ -4746,7 +4752,172 @@
     return rows.slice(0, 20);
   }
 
+  /* ==================== ВКЛАДКА «ВОПРОСЫ» — 2 под-вкладки: Поиск | Создать карточку ==================== */
+  // Состояние под-вкладки «создать» — переживает сворачивание панели (только мутируем, не пересоздаём).
+  var _qcState = { sub: '', theme: '', course: null, link: '', mail: null, q: '', files: [], lastUrl: '' };
+  var _faqSchemaCache = null;
+
+  function nUid() {
+    try { if (crypto && crypto.randomUUID) return crypto.randomUUID(); } catch (e) {}
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+      const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+    });
+  }
+  function p2(n) { return String(n).padStart(2, '0'); }
+
+  // POST в Notion, который считает УСПЕХОМ любой 2xx (в т.ч. пустое тело — так отвечают транзакции).
+  function notionWrite(path, bodyObj) {
+    return new Promise(function (resolve, reject) {
+      GM_xmlhttpRequest({
+        method: 'POST', url: 'https://app.notion.com/api/v3/' + path, timeout: 25000,
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        data: JSON.stringify(bodyObj),
+        onload: function (r) {
+          if (r.status >= 200 && r.status < 300) { let j = {}; try { j = JSON.parse(r.responseText || '{}'); } catch (e) {} resolve(j); }
+          else if (r.status === 401 || r.status === 403) reject(new Error('NOAUTH'));
+          else reject(new Error('http-' + r.status + ' ' + String(r.responseText || '').slice(0, 400)));
+        },
+        onerror: function () { reject(new Error('сеть')); },
+        ontimeout: function () { reject(new Error('таймаут')); }
+      });
+    });
+  }
+  // Пробуем современный эндпоинт транзакций, затем запасной.
+  async function notionTx(operations) {
+    const body = { requestId: nUid(), transactions: [{ id: nUid(), spaceId: FAQ_SPACE, operations: operations }] };
+    try { return await notionWrite('saveTransactionsFanout', body); }
+    catch (e1) {
+      if (e1.message === 'NOAUTH') throw e1;
+      try { return await notionWrite('saveTransactions', body); }
+      catch (e2) {
+        if (e2.message === 'NOAUTH') throw e2;
+        console.warn('[eduson-helper] обе транзакции не прошли:', e1.message, '||', e2.message);
+        throw e2;
+      }
+    }
+  }
+
+  // Полная схема доски (свойства: id → {name, type, options}). Кэш.
+  async function faqSchema() {
+    if (_faqSchemaCache) return _faqSchemaCache;
+    const j = await notionPost('syncRecordValues', { requests: [{ pointer: { table: 'collection', id: FAQ_COLLECTION, spaceId: FAQ_SPACE }, version: -1 }] });
+    const rec = j.recordMap.collection[FAQ_COLLECTION];
+    const cv = (rec && rec.value && rec.value.value) ? rec.value.value : (rec && rec.value) || {};
+    _faqSchemaCache = { raw: cv.schema || {}, parent_id: cv.parent_id || '' };
+    return _faqSchemaCache;
+  }
+  // Найти свойство по имени (без учёта регистра/пробелов; поддержка нескольких вариантов имени).
+  function faqProp(schema, names) {
+    const want = (Array.isArray(names) ? names : [names]).map(function (s) { return s.toLowerCase().replace(/\s+/g, ' ').trim(); });
+    const keys = Object.keys(schema.raw);
+    for (const k of keys) {
+      const nm = String(schema.raw[k].name || '').toLowerCase().replace(/\s+/g, ' ').trim();
+      if (want.indexOf(nm) !== -1) return { id: k, type: schema.raw[k].type, name: schema.raw[k].name };
+    }
+    // мягко: содержит
+    for (const k of keys) {
+      const nm = String(schema.raw[k].name || '').toLowerCase().replace(/\s+/g, ' ').trim();
+      if (want.some(function (w) { return nm.indexOf(w) !== -1; })) return { id: k, type: schema.raw[k].type, name: schema.raw[k].name };
+    }
+    return null;
+  }
+
+  // Создать карточку-вопрос на доске. d = {title, email, course, lesson, question}. → {id, url}
+  async function notionCreateQuestion(d) {
+    const me = await notionMe();
+    const schema = await faqSchema();
+    const seg = function (txt) { return [[String(txt == null ? '' : txt)]]; };
+    const props = { title: seg(d.title) };
+    const pMail = faqProp(schema, ['почта студента', 'почта клиента', 'email']);
+    const pCourse = faqProp(schema, ['курс', 'программа']);
+    const pLesson = faqProp(schema, ['номер урока / ссылка', 'номер урока/ссылка', 'ссылка на урок', 'номер урока']);
+    const pQ = faqProp(schema, ['вопрос студента', 'вопрос']);
+    const pDate = faqProp(schema, ['когда внес', 'когда внёс']);
+    const pWho = faqProp(schema, ['кто внес', 'кто внёс']);
+    if (pMail && d.email) props[pMail.id] = seg(d.email);
+    if (pCourse && d.course) props[pCourse.id] = seg(d.course);
+    if (pLesson && d.lesson) props[pLesson.id] = seg(d.lesson);
+    if (pQ && d.question) props[pQ.id] = seg(d.question);
+    if (pDate && pDate.type === 'date') {
+      const dd = new Date();
+      props[pDate.id] = [['‣', [['d', { type: 'date', start_date: dd.getFullYear() + '-' + p2(dd.getMonth() + 1) + '-' + p2(dd.getDate()) }]]]];
+    }
+    if (pWho && pWho.type === 'person' && me) props[pWho.id] = [['‣', [['u', me]]]];
+
+    const NEW = nUid();
+    const now = Date.now();
+    const ptr = { table: 'block', id: NEW, spaceId: FAQ_SPACE };
+    const ops = [{
+      pointer: ptr, path: [], command: 'set', args: {
+        type: 'page', id: NEW, version: 1, alive: true,
+        parent_id: FAQ_COLLECTION, parent_table: 'collection', space_id: FAQ_SPACE,
+        properties: props,
+        created_time: now, last_edited_time: now,
+        created_by_table: 'notion_user', created_by_id: me,
+        last_edited_by_table: 'notion_user', last_edited_by_id: me
+      }
+    }];
+    const resp = await notionTx(ops);
+    console.log('[eduson-helper] карточка Notion создана:', NEW, resp);
+    return { id: NEW, url: 'https://www.notion.so/' + NEW.replace(/-/g, '') };
+  }
+
+  // Загрузить файл в хранилище Notion (для конкретной карточки). → {name, url}
+  async function notionUploadFile(cardId, file) {
+    const info = await notionPost('getUploadFileUrl', {
+      bucket: 'secure',
+      name: file.name || ('file-' + Date.now()),
+      contentType: file.type || 'application/octet-stream',
+      record: { table: 'block', id: cardId, spaceId: FAQ_SPACE }
+    });
+    const putUrl = info.signedPutUrl || info.signedUploadUrl;
+    const finalUrl = info.url;
+    if (!putUrl || !finalUrl) throw new Error('Notion не дал ссылку для загрузки');
+    await new Promise(function (resolve, reject) {
+      GM_xmlhttpRequest({
+        method: 'PUT', url: putUrl, data: file, timeout: 90000,
+        headers: { 'Content-Type': file.type || 'application/octet-stream' },
+        onload: function (r) { (r.status >= 200 && r.status < 300) ? resolve() : reject(new Error('хранилище ответило ' + r.status)); },
+        onerror: function () { reject(new Error('сеть при загрузке файла')); },
+        ontimeout: function () { reject(new Error('файл грузился слишком долго')); }
+      });
+    });
+    return { name: file.name || 'файл', url: finalUrl };
+  }
+  // Прикрепить загруженные файлы к свойству «Файлы студента».
+  async function notionAttachFiles(cardId, infos) {
+    const schema = await faqSchema();
+    const pf = faqProp(schema, ['файлы студента', 'файлы студент', 'файлы']);
+    if (!pf) throw new Error('поле «Файлы студента» не нашлось');
+    const val = [];
+    infos.forEach(function (f, i) { if (i) val.push([',', []]); val.push([f.name, [['a', f.url]]]); });
+    await notionTx([{ pointer: { table: 'block', id: cardId, spaceId: FAQ_SPACE }, path: ['properties', pf.id], command: 'set', args: val }]);
+  }
+
   function renderQuestions(body) {
+    const barCss = 'display:flex;gap:6px;margin-bottom:9px;';
+    const tCss = 'flex:1;text-align:center;cursor:pointer;font-weight:800;font-size:11px;padding:6px 4px;border-radius:8px;border:1.5px solid ' + ACC_BD + ';color:' + ACC + ';';
+    const bar = elt('div', barCss);
+    const inner = elt('div', '');
+    const defs = [['Поиск', renderQSearch, 'search'], ['Создать карточку', renderQCreate, 'create']];
+    const btns = defs.map(function (d) {
+      const b = elt('div', tCss, d[0]);
+      b.onclick = function () {
+        btns.forEach(function (x) { x.style.background = '#fff'; x.style.color = ACC; });
+        b.style.background = ACC; b.style.color = '#fff';
+        _qcState.sub = d[2];
+        inner.innerHTML = '';
+        d[1](inner);
+      };
+      return b;
+    });
+    btns.forEach(function (b) { bar.appendChild(b); });
+    body.appendChild(bar);
+    body.appendChild(inner);
+    (_qcState.sub === 'create' ? btns[1] : btns[0]).onclick();
+  }
+
+  function renderQSearch(body) {
     const ANYC = '— любой курс —';
     const mkLabel = function (t) { return elt('div', 'font-size:10px;font-weight:800;color:#6B7280;margin:6px 0 2px;', t); };
     const inCss = 'width:100%;padding:7px 10px;border:1px solid #D1D5DB;border-radius:9px;font:600 12px ' + FONT + ';color:#111827;';
@@ -4838,7 +5009,7 @@
         if (r.answer) {
           if (r.answerFromBody) card.appendChild(elt('div', 'font-size:9.5px;color:#9CA3AF;font-weight:700;margin-top:6px;', 'ответ из тела карточки'));
           card.appendChild(elt('div', 'font-size:11px;color:#1F2937;font-weight:500;line-height:1.45;white-space:pre-wrap;background:#F9FAFB;border-radius:8px;padding:7px 9px;margin-top:6px;', r.answer));
-          const cp = elt('div', 'margin-top:6px;text-align:center;background:' + ACC + ';color:#fff;font-weight:800;font-size:11px;padding:6px 0;border-radius:9px;cursor:pointer;', '📋 Копировать ответ');
+          const cp = elt('div', 'margin-top:6px;text-align:center;background:' + ACC + ';color:#fff;font-weight:800;font-size:11px;padding:6px 0;border-radius:8px;cursor:pointer;', '📋 Копировать ответ');
           cp.onclick = function () { copyText(r.answer); toast('Ответ методиста скопирован'); };
           card.appendChild(cp);
         } else {
@@ -4893,6 +5064,192 @@
 
     if (lastRows.length) paint();
     else if (_faqState.q || _faqState.link || _faqState.course) run();
+  }
+
+  /* ---------- под-вкладка «Создать карточку» ---------- */
+  function renderQCreate(body) {
+    const lab = function (n, t) {
+      const d = elt('div', 'display:flex;align-items:baseline;gap:6px;margin:12px 0 4px;');
+      d.appendChild(elt('span', 'flex:0 0 auto;width:16px;height:16px;border-radius:50%;background:' + ACC + ';color:#fff;font-size:9px;font-weight:900;display:flex;align-items:center;justify-content:center;', String(n)));
+      d.appendChild(elt('span', 'font-size:12px;font-weight:800;color:#1F2937;', t));
+      return d;
+    };
+    const inCss = 'width:100%;box-sizing:border-box;padding:8px 10px;border:1.5px solid #CBD5E1;border-radius:9px;font:600 12px ' + FONT + ';color:#111827;background:#fff;';
+    const note = 'font-size:10px;color:#94A3B8;font-weight:600;margin-top:3px;';
+    const dd0 = new Date();
+    const dateStr = p2(dd0.getDate()) + '.' + p2(dd0.getMonth() + 1) + '.' + dd0.getFullYear();
+
+    // ── состояние: только МУТИРУЕМ _qcState (не пересоздаём) → переживает сворачивание ──
+    if (!Array.isArray(_qcState.files)) _qcState.files = [];
+    if (_qcState.mail == null) _qcState.mail = readUser().email || '';
+    if (_qcState.course == null) _qcState.course = readCourse() || '';
+    function save() {
+      _qcState.mail = mailInp.value;
+      _qcState.theme = themeInp.value;
+      _qcState.course = courseCombo.value;
+      _qcState.link = linkInp.value;
+      _qcState.q = qArea.value;
+    }
+
+    body.appendChild(elt('div', 'font-size:10.5px;color:#64748B;font-weight:700;line-height:1.4;', 'Новая карточка на доске «Вопросы студентов»'));
+
+    // 1 · ПОЧТА
+    body.appendChild(lab(1, 'Почта студента'));
+    const mailInp = elt('input', inCss); mailInp.placeholder = 'client@mail.ru';
+    mailInp.value = _qcState.mail || ''; body.appendChild(mailInp);
+    body.appendChild(elt('div', note, 'подставлена из карточки OmniDesk — проверь'));
+    mailInp.addEventListener('input', save);
+
+    // 2 · ТЕМА (дата в названии — автоматически)
+    body.appendChild(lab(2, 'Тема'));
+    const themeWrap = elt('div', 'display:flex;align-items:stretch;border:1.5px solid #CBD5E1;border-radius:9px;overflow:hidden;background:#fff;');
+    const themeInp = elt('input', 'flex:1;min-width:0;border:0;outline:0;padding:8px 10px;font:600 12px ' + FONT + ';color:#111827;background:transparent;');
+    themeInp.placeholder = 'коротко: опечатка, ошибка в уроке…';
+    themeInp.value = _qcState.theme || '';
+    const dateTag = elt('div', 'flex:0 0 auto;display:flex;align-items:center;padding:0 9px;background:#EEF2F7;color:#475569;font-weight:800;font-size:11px;border-left:1.5px solid #CBD5E1;white-space:nowrap;', dateStr);
+    dateTag.title = 'дата добавляется в название карточки сама';
+    themeWrap.appendChild(themeInp); themeWrap.appendChild(dateTag);
+    body.appendChild(themeWrap);
+    body.appendChild(elt('div', note, 'дата уже в названии — писать её не нужно'));
+    themeInp.addEventListener('input', save);
+
+    // 3 · КУРС
+    body.appendChild(lab(3, 'Курс (программа студента)'));
+    const courseRows = [{ label: '— выбери курс —', value: '' }];
+    const courseCombo = combo(courseRows, 'начните вводить название курса…', _qcState.course || '');
+    body.appendChild(courseCombo.el);
+    const courseNote = elt('div', note, _qcState.course ? 'из карточки OmniDesk — сверяю со списком доски…' : '');
+    body.appendChild(courseNote);
+    courseCombo.onPick(save);
+    faqLoadCourses().then(function (list) {
+      list.forEach(function (c) { courseRows.push({ label: c, value: c }); });
+      const cur = courseCombo.value.trim();
+      if (!cur) { courseNote.textContent = ''; return; }
+      if (list.indexOf(cur) !== -1) {
+        courseNote.textContent = 'есть в списке доски ✓'; courseNote.style.color = '#16A34A'; return;
+      }
+      const best = list.find(function (c) { return faqSameCourse(c, cur); });
+      if (best) {
+        courseCombo.value = best; save();
+        courseNote.textContent = 'подобрала по названию: ' + best + ' — проверь'; courseNote.style.color = '#B45309';
+      } else {
+        courseNote.textContent = 'в списке доски нет «' + cur + '» — выбери из списка'; courseNote.style.color = '#B45309';
+      }
+    }).catch(function () { courseNote.textContent = ''; });
+
+    // ссылка на урок (методистам помогает быстрее найти)
+    const linkLab = elt('div', 'font-size:11px;font-weight:800;color:#64748B;margin:12px 0 4px;', 'Ссылка на урок');
+    body.appendChild(linkLab);
+    const linkInp = elt('input', inCss); linkInp.placeholder = 'номер курса или https://academy-…';
+    linkInp.value = _qcState.link || ''; body.appendChild(linkInp);
+    linkInp.addEventListener('input', save);
+
+    // 4 · ТЕКСТ ВОПРОСА
+    body.appendChild(lab(4, 'Текст вопроса'));
+    const qArea = elt('textarea', inCss + 'min-height:82px;resize:vertical;font-weight:500;line-height:1.4;');
+    qArea.placeholder = 'скопируй сюда вопрос студента из переписки';
+    qArea.value = _qcState.q || ''; body.appendChild(qArea);
+    qArea.addEventListener('input', save);
+
+    // 5 · ФАЙЛЫ — красивая кнопка + чипы + мультивыбор
+    body.appendChild(lab(5, 'Файлы студента'));
+    const fileInp = elt('input', 'display:none'); fileInp.type = 'file'; fileInp.multiple = true;
+    const pickBtn = elt('div', 'display:flex;align-items:center;justify-content:center;gap:8px;width:100%;box-sizing:border-box;background:#EEF2F7;color:#334155;border:1.5px dashed #94A3B8;border-radius:8px;padding:12px 14px;font-weight:800;font-size:13px;line-height:1;cursor:pointer;', '📎 Прикрепить файлы');
+    pickBtn.onmouseenter = function () { pickBtn.style.background = '#E2E8F0'; };
+    pickBtn.onmouseleave = function () { pickBtn.style.background = '#EEF2F7'; };
+    pickBtn.onclick = function () { fileInp.click(); };
+    const chips = elt('div', 'display:flex;flex-wrap:wrap;gap:5px;margin-top:7px;');
+    body.appendChild(pickBtn); body.appendChild(fileInp); body.appendChild(chips);
+    function drawChips() {
+      chips.innerHTML = '';
+      _qcState.files.forEach(function (f, i) {
+        const c = elt('span', 'display:inline-flex;align-items:center;gap:5px;background:#E0F2FE;color:#075985;border-radius:999px;padding:3px 6px 3px 10px;font-size:10.5px;font-weight:800;max-width:100%;');
+        c.appendChild(elt('span', 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:170px;', f.name));
+        const xx = elt('span', 'cursor:pointer;font-weight:900;color:#0369A1;padding:0 2px;', '×');
+        xx.onclick = function () { _qcState.files.splice(i, 1); drawChips(); };
+        c.appendChild(xx);
+        chips.appendChild(c);
+      });
+      pickBtn.textContent = _qcState.files.length ? ('📎 Добавить ещё (' + _qcState.files.length + ')') : '📎 Прикрепить файлы';
+    }
+    fileInp.addEventListener('change', function () {
+      Array.from(fileInp.files).forEach(function (f) { _qcState.files.push(f); });
+      fileInp.value = '';
+      drawChips();
+    });
+    drawChips();
+
+    const status = elt('div', 'font-size:11px;font-weight:700;line-height:1.45;margin-top:12px;white-space:pre-wrap;');
+    const btn = elt('div', 'margin-top:10px;text-align:center;background:' + ACC + ';color:#fff;font-weight:800;font-size:12.5px;padding:10px 0;border-radius:8px;cursor:pointer;', 'Добавить на доску');
+    const copyBtn = elt('div', 'margin-top:7px;text-align:center;background:#fff;color:' + ACC + ';border:1.5px solid ' + ACC_BD + ';font-weight:800;font-size:11.5px;padding:8px 0;border-radius:8px;cursor:pointer;display:none;', '🔗 Скопировать ссылку на карточку');
+    body.appendChild(btn); body.appendChild(copyBtn); body.appendChild(status);
+
+    // если карточку уже создавали в этой сессии — показать кнопку копирования сразу
+    function armCopy(url) {
+      copyBtn.style.display = 'block';
+      copyBtn.onclick = function () { copyText(url); toast('Ссылка на карточку скопирована'); };
+    }
+    if (_qcState.lastUrl) {
+      armCopy(_qcState.lastUrl);
+      status.style.color = '#16A34A';
+      status.textContent = '✅ Последняя карточка создана.';
+      const a = elt('a', 'display:inline-block;margin-top:5px;font-size:11px;font-weight:800;color:' + ACC + ';text-decoration:none;', 'открыть в Notion →');
+      a.href = _qcState.lastUrl; a.target = '_blank'; a.rel = 'noopener';
+      status.appendChild(document.createElement('br')); status.appendChild(a);
+    }
+
+    let busy = false;
+    btn.onclick = async function () {
+      if (busy) return;
+      save();
+      const theme = themeInp.value.trim();
+      const course = courseCombo.value.trim();
+      const link = linkInp.value.trim();
+      const mail = mailInp.value.trim();
+      const question = qArea.value.trim();
+      if (!theme) { toast('Впиши тему'); themeInp.focus(); return; }
+      if (!question) { toast('Впиши текст вопроса'); qArea.focus(); return; }
+      const title = theme + '. ' + dateStr;
+      const files = _qcState.files.slice();
+      if (!window.confirm('Создать карточку на доске Notion?\n\n' + title + '\nПочта: ' + (mail || '—') +
+        '\nКурс: ' + (course || '— не выбран —') + '\nУрок: ' + (link || '—') + '\nФайлов: ' + files.length)) return;
+
+      busy = true; btn.style.opacity = '.55'; btn.textContent = 'Создаю карточку…';
+      copyBtn.style.display = 'none'; status.style.color = '#6B7280'; status.textContent = '';
+      try {
+        const res = await notionCreateQuestion({ title: title, email: mail, course: course, lesson: link, question: question });
+        let filesMsg = '';
+        if (files.length) {
+          btn.textContent = 'Загружаю файлы…';
+          try {
+            const infos = [];
+            for (const f of files) { infos.push(await notionUploadFile(res.id, f)); }
+            await notionAttachFiles(res.id, infos);
+            filesMsg = '\nФайлы прикреплены (' + infos.length + ').';
+          } catch (fe) {
+            console.error('[eduson-helper] файлы не прикрепились:', fe);
+            filesMsg = '\n⚠️ Файлы не прикрепились (' + (fe.message || fe) + ') — открой карточку и добавь вручную.';
+          }
+        }
+        status.style.color = '#16A34A';
+        status.textContent = '✅ Карточка создана.' + filesMsg;
+        const a = elt('a', 'display:inline-block;margin-top:6px;font-size:11px;font-weight:800;color:' + ACC + ';text-decoration:none;', 'открыть карточку в Notion →');
+        a.href = res.url; a.target = '_blank'; a.rel = 'noopener';
+        status.appendChild(document.createElement('br')); status.appendChild(a);
+        _qcState.lastUrl = res.url;
+        armCopy(res.url);
+        // очистить поля (и в _qcState, и в DOM), ссылку оставить
+        _qcState.theme = ''; _qcState.link = ''; _qcState.q = ''; _qcState.files = [];
+        themeInp.value = ''; linkInp.value = ''; qArea.value = ''; drawChips();
+      } catch (e) {
+        console.error('[eduson-helper] создание карточки Notion:', e);
+        status.style.color = '#DC2626';
+        status.textContent = (e.message === 'NOAUTH')
+          ? 'Notion не пустил. Открой app.notion.com в соседней вкладке, войди, вернись, попробуй снова.'
+          : ('Не получилось создать карточку.\n' + (e.message || e) + '\n\nНажми F12 → вкладка Console, скопируй красные строки и пришли мне.');
+      }
+      busy = false; btn.style.opacity = '1'; btn.textContent = 'Добавить на доску';
+    };
   }
 
   /* ==================== ВКЛАДКА «ДОКУМЕНТ» ====================
@@ -5373,6 +5730,465 @@
       uid: userIds[0], subs: (acct && acct.subs) || []
     };
     return lessonCache;
+  }
+
+  /* ==================== ВКЛАДКА «КУРСЫ» — под-вкладки: Урок | Прогресс 80 | Добавить курс ==================== */
+  var _coursesSub = 'lesson';
+  function renderCourses(body) {
+    const bar = elt('div', 'display:flex;gap:6px;margin-bottom:9px;');
+    const inner = elt('div', '');
+    const tCss = 'flex:1;text-align:center;cursor:pointer;font-weight:800;font-size:10.5px;padding:6px 3px;border-radius:8px;border:1.5px solid ' + ACC_BD + ';color:' + ACC + ';white-space:nowrap;';
+    const defs = [['Урок', renderLesson, 'lesson'], ['Прогресс 80', renderProgress80, 'progress'], ['Добавить курс', renderAddCourse, 'add']];
+    const btns = defs.map(function (d) {
+      const b = elt('div', tCss, d[0]);
+      b.onclick = function () {
+        btns.forEach(function (x) { x.style.background = '#fff'; x.style.color = ACC; });
+        b.style.background = ACC; b.style.color = '#fff';
+        _coursesSub = d[2];
+        inner.innerHTML = '';
+        d[1](inner);
+      };
+      return b;
+    });
+    btns.forEach(function (b) { bar.appendChild(b); });
+    body.appendChild(bar);
+    body.appendChild(inner);
+    const idx = { lesson: 0, progress: 1, add: 2 }[_coursesSub] || 0;
+    btns[idx].onclick();
+  }
+
+  /* ---------- под-вкладка «Добавить курс» ---------- */
+  // Выдаёт студенту курс в суперюзер прямо из OmniDesk (ручной путь: суперюзер → «Создать
+  // нового пользователя» → Company ID + amo id → «Создать и добавить»; нет суперюзера — сначала
+  // создать по Amo Contact ID). Все три шага — обычные Rails-формы админки www.eduson.tv.
+  let _admCsrf = '';
+  async function adminCsrf() {
+    if (_admCsrf) return _admCsrf;
+    const html = await gmText(EDU_ADMIN + '/admin/super_users/new?language=ru');
+    if (looksLikeAdminLogin(html)) throw new Error('NOAUTH');
+    const m = html.match(/name=["']csrf-token["'][^>]*content=["']([^"']+)["']/i)
+      || html.match(/name=["']authenticity_token["'][^>]*value=["']([^"']+)["']/i);
+    if (!m) throw new Error('не нашла токен админки');
+    _admCsrf = m[1];
+    return _admCsrf;
+  }
+  function gmPostFollow(url, params) {
+    const data = Object.keys(params).map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]); }).join('&');
+    return new Promise(function (resolve, reject) {
+      GM_xmlhttpRequest({
+        method: 'POST', url: url, timeout: 40000,
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+        data: data,
+        onload: function (res) {
+          if (res.status === 401 || res.status === 403) reject(new Error('NOAUTH'));
+          else resolve({ status: res.status, finalUrl: res.finalUrl || url, text: res.responseText || '' });
+        },
+        onerror: function () { reject(new Error('сеть')); },
+        ontimeout: function () { reject(new Error('долго не отвечает')); }
+      });
+    });
+  }
+  // Список курсов админки — это server-side DataTables: настоящие строки отдаёт JSON-эндпоинт
+  // (обычный GET страницы приходит без строк). Дёргаем его напрямую, с X-Requested-With (gmFetch).
+  async function adminCompanySearch(q) {
+    const u = EDU_ADMIN + '/admin/companies?language=ru&draw=1&start=0&length=30'
+      + '&columns%5B0%5D%5Bdata%5D=name&columns%5B0%5D%5Bname%5D=name&columns%5B0%5D%5Bsearchable%5D=true'
+      + '&order%5B0%5D%5Bcolumn%5D=1&order%5B0%5D%5Bdir%5D=desc'
+      + '&search%5Bvalue%5D=&search%5Bregex%5D=false&_=' + Date.now()
+      + '&q=' + encodeURIComponent(q);
+    const j = await gmFetch(u); // gmFetch шлёт X-Requested-With + парсит JSON; NOAUTH → бросит сам
+    const rows = (j && j.data) || [];
+    const out = [];
+    rows.forEach(function (r) {
+      const cell = String(r.name || '');
+      const m = cell.match(/\/admin\/companies\/(\d+)/);
+      const name = cell.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+      if (m && name && !out.some(function (x) { return x.id === m[1]; })) out.push({ id: m[1], name: name, users: r.users_count });
+    });
+    return out.slice(0, 40);
+  }
+  async function adminSuperCourses(superId) {
+    const html = await gmText(EDU_ADMIN + '/admin/super_users/' + superId + '?language=ru');
+    if (looksLikeAdminLogin(html)) throw new Error('NOAUTH');
+    return subUsersFromSuper(html); // [{uid,email,phone,company}]
+  }
+  function txtNoTags(s) { return String(s || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(); }
+  async function adminCreateSuperUser(amoContactId) {
+    const token = await adminCsrf();
+    const res = await gmPostFollow(EDU_ADMIN + '/admin/super_users?language=ru', {
+      authenticity_token: token, 'super_user[amo_contact_id]': amoContactId, commit: 'Create Super User'
+    });
+    if (res.status === 422 && /InvalidAuthenticityToken|CSRF/i.test(res.text)) throw new Error('CSRF');
+    if (res.status >= 400 && res.status !== 422) throw new Error('админка ответила ' + res.status + ' при создании суперюзера');
+    let m = (res.finalUrl || '').match(/\/admin\/super_users\/(\d+)(?:\?|$)/);
+    if (m) return m[1];
+    m = (res.text || '').match(/\/admin\/super_users\/(\d+)/);
+    if (m) return m[1];
+    // фолбэк: поиск по amo_contact_id
+    const html = await gmText(EDU_ADMIN + '/admin/super_users?language=ru&q=' + encodeURIComponent(amoContactId));
+    const a = new DOMParser().parseFromString(html, 'text/html').querySelector('a[href*="/admin/super_users/"]');
+    const mm = a && (a.getAttribute('href') || '').match(/super_users\/(\d+)/);
+    if (mm) return mm[1];
+    throw new Error('суперюзер вроде создан, но его id не нашла — открой админку и проверь');
+  }
+  // Прикрепить УЖЕ существующего платформенного юзера (осн. курс студента) к суперюзеру.
+  // ⚠️ обязательный шаг ПЕРЕД добавлением нового курса: суперюзер не должен быть пустым.
+  async function adminAttachExistingUser(superId, subUserId) {
+    const token = await adminCsrf();
+    const res = await gmPostFollow(EDU_ADMIN + '/admin/super_users/' + superId + '/add_existing_sub_user?language=ru', {
+      authenticity_token: token, sub_user_id: subUserId, commit: 'Добавить'
+    });
+    if (res.status === 422 && /InvalidAuthenticityToken/i.test(res.text)) throw new Error('CSRF');
+    if (res.status >= 500) {
+      console.error('[eduson-helper] 500 при add_existing_sub_user:\n', String(res.text || '').slice(0, 2000));
+      throw new Error('админка ответила ' + res.status + ' при прикреплении основного курса');
+    }
+    return res;
+  }
+  async function adminAddCourse(superId, d) {
+    const token = await adminCsrf();
+    const res = await gmPostFollow(EDU_ADMIN + '/admin/super_users/' + superId + '/create_sub_user?language=ru', {
+      authenticity_token: token,
+      company_id: d.companyId,
+      'tracking_info[amo_contact_id]': d.amoContactId,
+      'tracking_info[amo_lead_id]': d.amoLeadId,
+      'tracking_info[roistat_id]': d.roistatId || '',
+      commit: 'Создать и добавить'
+    });
+    if (res.status === 422 && /InvalidAuthenticityToken/i.test(res.text)) throw new Error('CSRF');
+    if (res.status === 404) throw new Error('админка вернула 404 — не тот адрес суперюзера');
+    if (res.status >= 500) {
+      // выцепить суть ошибки Rails из тела 500 (заголовок / exception / текст)
+      const raw = String(res.text || '');
+      const h = (raw.match(/<h1[^>]*>([^<]{3,200})<\/h1>/i) || [])[1] || '';
+      const exc = (raw.match(/(NoMethodError|ActiveRecord::[A-Za-z]+|ArgumentError|TypeError|NameError|PG::[A-Za-z]+|Mysql2::[A-Za-z]+|undefined method[^\n<"]{0,90}|nil:NilClass[^\n<"]{0,60})/i) || [])[1] || '';
+      const title = (raw.match(/<title[^>]*>([^<]{3,120})<\/title>/i) || [])[1] || '';
+      console.error('[eduson-helper] 500 от create_sub_user. Заголовок:', h || title, '| Exception:', exc, '\n--- тело ответа (первые 3000):\n', raw.slice(0, 3000));
+      throw new Error('админка ответила ошибкой ' + res.status + (exc ? (': ' + exc.slice(0, 80)) : (h ? (': ' + h.slice(0, 80)) : '')));
+    }
+    const doc = new DOMParser().parseFromString(res.text || '', 'text/html');
+    const fEl = doc.querySelector('.flash_div, .flash, .alert, .notice, .alert-success, .alert-danger, [class*="flash"]');
+    let flash = fEl ? fEl.textContent : '';
+    // при re-render формы с ошибками — собрать .field_with_errors / .invalid-feedback / список ошибок
+    if (!flash) {
+      const errs = [].slice.call(doc.querySelectorAll('.invalid-feedback, .error, .field_with_errors, #error_explanation li')).map(function (e) { return e.textContent; }).filter(Boolean);
+      if (errs.length) flash = errs.join('; ');
+    }
+    return { status: res.status, finalUrl: res.finalUrl, flash: txtNoTags(flash).slice(0, 400), doc: doc };
+  }
+  // Найти существующий суперюзер по amo_contact_id (список super_users — плоский HTML, фильтруется q=)
+  async function adminFindSuperUser(amoContactId) {
+    if (!amoContactId) return '';
+    try {
+      const html = await gmText(EDU_ADMIN + '/admin/super_users?language=ru&q=' + encodeURIComponent(amoContactId));
+      if (looksLikeAdminLogin(html)) throw new Error('NOAUTH');
+      const a = new DOMParser().parseFromString(html, 'text/html').querySelector('a[href*="/admin/super_users/"]');
+      const m = a && (a.getAttribute('href') || '').match(/super_users\/(\d+)/);
+      return m ? m[1] : '';
+    } catch (e) { if (e.message === 'NOAUTH') throw e; return ''; }
+  }
+
+  // amo для выдачи курса: ВСЕ сделки карточки (куратор сам выбирает нужную из списка),
+  // ВСЕ контакты сделок (бывает 2 — покупатель + коллега), roistat. → {leads[], contacts[], roistat, err}
+  async function amoIdsForAddCourse() {
+    const out = { leads: [], contacts: [], roistat: '', err: '', from: 'amo' };
+
+    // ── ПРИОРИТЕТ: id из карточки студента в админке (блок tracking_info) ──
+    // Так надёжнее: в amo бывает 2 успешных сделки, а в админке уже лежит нужный набор id.
+    const admUid = (adminUserSuperIds().users || [])[0];
+    if (admUid) {
+      try {
+        const t = await adminUserTracking(admUid);
+        if (t && (t.contactId || t.leadId)) {
+          out.from = 'admin'; out.admUid = admUid;
+          if (t.contactId) out.contacts.push({ id: String(t.contactId), main: true, name: 'из админки' });
+          if (t.leadId) out.leads.push({ id: String(t.leadId), name: 'сделка из карточки студента', won: true, fromCard: true, closedAt: 0 });
+          out.roistat = t.roistat || '';
+          return out;
+        }
+      } catch (e) { if (e.message === 'NOAUTH') { out.err = 'админка не пустила — открой www.eduson.tv/admin, войди'; return out; } }
+    }
+
+    // ── запасной путь: собрать из amo (у студента ещё нет карточки в админке) ──
+    const cardMain = String(amoDealNum() || '').replace(/\D/g, '');
+    const set = [];
+    const push = function (n) { n = String(n || '').replace(/\D/g, ''); if (n.length >= 5 && set.indexOf(n) === -1) set.push(n); };
+    document.querySelectorAll('a[href*="/leads/detail/"]').forEach(function (a) { const m = (a.href || '').match(/leads\/detail\/(\d+)/); if (m) push(m[1]); });
+    push(cardMain);
+    if (!set.length) { out.err = 'в карточке нет сделок amo'; return out; }
+    const seenC = {};
+    for (const id of set.slice(0, 8)) {
+      try {
+        const l = await gmFetch('https://eduson.amocrm.ru/api/v4/leads/' + id + '?with=contacts');
+        if (!l || !l.id) continue;
+        const won = l.status_id === 142 || (!!l.closed_at && l.status_id !== 143);
+        out.leads.push({
+          id: String(l.id),
+          name: (l.name || ('сделка ' + l.id)).replace(/\s+/g, ' ').trim().slice(0, 44),
+          fromCard: String(l.id) === cardMain,
+          won: won,
+          closedAt: l.closed_at || 0
+        });
+        (((l._embedded || {}).contacts) || []).forEach(function (c) { if (!seenC[c.id]) { seenC[c.id] = 1; out.contacts.push({ id: String(c.id), main: !!c.is_main, name: '' }); } });
+        if (!out.roistat) {
+          const rf = (l.custom_fields_values || []).find(function (f) { return (f.field_name || '') === 'Roistat'; });
+          const rv = rf && rf.values && rf.values[0] && rf.values[0].value;
+          if (rv != null && /^\d+$/.test(String(rv).trim())) out.roistat = String(rv).trim();
+        }
+      } catch (e) { if (e.message === 'NOAUTH') { out.err = 'amo не пустило — открой eduson.amocrm.ru, войди'; return out; } }
+    }
+    for (const c of out.contacts) {
+      try { const cc = await gmFetch('https://eduson.amocrm.ru/api/v4/contacts/' + c.id); c.name = (cc && cc.name) ? String(cc.name).replace(/\s+/g, ' ').trim() : ''; } catch (e) {}
+    }
+    if (!out.leads.length && !out.err) out.err = 'сделки amo не прочитались';
+    return out;
+  }
+
+  // amo_contact_id / amo_lead_id / roistat_id из карточки студента в АДМИНКЕ (блок tracking_info).
+  // Это «канонические» id — те, что уже сработали для этого студента; в amo бывает путаница из 2 сделок.
+  // ⚠️ страница /admin/users/<uid> тяжёлая (~1.3 МБ) — регуляркой по строке, без DOMParser.
+  function gmTextSlow(url) {
+    return new Promise(function (resolve, reject) {
+      GM_xmlhttpRequest({
+        method: 'GET', url: url, timeout: 90000,
+        onload: function (res) {
+          if (res.status === 200) resolve(res.responseText || '');
+          else if (res.status === 401 || res.status === 403 || res.status === 0) reject(new Error('NOAUTH'));
+          else reject(new Error('код ' + res.status));
+        },
+        onerror: function () { reject(new Error('сеть')); },
+        ontimeout: function () { reject(new Error('долго не отвечает')); }
+      });
+    });
+  }
+  async function adminUserTracking(uid) {
+    if (!uid) return null;
+    const html = await gmTextSlow(EDU_ADMIN + '/admin/users/' + uid + '?language=ru');
+    if (looksLikeAdminLogin(html)) throw new Error('NOAUTH');
+    const grab = function (key) {
+      const re = new RegExp('<th[^>]*>\\s*' + key + '\\s*</th>\\s*<td[^>]*>\\s*([^<]+?)\\s*</td>', 'i');
+      const m = html.match(re);
+      return m ? m[1].trim() : '';
+    };
+    const t = { contactId: grab('amo_contact_id'), leadId: grab('amo_lead_id'), roistat: grab('roistat_id') };
+    if (!t.contactId && !t.leadId) return null; // блока tracking_info нет
+    return t;
+  }
+
+  function renderAddCourse(body) {
+    const lab = function (t, hint) {
+      const d = elt('div', 'margin:12px 0 4px;');
+      d.appendChild(elt('span', 'font-size:12px;font-weight:800;color:#1F2937;', t));
+      if (hint) d.appendChild(elt('span', 'font-size:10px;font-weight:600;color:#94A3B8;', '  ' + hint));
+      return d;
+    };
+    const inCss = 'width:100%;box-sizing:border-box;padding:8px 10px;border:1.5px solid #CBD5E1;border-radius:9px;font:600 12px ' + FONT + ';color:#111827;background:#fff;';
+    const note = 'font-size:10px;color:#94A3B8;font-weight:600;margin-top:3px;';
+
+    body.appendChild(elt('div', 'font-size:10.5px;color:#64748B;font-weight:700;line-height:1.4;', 'Выдаёт студенту курс в суперюзер (то же, что вручную в админке).'));
+    const load = elt('div', 'font-size:11px;color:#9CA3AF;font-weight:700;margin-top:6px;', 'Читаю карточку студента в админке (страница тяжёлая, до минуты)…');
+    body.appendChild(load);
+    const form = elt('div', 'display:none;');
+    body.appendChild(form);
+
+    const cardIds = adminUserSuperIds();
+    let superId = cardIds.supers[0] || '';
+    let subs = [];
+    const cardUid = cardIds.users[0] || ''; // существующий платформенный юзер студента (осн. курс)
+
+    amoIdsForAddCourse().then(async function (amo) {
+      // если суперюзера нет в карточке — поищем по контакту-покупателю (чтобы не плодить дубли)
+      if (!superId) {
+        const dc = ((amo.contacts || []).find(function (c) { return c.main; }) || (amo.contacts || [])[0] || {}).id || '';
+        if (dc) { try { superId = await adminFindSuperUser(dc); } catch (e) { if (e.message === 'NOAUTH') throw e; } }
+      }
+      if (superId) { try { subs = await adminSuperCourses(superId); } catch (e) {} }
+      load.style.display = 'none';
+      form.style.display = 'block';
+      build(amo);
+    }).catch(function (e) {
+      load.style.color = '#B45309';
+      load.textContent = e.message === 'NOAUTH' ? 'Нет входа в админку/amo. Открой их в соседних вкладках, войди, вернись.' : ('Не получилось прочитать данные: ' + (e.message || e));
+    });
+
+    function build(amo) {
+      const cardName = (readUser().name || '').toLowerCase().replace(/\s+/g, ' ').trim();
+      if (amo.from === 'admin') form.appendChild(elt('div', note, 'ID берутся из карточки студента в админке (#' + amo.admUid + '). Можно поправить.'));
+
+      // Amo Contact — из сделок; если 2+, выбор (по умолчанию — совпадающий с ФИО карточки, иначе main)
+      form.appendChild(lab('Amo Contact ID', '— кто купил курс'));
+      const cRows = (amo.contacts || []).map(function (c) { return { label: (c.name || 'контакт') + ' · ' + c.id, value: c.id }; });
+      let cDefault = '';
+      const byName = (amo.contacts || []).find(function (c) { return cardName && (c.name || '').toLowerCase().indexOf(cardName.split(' ')[0]) !== -1 && (c.name || '').toLowerCase().indexOf(cardName.split(' ')[1] || ' ') !== -1; });
+      cDefault = (byName && byName.id) || ((amo.contacts.find(function (c) { return c.main; }) || amo.contacts[0] || {}).id) || '';
+      const cCombo = combo(cRows.length ? cRows : [{ label: '—', value: '' }], 'ID контакта', cDefault);
+      form.appendChild(cCombo.el);
+      if (amo.contacts.length > 1) form.appendChild(elt('div', note, 'в сделке ' + amo.contacts.length + ' контакта — выбран покупатель, проверь'));
+
+      // Amo Lead — все сделки карточки; по умолчанию последняя закрытая успешная (по ней шла покупка)
+      form.appendChild(lab('Amo Lead ID', '— сделка, по которой была покупка'));
+      const dt = function (ts) { if (!ts) return ''; const d = new Date(ts * 1000); return ' · ' + p2(d.getDate()) + '.' + p2(d.getMonth() + 1) + '.' + d.getFullYear(); };
+      const lRows = (amo.leads || []).map(function (l) { return { label: l.name + (l.won ? ' ✓' : '') + dt(l.closedAt) + ' · ' + l.id, value: l.id }; });
+      const wonLeads = (amo.leads || []).filter(function (l) { return l.won; }).sort(function (a, b) { return (b.closedAt || 0) - (a.closedAt || 0); });
+      const lDefault = ((wonLeads[0] || amo.leads.find(function (l) { return l.fromCard; }) || amo.leads[0] || {}).id) || '';
+      const lCombo = combo(lRows.length ? lRows : [{ label: '—', value: '' }], 'номер сделки', lDefault);
+      form.appendChild(lCombo.el);
+      if (amo.leads.length > 1) form.appendChild(elt('div', note, 'сделок несколько — «✓» = успешно закрытая. Выбрана последняя закрытая, проверь.'));
+
+      form.appendChild(lab('Roistat ID', '— если нет, оставь пусто'));
+      const rInp = elt('input', inCss); rInp.placeholder = 'по желанию'; rInp.value = amo.roistat || '';
+      form.appendChild(rInp);
+      if (amo.err) form.appendChild(elt('div', note.replace('#94A3B8', '#B45309'), amo.err + ' — впиши id вручную'));
+      // адаптеры под старые имена
+      const cInp = { get value() { return cCombo.value; }, focus: function () {} };
+      const lInp = { get value() { return lCombo.value; }, focus: function () {} };
+
+      // суперюзер
+      const suBox = elt('div', 'margin-top:10px;font-size:10.5px;font-weight:700;border-radius:9px;padding:8px 10px;');
+      const needAttach = (!subs.length);
+      if (superId && !needAttach) {
+        suBox.style.background = '#F0FDF4'; suBox.style.color = '#166534';
+        suBox.textContent = 'Суперюзер #' + superId + ' · курсы: ' + subs.map(function (s) { return s.company || '?'; }).join(', ');
+      } else {
+        suBox.style.background = '#FFFBEB'; suBox.style.color = '#92400E';
+        suBox.textContent = (superId ? ('Суперюзер #' + superId + ' пустой. ') : 'Суперюзера нет — создам его. ')
+          + (cardUid ? ('Сначала прикреплю основной курс студента (юзер #' + cardUid + '), потом добавлю новый.') : '⚠️ платформенного юзера в карточке нет — основной курс придётся прикрепить вручную.');
+      }
+      form.appendChild(suBox);
+
+      // поиск курса (или вставить ID / ссылку на компанию)
+      form.appendChild(lab('Курс', '— название, ID или ссылка на компанию'));
+      const qInp = elt('input', inCss); qInp.type = 'search'; qInp.placeholder = 'revit autodesk  ·  16023  ·  ссылка';
+      form.appendChild(qInp);
+      const hits = elt('div', 'margin-top:5px;max-height:160px;overflow:auto;border:1px solid #EEF2F5;border-radius:9px;display:none;');
+      form.appendChild(hits);
+      const chosen = elt('div', 'margin-top:6px;font-size:11px;font-weight:800;display:none;border-radius:9px;padding:8px 10px;background:#E0F2FE;color:#075985;');
+      form.appendChild(chosen);
+      let picked = null, qTimer = null;
+      function pick(it) {
+        picked = it;
+        chosen.style.display = 'block';
+        chosen.textContent = '✓ ' + it.name + '  ·  Company ID ' + it.id;
+        hits.style.display = 'none';
+        const dup = subs.find(function (s) { return docNorm(s.company) && (docNorm(s.company) === docNorm(it.name) || docNorm(it.name).indexOf(docNorm(s.company)) !== -1 || docNorm(s.company).indexOf(docNorm(it.name)) !== -1); });
+        if (dup) { chosen.style.background = '#FEF3C7'; chosen.style.color = '#92400E'; chosen.textContent += '  ⚠️ у студента уже есть похожий курс: «' + dup.company + '»'; }
+      }
+      qInp.addEventListener('input', function () {
+        clearTimeout(qTimer);
+        const v = qInp.value.trim();
+        // вставили ссылку/ID компании — берём напрямую
+        const idm = v.match(/\/admin\/companies\/(\d+)/) || (/^\d{2,7}$/.test(v) ? [null, v] : null);
+        if (idm) {
+          hits.style.display = 'none';
+          pick({ id: idm[1], name: 'Company ID ' + idm[1] });
+          return;
+        }
+        if (v.length < 3) { hits.style.display = 'none'; return; }
+        qTimer = setTimeout(function () {
+          hits.innerHTML = ''; hits.style.display = 'block';
+          hits.appendChild(elt('div', 'padding:8px 10px;font-size:11px;color:#9CA3AF;font-weight:700;', 'ищу…'));
+          adminCompanySearch(v).then(function (list) {
+            hits.innerHTML = '';
+            if (!list.length) { hits.appendChild(elt('div', 'padding:8px 10px;font-size:11px;color:#9CA3AF;font-weight:700;', 'ничего не нашла')); return; }
+            list.forEach(function (it) {
+              const row = elt('div', 'padding:7px 10px;cursor:pointer;border-bottom:1px solid #F3F4F6;font-size:11.5px;font-weight:700;color:#111827;');
+              row.textContent = it.name + '  · ' + it.id;
+              row.onmouseenter = function () { row.style.background = '#F0F9FF'; };
+              row.onmouseleave = function () { row.style.background = '#fff'; };
+              row.onclick = function () { pick(it); };
+              hits.appendChild(row);
+            });
+          }).catch(function (e) {
+            hits.innerHTML = '';
+            hits.appendChild(elt('div', 'padding:8px 10px;font-size:11px;color:#B45309;font-weight:700;', e.message === 'NOAUTH' ? 'нет входа в админку' : ('ошибка: ' + e.message)));
+          });
+        }, 400);
+      });
+
+      const status = elt('div', 'font-size:11px;font-weight:700;line-height:1.45;margin-top:12px;white-space:pre-wrap;');
+      const btn = elt('div', 'margin-top:10px;text-align:center;background:' + ACC + ';color:#fff;font-weight:800;font-size:12.5px;padding:10px 0;border-radius:8px;cursor:pointer;', 'Выдать курс');
+      form.appendChild(btn); form.appendChild(status);
+
+      let busy = false;
+      btn.onclick = async function () {
+        if (busy) return;
+        const contactId = cInp.value.trim(), leadId = lInp.value.trim(), roistatId = rInp.value.trim();
+        if (!picked) { toast('Сначала выбери курс'); return; }
+        if (!contactId) { toast('Нужен Amo Contact ID'); cInp.focus(); return; }
+        if (!leadId) { toast('Нужен Amo Lead ID'); lInp.focus(); return; }
+
+        const dup = subs.find(function (s) { return docNorm(s.company) && (docNorm(s.company) === docNorm(picked.name) || docNorm(picked.name).indexOf(docNorm(s.company)) !== -1 || docNorm(s.company).indexOf(docNorm(picked.name)) !== -1); });
+        if (dup && !window.confirm('⚠️ У студента УЖЕ есть курс «' + dup.company + '», похоже на выбранный.\n\nВсё равно добавить «' + picked.name + '»?')) return;
+
+        const steps = [];
+        if (!superId) steps.push('создать суперюзер');
+        if (!subs.length && cardUid) steps.push('прикрепить основной курс (юзер #' + cardUid + ')');
+        steps.push('добавить «' + picked.name + '»');
+        if (!window.confirm('Выдать курс?\n\nШаги: ' + steps.join(' → ') + '\n\nCompany ID ' + picked.id +
+          '\nAmo Contact ' + contactId + ' · Lead ' + leadId + (roistatId ? (' · Roistat ' + roistatId) : ' · без Roistat'))) return;
+
+        busy = true; btn.style.opacity = '.55'; btn.textContent = 'Выдаю…'; status.style.color = '#6B7280'; status.textContent = '';
+        try {
+          if (!superId) {
+            status.textContent = 'Ищу суперюзер…';
+            superId = await adminFindSuperUser(contactId);
+            if (!superId) {
+              status.textContent = 'Создаю суперюзер…';
+              superId = await adminCreateSuperUser(contactId);
+            }
+            try { subs = await adminSuperCourses(superId); } catch (e) {}
+          }
+          // ⚠️ суперюзер не должен быть пустым: сначала прикрепляем ОСНОВНОЙ (уже зарегистрированный)
+          // курс студента — его платформенного юзера из карточки, — и только потом добавляем новый.
+          if (!subs.length && cardUid) {
+            status.textContent = 'Прикрепляю основной курс студента…';
+            await adminAttachExistingUser(superId, cardUid);
+            try { subs = await adminSuperCourses(superId); } catch (e) {}
+          }
+          suBox.style.background = '#F0FDF4'; suBox.style.color = '#166534';
+          suBox.textContent = 'Суперюзер #' + superId + (subs.length ? (' · курсы: ' + subs.map(function (s) { return s.company || '?'; }).join(', ')) : ' · пусто');
+          if (!subs.length && !cardUid) {
+            status.style.color = '#B45309';
+            status.textContent = '⚠️ Суперюзер пустой, а платформенного юзера студента в карточке нет. Прикрепи основной курс вручную в админке и повтори.';
+            busy = false; btn.style.opacity = '1'; btn.textContent = 'Выдать курс';
+            return;
+          }
+          status.textContent = 'Добавляю курс…';
+          const res = await adminAddCourse(superId, { companyId: picked.id, amoContactId: contactId, amoLeadId: leadId, roistatId: roistatId });
+          // перечитать курсы для проверки
+          let after = [];
+          try { after = await adminSuperCourses(superId); } catch (e) {}
+          const nowHas = after.filter(function (s) { return docNorm(s.company) && (docNorm(s.company).indexOf(docNorm(picked.name)) !== -1 || docNorm(picked.name).indexOf(docNorm(s.company)) !== -1); }).length;
+          const wasHas = subs.filter(function (s) { return docNorm(s.company) && (docNorm(s.company).indexOf(docNorm(picked.name)) !== -1 || docNorm(picked.name).indexOf(docNorm(s.company)) !== -1); }).length;
+          subs = after.length ? after : subs;
+
+          console.log('[eduson-helper] выдача курса:', { superId: superId, company: picked.id, status: res.status, flash: res.flash, wasHas: wasHas, nowHas: nowHas });
+          if (res.flash) {
+            status.style.color = /ошиб|error|exist|уже|not|нельзя|invalid|fail/i.test(res.flash) ? '#B45309' : '#16A34A';
+            status.textContent = res.flash;
+          } else if (nowHas > wasHas) {
+            status.style.color = '#16A34A'; status.textContent = '✅ Курс добавлен.';
+          } else if (nowHas === wasHas && wasHas > 0) {
+            status.style.color = '#B45309'; status.textContent = 'Похоже, этот курс у студента уже был — новых записей не появилось.';
+          } else {
+            status.style.color = '#B45309'; status.textContent = 'Отправила, но в списке курсов изменений не вижу. Проверь в админке.';
+          }
+          const a = elt('a', 'display:inline-block;margin-top:6px;font-size:11px;font-weight:800;color:' + ACC + ';text-decoration:none;', 'открыть суперюзер в админке →');
+          a.href = EDU_ADMIN + '/admin/super_users/' + superId + '?language=ru'; a.target = '_blank'; a.rel = 'noopener';
+          status.appendChild(document.createElement('br')); status.appendChild(a);
+          suBox.textContent = 'Суперюзер #' + superId + (subs.length ? (' · курсы: ' + subs.map(function (s) { return s.company || '?'; }).join(', ')) : '');
+        } catch (e) {
+          console.error('[eduson-helper] выдача курса:', e);
+          status.style.color = '#DC2626';
+          const msg = String(e.message || e);
+          status.textContent = msg === 'NOAUTH' ? 'Админка не пустила. Открой www.eduson.tv/admin в соседней вкладке, войди, вернись.'
+            : msg === 'CSRF' ? 'Токен админки протух. Обнови страницу OmniDesk (F5) и попробуй снова.'
+            : /50\d/.test(msg) ? ('Админка не смогла (' + msg + ').\n⚠️ Суперюзер #' + (superId || '?') + ' создан пустым — НЕ удаляй его, при повторе Хэлпер добавит курс в него же.\nF12 → Console: там ЗАГОЛОВОК ошибки и тело ответа — пришли его целиком.')
+            : ('Не получилось: ' + msg + '\n\nF12 → Console → пришли красные строки.');
+        }
+        busy = false; btn.style.opacity = '1'; btn.textContent = 'Выдать курс';
+      };
+    }
   }
 
   function renderLesson(body) {
@@ -5858,7 +6674,7 @@
       list: 'margin-top:5px;max-height:170px;overflow-y:auto;border:1px solid #EEF2F5;border-radius:9px;',
       row: 'padding:6px 10px;border-bottom:1px solid #F3F4F6;cursor:pointer;font-size:11px;font-weight:700;color:#111827;line-height:1.3;',
       back: 'font-size:10.5px;font-weight:800;color:' + ACC + ';cursor:pointer;margin:2px 0 4px;',
-      go: 'margin-top:9px;text-align:center;cursor:pointer;font-weight:800;font-size:11.5px;padding:8px 0;border-radius:999px;background:#16A34A;color:#fff;',
+      go: 'margin-top:9px;text-align:center;cursor:pointer;font-weight:800;font-size:11.5px;padding:8px 0;border-radius:8px;background:#16A34A;color:#fff;',
       log: 'margin-top:8px;font-size:10.5px;font-weight:700;line-height:1.6;white-space:pre-wrap;',
       more: 'font-size:10px;font-weight:800;color:#9CA3AF;cursor:pointer;margin-top:9px;'
     };
@@ -6067,17 +6883,17 @@
   }
 
   /* ==================== КНОПКА В ШАПКЕ ==================== */
-  // Кот в коробке — ровно версия 1.5.2, не трогаем: в покое коробка тонкой линией + завиток
-  // хвоста с синим бантом; при открытии Хэлпера кот выпрыгивает, хвост поднимается и виляет.
-  // Без карточки-подложки. Цвета — гамма панели.
-  const BTN_SVG = '<svg class="hp-catbox" viewBox="0 -128 200 278" xmlns="http://www.w3.org/2000/svg" style="position:absolute;left:50%;bottom:1px;transform:translateX(-50%);width:45px;height:65px;overflow:visible">' +
+  // Кот в коробке. Рамку коробки рисует САМА кнопка (CSS border, 1:1 как у 🔑/🧲) — здесь только
+  // «начинка»: линия-клапан + две синие полоски скотча, плюс спрятанные кот и хвост с бантом.
+  // При открытии Хэлпера кот выпрыгивает, хвост поднимается и виляет.
+  const BTN_SVG = '<svg class="hp-catbox" viewBox="0 -128 200 278" xmlns="http://www.w3.org/2000/svg" style="position:absolute;left:50%;bottom:-2px;transform:translateX(-50%);width:44px;height:65px;overflow:visible">' +
     '<defs><clipPath id="hpccl"><rect x="-260" y="-720" width="720" height="766"/></clipPath></defs>' +
     '<g clip-path="url(#hpccl)">' +
     '<g class="hp-tail"><g class="hp-wag">' +
-    '<path d="M150 94 C 150 52, 194 44, 200 12 C 204 -8, 196 -24, 178 -24 C 164 -24, 162 -10, 176 -12" fill="none" stroke="#5F6368" stroke-width="13" stroke-linecap="round"/>' +
+    '<path d="M178 52 C 182 28, 196 22, 200 12 C 204 -8, 196 -24, 178 -24 C 164 -24, 162 -10, 176 -12" fill="none" stroke="#5F6368" stroke-width="12" stroke-linecap="round"/>' +
     '<g transform="rotate(12 200 8)"><path d="M200 8 L177 -8 Q 170 8 177 24 Z" fill="#0284C7"/><path d="M200 8 L223 -8 Q 230 8 223 24 Z" fill="#0284C7"/><ellipse cx="200" cy="8" rx="6" ry="9" fill="#0369A1"/></g>' +
     '</g></g>' +
-    '<g class="hp-cat"><g transform="translate(0 66)">' +
+    '<g class="hp-cat"><g transform="translate(20 54) scale(0.80)">' +
     '<ellipse cx="100" cy="-60" rx="42" ry="35" fill="#fff"/>' +
     '<g transform="translate(-47,-135) scale(0.386)"><g transform="translate(0,720) scale(0.1,-0.1)" fill="#5F6368">' +
     '<path d="M2654 6546 c-96 -23 -165 -83 -211 -181 l-28 -60 -2 -705 c-1 -455 -6 -735 -13 -790 -6 -47 -10 -123 -8 -169 l3 -83 126 -2 126 -1 0 100 c0 118 12 186 58 317 132 377 405 689 685 782 115 38 186 46 421 46 288 0 386 -17 542 -97 168 -85 370 -309 491 -546 93 -182 136 -343 136 -504 l0 -98 125 0 124 0 6 50 c3 28 1 95 -6 150 -8 64 -14 358 -18 820 -6 702 -7 721 -27 771 -45 109 -119 174 -230 201 -85 21 -174 8 -244 -35 -26 -16 -164 -127 -308 -247 l-260 -217 -336 0 -335 0 -263 219 c-311 259 -314 261 -381 279 -62 16 -105 16 -173 0z m327 -423 l211 -176 -35 -17 c-59 -29 -172 -109 -236 -166 -54 -50 -171 -182 -228 -259 l-22 -30 -1 393 c0 379 1 393 20 412 44 44 65 32 291 -157z m1949 157 c19 -19 20 -33 20 -401 0 -213 -4 -379 -9 -377 -5 2 -35 37 -68 78 -120 151 -301 308 -404 350 -16 7 -29 18 -27 25 2 7 93 88 203 179 169 141 204 166 232 166 20 0 41 -8 53 -20z"/>' +
@@ -6087,22 +6903,21 @@
     '</g></g>' +
     '</g>' +
     '<g class="hp-box">' +
-    '<rect x="34" y="26" width="132" height="123" rx="10" fill="#fff" stroke="#5F6368" stroke-width="6"/>' +
-    '<path d="M34 50 h132" stroke="#5F6368" stroke-width="4.5"/>' +
-    '<rect x="108" y="98" width="42" height="12" rx="6" fill="#0284C7"/><rect x="108" y="119" width="42" height="12" rx="6" fill="#0284C7"/>' +
+    '<path d="M40 46 h120" stroke="#6B7280" stroke-width="6" stroke-linecap="round"/>' +
+    '<rect x="108" y="92" width="42" height="11" rx="5.5" fill="#0284C7"/><rect x="108" y="111" width="42" height="11" rx="5.5" fill="#0284C7"/>' +
     '</g></svg>';
 
   const CATBOX_CSS =
     '#curator-tools-btn,#eduson-hdr-btns,#curator-hdr{overflow:visible !important}' +
-    '#curator-tools-btn .hp-cat{transform:translateY(150px);transition:transform .5s cubic-bezier(.34,1.62,.5,1)}' +
-    '#curator-tools-btn .hp-tail{transform:translateY(6px);transition:transform .5s cubic-bezier(.34,1.5,.5,1)}' +
-    '#curator-tools-btn .hp-wag{transform-box:fill-box;transform-origin:left bottom}' +
+    '#curator-tools-btn .hp-cat{transform:translateY(150px);transition:transform .68s cubic-bezier(.22,1,.36,1)}' +
+    '#curator-tools-btn .hp-tail{transform:translate(-29px,10px);transition:transform .68s cubic-bezier(.22,1,.36,1)}' +
+    '#curator-tools-btn .hp-wag{transform-box:fill-box;transform-origin:left bottom;transition:transform .4s ease}' +
     '#curator-tools-btn:hover:not(.hp-on) .hp-cat{transform:translateY(128px)}' +
-    '#curator-tools-btn:hover:not(.hp-on) .hp-tail{transform:translateY(-4px)}' +
-    '#curator-tools-btn.hp-on .hp-cat{transform:translateY(-16px)}' +
-    '#curator-tools-btn.hp-on .hp-tail{transform:translateY(-42px)}' +
-    '#curator-tools-btn.hp-on .hp-wag{animation:hp-wag-kf 1.1s ease-in-out infinite}' +
-    '@keyframes hp-wag-kf{0%,100%{transform:rotate(-7deg)}50%{transform:rotate(8deg)}}';
+    '#curator-tools-btn:hover:not(.hp-on) .hp-tail{transform:translate(-29px,2px)}' +
+    '#curator-tools-btn.hp-on .hp-cat{transform:translateY(15px)}' +
+    '#curator-tools-btn.hp-on .hp-tail{transform:translate(-19px,-8px)}' +
+    '#curator-tools-btn.hp-on .hp-wag{animation:hp-wag-kf 1.5s ease-in-out infinite}' +
+    '@keyframes hp-wag-kf{0%,100%{transform:rotate(-6deg)}50%{transform:rotate(6deg)}}';
 
   function catboxStyle() {
     if (document.getElementById('eduson-catbox-css')) return;
@@ -6124,9 +6939,14 @@
     const btn = document.createElement('div');
     btn.id = 'curator-tools-btn';
     btn.title = 'Пинги в Телеграм и справочник тегов';
-    // Без «карточки» — фона/рамки/тени нет (как и у 🔑/🧲): в шапке стоит только сам рисунок коробки.
-    btn.style.cssText = 'width:30px;height:28px;flex:0 0 auto;box-sizing:border-box;position:relative;overflow:visible;cursor:pointer;';
+    // Рамка коробки = 1:1 рамка подложек 🔑/🧲 (makeHdrIcon): белый квадрат 30×28, контур #5F6368
+    // 1.5px, радиус 6, без тени. overflow:visible — чтобы кот и хвост выпрыгивали за верх.
+    btn.style.cssText = 'position:relative;width:30px;height:28px;flex:0 0 auto;box-sizing:border-box;' +
+      'display:flex;align-items:center;justify-content:center;cursor:pointer;overflow:visible;' +
+      'background:#fff;border:1.5px solid #5F6368;border-radius:6px;transition:background .15s;';
     btn.innerHTML = BTN_SVG;
+    btn.onmouseenter = function () { btn.style.background = '#EEF0F3'; };
+    btn.onmouseleave = function () { btn.style.background = '#fff'; };
     btn.onclick = function (e) { e.stopPropagation(); togglePanel(); };
     if (document.getElementById(PANEL_ID)) btn.classList.add('hp-on');
     return btn;
