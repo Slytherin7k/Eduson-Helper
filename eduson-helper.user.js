@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.5.5
+// @version      1.6.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -119,7 +119,7 @@
 
   /* ================================================ */
 
-  const VER = '1.5.5';
+  const VER = '1.6.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3060,7 +3060,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.5.5'; // синхр. с Хэлпером
+  const VER = '1.6.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3658,7 +3658,6 @@
   function closePanel() {
     const p = document.getElementById(PANEL_ID);
     if (p) p.remove();
-    if (typeof setCatOpen === 'function') setCatOpen(false);
     document.removeEventListener('mousedown', outsideClose, true);
   }
   function outsideClose(e) {
@@ -3672,7 +3671,6 @@
   function togglePanel() {
     if (document.getElementById(PANEL_ID)) { closePanel(); return; }
     document.body.appendChild(buildPanel());
-    if (typeof setCatOpen === 'function') setCatOpen(true);
     setTimeout(function () { document.addEventListener('mousedown', outsideClose, true); }, 0);
   }
 
@@ -6066,67 +6064,28 @@
   }
 
   /* ==================== КНОПКА В ШАПКЕ ==================== */
-  // Кот в коробке: в покое видна коробка + завиток хвоста с бантом; при открытии Хэлпера
-  // из коробки выпрыгивает кот, хвост поднимается и виляет. Цвета — гамма панели.
-  const BTN_SVG = '<svg class="hp-catbox" viewBox="0 -128 200 278" xmlns="http://www.w3.org/2000/svg" style="position:absolute;left:50%;bottom:-1px;transform:translateX(-50%);width:46px;height:64px;overflow:visible">' +
-    '<defs><clipPath id="hpccl"><rect x="-260" y="-720" width="720" height="766"/></clipPath></defs>' +
-    '<g clip-path="url(#hpccl)">' +
-    '<g class="hp-tail"><g class="hp-wag">' +
-    '<path d="M150 94 C 150 52, 194 44, 200 12 C 204 -8, 196 -24, 178 -24 C 164 -24, 162 -10, 176 -12" fill="none" stroke="#5F6368" stroke-width="13" stroke-linecap="round"/>' +
-    '<g transform="rotate(12 200 8)"><path d="M200 8 L177 -8 Q 170 8 177 24 Z" fill="#0284C7"/><path d="M200 8 L223 -8 Q 230 8 223 24 Z" fill="#0284C7"/><ellipse cx="200" cy="8" rx="6" ry="9" fill="#0369A1"/></g>' +
-    '</g></g>' +
-    '<g class="hp-cat"><g transform="translate(0 66)">' +
-    '<ellipse cx="100" cy="-60" rx="42" ry="35" fill="#fff"/>' +
-    '<g transform="translate(-47,-135) scale(0.386)"><g transform="translate(0,720) scale(0.1,-0.1)" fill="#5F6368">' +
-    '<path d="M2654 6546 c-96 -23 -165 -83 -211 -181 l-28 -60 -2 -705 c-1 -455 -6 -735 -13 -790 -6 -47 -10 -123 -8 -169 l3 -83 126 -2 126 -1 0 100 c0 118 12 186 58 317 132 377 405 689 685 782 115 38 186 46 421 46 288 0 386 -17 542 -97 168 -85 370 -309 491 -546 93 -182 136 -343 136 -504 l0 -98 125 0 124 0 6 50 c3 28 1 95 -6 150 -8 64 -14 358 -18 820 -6 702 -7 721 -27 771 -45 109 -119 174 -230 201 -85 21 -174 8 -244 -35 -26 -16 -164 -127 -308 -247 l-260 -217 -336 0 -335 0 -263 219 c-311 259 -314 261 -381 279 -62 16 -105 16 -173 0z m327 -423 l211 -176 -35 -17 c-59 -29 -172 -109 -236 -166 -54 -50 -171 -182 -228 -259 l-22 -30 -1 393 c0 379 1 393 20 412 44 44 65 32 291 -157z m1949 157 c19 -19 20 -33 20 -401 0 -213 -4 -379 -9 -377 -5 2 -35 37 -68 78 -120 151 -301 308 -404 350 -16 7 -29 18 -27 25 2 7 93 88 203 179 169 141 204 166 232 166 20 0 41 -8 53 -20z"/>' +
-    '</g></g>' +
-    '<circle cx="84" cy="-61" r="7" fill="#0284C7"/><circle cx="116" cy="-61" r="7" fill="#0284C7"/>' +
-    '<path d="M94 -49 q6 -7 12 0 q4 9 -6 12 q-10 -3 -6 -12z" fill="#0284C7"/>' +
-    '</g></g>' +
-    '</g>' +
-    '<g class="hp-box">' +
-    '<rect x="34" y="26" width="132" height="120" rx="10" fill="#fff" stroke="#5F6368" stroke-width="6"/>' +
-    '<path d="M34 50 h132" stroke="#5F6368" stroke-width="5"/>' +
-    '<rect x="108" y="96" width="42" height="12" rx="6" fill="#0284C7"/><rect x="108" y="116" width="42" height="12" rx="6" fill="#0284C7"/>' +
-    '</g></svg>';
-
-  const CATBOX_CSS =
-    '#curator-tools-btn,#eduson-hdr-btns,#curator-hdr{overflow:visible !important}' +
-    '#curator-tools-btn .hp-cat{transform:translateY(150px);transition:transform .5s cubic-bezier(.34,1.62,.5,1)}' +
-    '#curator-tools-btn .hp-tail{transform:translateY(6px);transition:transform .5s cubic-bezier(.34,1.5,.5,1)}' +
-    '#curator-tools-btn .hp-wag{transform-box:fill-box;transform-origin:left bottom}' +
-    '#curator-tools-btn:hover:not(.hp-on) .hp-cat{transform:translateY(128px)}' +
-    '#curator-tools-btn:hover:not(.hp-on) .hp-tail{transform:translateY(-4px)}' +
-    '#curator-tools-btn.hp-on .hp-cat{transform:translateY(-16px)}' +
-    '#curator-tools-btn.hp-on .hp-tail{transform:translateY(-42px)}' +
-    '#curator-tools-btn.hp-on .hp-wag{animation:hp-wag-kf 1.1s ease-in-out infinite}' +
-    '@keyframes hp-wag-kf{0%,100%{transform:rotate(-7deg)}50%{transform:rotate(8deg)}}';
-
-  function catboxStyle() {
-    if (document.getElementById('eduson-catbox-css')) return;
-    try {
-      const st = document.createElement('style');
-      st.id = 'eduson-catbox-css';
-      st.textContent = CATBOX_CSS;
-      (document.head || document.documentElement).appendChild(st);
-    } catch (e) {}
-  }
-  // Синхронизировать «кот выпрыгнул / спрятался» с состоянием панели.
-  function setCatOpen(on) {
-    const b = document.getElementById('curator-tools-btn');
-    if (b) b.classList.toggle('hp-on', !!on);
-  }
+  // Значок — коробка-посылка. Тот же квадрат-подложка и тот же размер глифа, что у 🔑/🧲.
+  const BTN_SVG = '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" ' +
+    'style="display:block;fill:#6B7280;transition:fill .15s;">' +
+    '<rect x="3" y="3.5" width="18" height="17" rx="2.4"/>' +
+    '<path d="M12 4 V11 M4 11 H20" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/>' +
+    '<rect x="9.7" y="9.4" width="4.6" height="3.3" rx="0.8" fill="#0284C7"/>' +
+    '</svg>';
 
   function makeCuratorBtn() {
-    catboxStyle();
     const btn = document.createElement('div');
     btn.id = 'curator-tools-btn';
     btn.title = 'Пинги в Телеграм и справочник тегов';
-    // Без «карточки» — фона/рамки/тени нет (в отличие от 🔑/🧲): в шапке стоит только сам рисунок коробки.
-    btn.style.cssText = 'width:30px;height:28px;flex:0 0 auto;box-sizing:border-box;position:relative;overflow:visible;cursor:pointer;';
+    // Такая же кнопка, как у 🔑/🧲: белая подложка + контур #5F6368 2px + лёгкая тень.
+    btn.style.cssText = 'position:relative;width:30px;height:28px;flex:0 0 auto;box-sizing:border-box;' +
+      'display:flex;align-items:center;justify-content:center;cursor:pointer;' +
+      'background:#fff;border:2px solid #5F6368;border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,.16);transition:background .15s;';
     btn.innerHTML = BTN_SVG;
+    const svg = btn.firstChild;
+    if (svg && svg.style) { svg.style.width = '19px'; svg.style.height = '19px'; svg.style.display = 'block'; }
+    btn.onmouseenter = function () { btn.style.background = '#EEF0F3'; if (svg) svg.style.fill = '#374151'; };
+    btn.onmouseleave = function () { btn.style.background = '#fff'; if (svg) svg.style.fill = '#6B7280'; };
     btn.onclick = function (e) { e.stopPropagation(); togglePanel(); };
-    if (document.getElementById(PANEL_ID)) btn.classList.add('hp-on');
     return btn;
   }
 
