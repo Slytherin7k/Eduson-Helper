@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.5.2
+// @version      1.5.3
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -119,7 +119,7 @@
 
   /* ================================================ */
 
-  const VER = '1.5.2';
+  const VER = '1.5.3';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -2724,13 +2724,13 @@
   // Правый клик — открыть/закрыть панель (отчёт, «🔎 В амо», ручная вставка).
   const MAGNET_SVG =
     '<svg viewBox="-1.6 4.8 19.9 22.4" width="20" height="20" xmlns="http://www.w3.org/2000/svg" ' +
-    'style="display:block;fill:#6B7280;transition:fill .15s;">' +
+    'style="display:block;fill:none;stroke:#5F6368;stroke-width:1.4;stroke-linejoin:round;stroke-linecap:round;transition:stroke .15s;">' +
     '<path d="M3.68 10.6h-2.76c-0.48 0-0.84-0.36-0.84-0.84v-2.68c0-0.48 0.36-0.84 0.84-0.84h2.76c0.48 0 0.84 0.36 0.84 0.84v2.68c0 0.44-0.36 0.84-0.84 0.84zM1.76 8.92h1.12v-1h-1.12v1zM15.8 10.6h-2.76c-0.48 0-0.84-0.36-0.84-0.84v-2.68c0-0.48 0.36-0.84 0.84-0.84h2.76c0.48 0 0.84 0.36 0.84 0.84v2.68c0 0.44-0.36 0.84-0.84 0.84zM13.88 8.92h1.12v-1h-1.12v1zM8.36 25.76c-2.32 0-4.2-0.8-5.6-2.36-3.4-3.8-2.72-10.84-2.68-11.12 0.040-0.44 0.4-0.76 0.84-0.76h2.76c0.24 0 0.44 0.080 0.6 0.28 0.16 0.16 0.24 0.4 0.24 0.64-0.080 1.56 0.040 6.040 1.76 7.92 0.56 0.56 1.2 0.84 2 0.84h0.12c0.8 0 1.44-0.28 2-0.84 1.76-1.88 1.88-6.36 1.76-7.92 0-0.24 0.080-0.44 0.24-0.64s0.4-0.28 0.6-0.28h2.76c0.44 0 0.8 0.32 0.84 0.76 0.040 0.28 0.72 7.32-2.68 11.12-1.36 1.56-3.24 2.36-5.56 2.36zM1.72 13.2c-0.080 1.8 0 6.52 2.32 9.080 1.080 1.2 2.52 1.8 4.36 1.8s3.28-0.6 4.36-1.8c2.32-2.6 2.4-7.28 2.32-9.080h-1.12c0 1.84-0.2 6.080-2.24 8.28-0.88 0.92-1.96 1.4-3.2 1.4h-0.12c-1.28 0-2.36-0.48-3.2-1.4-2.16-2.2-2.36-6.44-2.36-8.28 0 0-1.12 0-1.12 0z"></path></svg>';
 
   // Иконка-ключ для кнопки логин-линка (svgrepo, перекрашиваем в серый).
   const KEY_SVG =
     '<svg viewBox="0 0 32 32" width="25" height="25" xmlns="http://www.w3.org/2000/svg" ' +
-    'style="display:block;fill:#6B7280;transition:fill .15s;">' +
+    'style="display:block;fill:none;stroke:#5F6368;stroke-width:1.8;stroke-linejoin:round;stroke-linecap:round;transition:stroke .15s;">' +
     '<path d="M20.491 0c-4.971 0-9 4.036-9 9.015 0 2.232 0.813 4.27 2.155 5.844-0.276-0.017-0.557 0.076-0.768 0.287l-10.075 10.137c-0.39 0.39-0.39 1.024 0 1.414 0.007 0.008 0.016 0.012 0.024 0.020 0.002 0.003 0.004 0.006 0.006 0.008l4.904 4.997c0.39 0.39 1.024 0.39 1.414 0s0.39-1.024 0-1.414l-4.234-4.314 2.578-2.594 4.242 4.322c0.39 0.39 1.024 0.39 1.414 0s0.39-1.024 0-1.414l-4.245-4.326 5.387-5.421c0.209-0.209 0.302-0.485 0.288-0.758 1.582 1.384 3.646 2.229 5.912 2.229 4.971 0 9-4.036 9-9.015s-4.029-9.015-9-9.015zM20.49 16c-3.852 0-7-3.133-7-7s3.148-7 7-7 7 3.133 7 7c0 3.867-3.148 7-7 7z"></path></svg>';
 
   // Компактное окошко-дропдаун из кнопки-ключа. Каждая строка — настоящая ссылка:
@@ -2932,16 +2932,16 @@
     const btn = document.createElement('div');
     btn.id = id;
     btn.title = titleText;
+    // Как у коробки: без карточки-подложки — только сам рисунок тонкой линией. Ховер — линия темнеет.
     btn.style.cssText = 'position:relative;width:30px;height:28px;flex:0 0 auto;box-sizing:border-box;' +
-      'display:flex;align-items:center;justify-content:center;cursor:pointer;' +
-      'background:#fff;border:1px solid #DADCE0;border-radius:5px;box-shadow:0 1px 2px rgba(0,0,0,.12);transition:background .15s;';
+      'display:flex;align-items:center;justify-content:center;cursor:pointer;';
     btn.innerHTML = svgHtml;
     const svg = btn.firstChild;
-    // 19px на обе: viewBox магнита обрезан по глифу (был с большими полями и казался мельче ключа)
-    if (svg && svg.style) { svg.style.width = '19px'; svg.style.height = '19px'; svg.style.display = 'block'; }
-    btn.onmouseenter = function () { btn.style.background = '#EEF0F3'; if (svg) svg.style.fill = '#374151'; };
-    btn.onmouseleave = function () { btn.style.background = '#fff'; if (svg) svg.style.fill = '#6B7280'; };
-    btn._flash = function () { if (svg) { svg.style.fill = '#0284C7'; setTimeout(function () { svg.style.fill = '#6B7280'; }, 700); } };
+    // 20px на обе: viewBox магнита обрезан по глифу (был с большими полями и казался мельче ключа)
+    if (svg && svg.style) { svg.style.width = '20px'; svg.style.height = '20px'; svg.style.display = 'block'; }
+    btn.onmouseenter = function () { if (svg) svg.style.stroke = '#202124'; };
+    btn.onmouseleave = function () { if (svg) svg.style.stroke = '#5F6368'; };
+    btn._flash = function () { if (svg) { svg.style.stroke = '#0284C7'; setTimeout(function () { svg.style.stroke = '#5F6368'; }, 700); } };
     btn._ring = makeRing(btn);
     return btn;
   }
@@ -3059,7 +3059,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.5.2'; // синхр. с Хэлпером
+  const VER = '1.5.3'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
