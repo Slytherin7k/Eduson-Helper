@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.5.4
+// @version      1.5.5
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -119,7 +119,7 @@
 
   /* ================================================ */
 
-  const VER = '1.5.4';
+  const VER = '1.5.5';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -2932,10 +2932,10 @@
     const btn = document.createElement('div');
     btn.id = id;
     btn.title = titleText;
-    // Белый квадрат как раньше, но обведён в стиль коробки-кота: контур #5F6368 ~2px, без тени.
+    // Белая подложка как раньше (фон + лёгкая тень), но контур квадрата — как у коробки-кота (#5F6368, 2px).
     btn.style.cssText = 'position:relative;width:30px;height:28px;flex:0 0 auto;box-sizing:border-box;' +
       'display:flex;align-items:center;justify-content:center;cursor:pointer;' +
-      'background:#fff;border:1.5px solid #5F6368;border-radius:6px;transition:background .15s;';
+      'background:#fff;border:2px solid #5F6368;border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,.16);transition:background .15s;';
     btn.innerHTML = svgHtml;
     const svg = btn.firstChild;
     // 19px на обе: viewBox магнита обрезан по глифу (был с большими полями и казался мельче ключа)
@@ -3060,7 +3060,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.5.4'; // синхр. с Хэлпером
+  const VER = '1.5.5'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
