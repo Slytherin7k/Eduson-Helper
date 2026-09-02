@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.5.1
+// @version      1.5.2
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -119,7 +119,7 @@
 
   /* ================================================ */
 
-  const VER = '1.5.1';
+  const VER = '1.5.2';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3059,7 +3059,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.5.1'; // синхр. с Хэлпером
+  const VER = '1.5.2'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -6084,8 +6084,8 @@
     '</g></g>' +
     '</g>' +
     '<g class="hp-box">' +
-    '<rect x="34" y="26" width="132" height="120" rx="10" fill="#fff" stroke="#5F6368" stroke-width="15"/>' +
-    '<path d="M34 52 h132" stroke="#5F6368" stroke-width="12"/>' +
+    '<rect x="34" y="26" width="132" height="120" rx="10" fill="#fff" stroke="#5F6368" stroke-width="6"/>' +
+    '<path d="M34 50 h132" stroke="#5F6368" stroke-width="5"/>' +
     '<rect x="108" y="96" width="42" height="12" rx="6" fill="#0284C7"/><rect x="108" y="116" width="42" height="12" rx="6" fill="#0284C7"/>' +
     '</g></svg>';
 
