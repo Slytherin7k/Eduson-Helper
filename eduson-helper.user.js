@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.13.1
+// @version      1.13.2
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -121,7 +121,7 @@
 
   /* ================================================ */
 
-  const VER = '1.13.1';
+  const VER = '1.13.2';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3290,7 +3290,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.13.1'; // синхр. с Хэлпером
+  const VER = '1.13.2'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3637,7 +3637,8 @@
   //  1) заметка «Коллега <Имя> продал курс…» — фактическая запись о продаже (как у Возврат-мастера);
   //  2) поле сделки «УР МОП» / «Первый Менеджер» / «Менеджер КЦ».
   // Никаких догадок (по «Лид получил» / ответственному — там часто не тот). Возвращает { name, sure, err }.
-  async function fetchMopName(dealNum) {
+  async function fetchMopName(dealNum, _depth) {
+    _depth = _depth || 0;
     if (!dealNum) return { name: '', sure: false, err: 'no-deal' };
     const base = 'https://eduson.amocrm.ru';
 
@@ -3664,6 +3665,17 @@
     };
     const mop = fieldVal(/^ур\s*моп$/i) || fieldVal(/первый\s*менеджер/i) || fieldVal(/менеджер\s*кц/i);
     if (mop) return { name: mop, sure: true, err: '' };
+
+    // 3) «Автосделка / Апгрейд» без данных о продаже — данные о МОПе в исходной сделке
+    if (_depth < 2) {
+      const oldF = cf.find(function (x) { return /id\s*стар/i.test(x.field_name || ''); });
+      const oldRaw = oldF && oldF.values && oldF.values[0] && String(oldF.values[0].value || '');
+      const oldId = oldRaw && oldRaw.match(/\d{6,}/);
+      if (oldId && oldId[0] !== String(dealNum)) {
+        const r = await fetchMopName(oldId[0], _depth + 1);
+        if (r.name) return r;
+      }
+    }
 
     return { name: '', sure: false, err: '' };
   }
