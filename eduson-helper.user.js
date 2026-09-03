@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.10.4
+// @version      1.13.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -121,7 +121,7 @@
 
   /* ================================================ */
 
-  const VER = '1.7.17';
+  const VER = '1.13.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -308,6 +308,71 @@
     return adminNameLooksReal(h1) ? h1 : '';
   }
 
+  // Почта студента из его карточки в админке (/admin/users/<id>): проще всего — параметр
+  // user_email= в «Login link», иначе поле формы / mailto. Сотрудников @eduson.tv отсекаем.
+  function parseAdminUserEmail(html) {
+    const s = String(html || '');
+    const m = s.match(/user_email=([^&"'\s<>]+%40[^&"'\s<>]+|[^&"'\s<>]+@[^&"'\s<>]+)/i);
+    if (m) {
+      let e = m[1];
+      try { e = decodeURIComponent(e); } catch (err) {}
+      e = e.trim().toLowerCase();
+      if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e) && !/@eduson\.tv$/i.test(e)) return e;
+    }
+    try {
+      const doc = new DOMParser().parseFromString(s, 'text/html');
+      const inp = doc.querySelector('input[name="user[email]"], input#user_email');
+      if (inp && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((inp.value || '').trim())) {
+        const e = inp.value.trim().toLowerCase();
+        if (!/@eduson\.tv$/i.test(e)) return e;
+      }
+      const ml = doc.querySelector('a[href^="mailto:"]');
+      if (ml) {
+        const e = (ml.getAttribute('href') || '').slice(7).split('?')[0].trim().toLowerCase();
+        if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e) && !/@eduson\.tv$/i.test(e)) return e;
+      }
+    } catch (e) {}
+    return '';
+  }
+
+  // super_user HTML → все суб-аккаунты [{uid,email,phone,company}]. Копия для этого замыкания
+  // (в модуле «Пинги» есть своя subUsersFromSuper — сюда она не видна).
+  function superSubUsers(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    let tbl = null;
+    doc.querySelectorAll('table').forEach(function (t) {
+      const head = ((t.querySelector('tr') || {}).textContent || '').toLowerCase();
+      if (head.indexOf('email') !== -1 && head.indexOf('first name') !== -1) tbl = t;
+    });
+    if (!tbl) return [];
+    const trs = [].slice.call(tbl.querySelectorAll('tr'));
+    const heads = [].slice.call((trs[0] || tbl).querySelectorAll('th,td')).map(function (x) { return x.textContent.trim().toLowerCase(); });
+    const iE = heads.indexOf('email'), iP = heads.indexOf('phone'), iC = heads.indexOf('company');
+    return trs.slice(1).map(function (tr) {
+      const a = tr.querySelector('a[href*="/admin/users/"]');
+      const m = a && a.getAttribute('href').match(/\/admin\/users\/(\d+)/);
+      if (!m) return null;
+      const c = [].slice.call(tr.querySelectorAll('td')).map(function (td) { return td.textContent.replace(/\s+/g, ' ').trim(); });
+      return { uid: m[1], email: (c[iE] || '').toLowerCase(), phone: c[iP] || '', company: iC >= 0 ? (c[iC] || '') : '' };
+    }).filter(Boolean);
+  }
+
+  // ФИО клиента из правой панели OmniDesk (в этом замыкании нет sidebarValue из модуля «Пинги»).
+  function omniCardStudentName() {
+    const labs = document.querySelectorAll('.right_info_panels *, #info_panel_wrap *, .info_panel_nano *');
+    for (const el of labs) {
+      const t = (el.textContent || '').replace(/ /g, ' ').trim();
+      if (t.length > 40 || !/^(полное имя|фио|имя)$/i.test(t)) continue;
+      let v = el.nextElementSibling && el.nextElementSibling.textContent;
+      if (!v && el.parentElement) v = el.parentElement.textContent.replace(t, '');
+      v = (v || '').replace(/\s+/g, ' ').trim();
+      if (v && v !== '—' && v !== '-') return v;
+    }
+    const el = document.querySelector(OMNI_FIELDS.name);
+    if (el && (el.value || '').trim()) return el.value.trim();
+    return '';
+  }
+
   // Набор слов ФИО (строчные, ё→е, латиница/кириллица, ≥2 букв). Для сравнения «тот же человек».
   function nameWordSet(s) {
     return new Set(String(s || '').toLowerCase().replace(/ё/g, 'е')
@@ -326,6 +391,23 @@
   function rowHasEmail(text, emails) {
     const t = String(text || '').toLowerCase();
     return (emails || []).some(function (e) { return e && t.indexOf(String(e).toLowerCase()) !== -1; });
+  }
+  // Сколько наших amo/roistat id встретилось в «Tracking info» строки/карточки админки.
+  // Это надёжнее сверки по ФИО/почте: у студента на платформе почта бывает другая (yandex vs gmail),
+  // а ФИО в amo часто пустое — но amo_contact_id / amo_lead_id / roistat_id совпадают точно.
+  function trackingIdHits(text, data) {
+    const s = String(text || '');
+    const hit = function (v) {
+      v = String(v == null ? '' : v).replace(/\D/g, '');
+      if (v.length < 4) return false;
+      return new RegExp('(^|[^0-9])' + v + '([^0-9]|$)').test(s);
+    };
+    let n = 0;
+    if (hit(data.amoContactId)) n++;
+    if (hit(data.roistat)) n++;
+    if (hit(data.amoLeadId)) n++;
+    if (data.cardAmoId && String(data.cardAmoId) !== String(data.amoLeadId) && hit(data.cardAmoId)) n++;
+    return n;
   }
   // Страница Super User: таблица Sub Users (колонки First Name / Last Name).
   // Строку выбираем по совпадению почты/телефона клиента, иначе первую с полным именем. → «Фамилия Имя».
@@ -646,14 +728,19 @@
   // без совпадения по ФИО/почте — ничего не вставляем (лучше пусто, чем 20 чужих карточек).
   async function lookupAdminLinks(data) {
     const wantName = data.name || '';
-    const wantEmails = (data.emails || []).map(function (e) { return String(e).toLowerCase().trim(); })
-      .filter(function (e) { return e && !/@eduson\.tv$/i.test(e); });
+    // Почты и из амо, и с карточки OmniDesk (если в амо пусто — ищем по омни-почте).
+    const wantEmails = [];
+    (data.emails || []).concat(data.cardEmails || []).forEach(function (e) {
+      const c = String(e).toLowerCase().trim();
+      if (c && !/@eduson\.tv$/i.test(c) && wantEmails.indexOf(c) === -1) wantEmails.push(c);
+    });
     const canVerify = !!(wantName || wantEmails.length);
 
     // специфичные ключи (укажут на конкретного человека) — вперёд; общий lead — в конец
     const specific = [];
     if (data.amoContactId) specific.push(String(data.amoContactId));
-    wantEmails.slice(0, 2).forEach(function (e) { specific.push(e); });
+    if (data.roistat) specific.push(String(data.roistat)); // ройстат — когда почты нет ни в амо, ни в омни
+    wantEmails.slice(0, 3).forEach(function (e) { specific.push(e); });
     const shared = [];
     if (data.cardAmoId && String(data.cardAmoId) !== String(data.amoLeadId)) shared.push(String(data.cardAmoId));
     if (data.amoLeadId) shared.push(String(data.amoLeadId));
@@ -696,7 +783,15 @@
 
     // 2. Открываем карточки ПАРАЛЛЕЛЬНО (было — по очереди до 10 больших страниц),
     //    затем сверяем ФИО/почту по самой карточке в исходном порядке.
-    const superIds = [], cardUrls = [], nameByKey = {};
+    const superIds = [], cardUrls = [], nameByKey = {}, foundEmails = [], foundPhones = [];
+    const addEmail = function (e) {
+      e = String(e || '').toLowerCase().trim();
+      if (e && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e) && !/@eduson\.tv$/i.test(e) && !/\+\w*\d{3,}@/.test(e) && foundEmails.indexOf(e) === -1) foundEmails.push(e);
+    };
+    const addPhone = function (p) {
+      const d = String(p || '').replace(/\D/g, '');
+      if (d.length >= 10 && !foundPhones.some(function (x) { return String(x).replace(/\D/g, '').slice(-10) === d.slice(-10); })) foundPhones.push(p);
+    };
     const rows2 = userRows.slice(0, 10);
     const cards = await Promise.all(rows2.map(function (r) {
       return gmFetchText(userCardUrl(r.uid)).then(function (h) { return { h: h }; }, function (e) { return { err: e }; });
@@ -706,12 +801,17 @@
       if (res.err) { if (res.err.message === 'NOAUTH') authError = true; else lastErr = res.err.message; return; }
       const card = res.h;
       if (adminLooksLikeLogin(card)) { authError = true; return; }
-      if (canVerify) {
+      // Совпали 2+ наших amo/roistat id в трекинге (или ровно 1 при единственной строке) —
+      // это точно наш студент, даже если ФИО в amo пусто, а почта на платформе другая.
+      const strongId = trackingIdHits(String(r.text || '') + ' ' + card, data);
+      const trackOk = (strongId >= 2 && rows2.length <= 4) || (strongId >= 1 && rows2.length === 1);
+      if (canVerify && !trackOk) {
         const cardName = parseAdminUserName(card);
         const emailOk = wantEmails.some(function (e) { return card.toLowerCase().indexOf(e) !== -1; });
         const nameOk = sameName(cardName || r.text, wantName);
         if (!emailOk && !nameOk) return; // не наш человек — мимо
       }
+      addEmail(parseAdminUserEmail(card));
       const suId = parseSuperUserIdFromUserCard(card);
       const nm = parseAdminUserName(card) ||
         (String(r.text || '').replace(/^\s*\d+\s*/, '').match(/^[А-ЯЁA-Z][А-ЯЁа-яёA-Za-z-]+(?:\s+[А-ЯЁA-Z][А-ЯЁа-яёA-Za-z-]+){0,2}/) || ['аккаунт'])[0];
@@ -728,20 +828,38 @@
       const pages = await Promise.all(ids.map(function (id) {
         return gmFetchText(superUserUrl(id)).then(function (p) { return p; }, function () { return ''; });
       }));
+      const wantP10 = (data.phones || []).map(function (p) { return String(p).replace(/\D/g, '').slice(-10); }).filter(function (p) { return p.length === 10; });
       const links = ids.map(function (id, i) {
         const page = pages[i];
-        const courses = (page && !adminLooksLikeLogin(page)) ? parseSuperUserCourses(page) : [];
+        const ok = page && !adminLooksLikeLogin(page);
+        const courses = ok ? parseSuperUserCourses(page) : [];
+        // Почту/телефон студента на карточке /admin/users не видно — берём из таблицы Sub Users суперюзера.
+        if (ok) {
+          const subs = superSubUsers(page);
+          let pick = null;
+          if (data.course) {
+            let bestS = 0;
+            subs.forEach(function (s) { const sc = courseOverlap(s.company, data.course); if (sc >= 2 && sc > bestS) { bestS = sc; pick = s; } });
+          }
+          if (!pick) pick = subs.find(function (s) { return userRows.some(function (u) { return u.uid === s.uid; }); });
+          if (!pick && wantP10.length) {
+            const byPh = subs.filter(function (s) { return wantP10.indexOf(String(s.phone).replace(/\D/g, '').slice(-10)) !== -1; });
+            if (byPh.length === 1) pick = byPh[0];
+          }
+          if (!pick && subs.length === 1) pick = subs[0];
+          if (pick) { addEmail(pick.email); addPhone(pick.phone); }
+        }
         return { url: superUserUrl(id), courses: courses, name: nameByKey['s' + id] || '' };
       });
-      return { links: links, isSuper: true, error: null, ambiguous: links.length > 1 };
+      return { links: links, isSuper: true, error: null, ambiguous: links.length > 1, emails: foundEmails, phones: foundPhones };
     }
     if (cardUrls.length) {
       return {
         links: cardUrls.map(function (u) { return { url: u, courses: [], name: nameByKey[u] || '' }; }),
-        isSuper: false, error: null, ambiguous: cardUrls.length > 1,
+        isSuper: false, error: null, ambiguous: cardUrls.length > 1, emails: foundEmails, phones: foundPhones,
       };
     }
-    return { links: [], isSuper: false, error: authError ? 'NOAUTH' : (lastErr || null) };
+    return { links: [], isSuper: false, error: authError ? 'NOAUTH' : (lastErr || null), emails: foundEmails, phones: foundPhones };
   }
 
   function fillAdminField(links) {
@@ -773,7 +891,8 @@
 
   async function runAdminFill(data, ok, miss) {
     if (!ADMIN_LOOKUP) return;
-    if (!data.amoLeadId && !data.amoContactId && !data.cardAmoId && !(data.emails || []).length) {
+    if (!data.amoLeadId && !data.amoContactId && !data.cardAmoId && !data.roistat
+        && !(data.emails || []).length && !(data.cardEmails || []).length) {
       miss.push(RU.admin + ' — нет amo-номера/почты, чтобы искать в админке');
       return;
     }
@@ -782,12 +901,27 @@
     catch (e) { miss.push(RU.admin + ' — ошибка: ' + e.message); return; }
 
     let links = r.links || [];
-    // Несколько совпадений (у студента 2+ аккаунта / у разных людей одинаковое ФИО) —
-    // спрашиваем куратора, какие ссылки вписать (а не суём все).
+    // Несколько совпадений (у студента 2+ аккаунта — напр. основной курс + подарочный;
+    // либо у разных людей одинаковое ФИО). Если по названию курса обращения однозначно
+    // подходит один аккаунт — берём его сам; иначе спрашиваем куратора.
     if (links.length > 1) {
-      const chosen = await chooseAdminLinks(links, data.name || '');
-      links = chosen || [];
-      if (!links.length) { ok.push(RU.admin + ' — куратор выбрал не вписывать'); return; }
+      const tgtCourse = data.course || readCourseTarget() || '';
+      let autoPick = null;
+      if (tgtCourse) {
+        const scored = links.map(function (l) {
+          const s = (l.courses || []).reduce(function (m, c) { return Math.max(m, courseOverlap(c, tgtCourse)); }, 0);
+          return { l: l, s: s };
+        }).sort(function (a, b) { return b.s - a.s; });
+        if (scored[0].s >= 2 && scored[0].s > (scored[1] ? scored[1].s : 0)) autoPick = scored[0].l;
+      }
+      if (autoPick) {
+        links = [autoPick];
+        ok.push(RU.admin + ' — выбрала аккаунт по курсу обращения (у студента их ' + (r.links.length) + ')');
+      } else {
+        const chosen = await chooseAdminLinks(r.links, data.name || '');
+        links = chosen || [];
+        if (!links.length) { ok.push(RU.admin + ' — куратор выбрал не вписывать'); return; }
+      }
     }
 
     if (links.length) {
@@ -811,7 +945,7 @@
     } else if (r.error) {
       miss.push(RU.admin + ' — ' + r.error);
     } else {
-      miss.push(RU.admin + ' — по ФИО/почте студент в админке не нашёлся (впиши ссылку руками)');
+      miss.push(RU.admin + ' — студент в админке не нашёлся ни по почте, ни по amo-контакту/сделке, ни по ройстату (впиши ссылку руками)');
     }
   }
 
@@ -931,6 +1065,10 @@
         else if (/покуп|оплат|платеж|платёж|поступлен/.test(n) && /дат|срок/.test(n)) {
           if (!data.purchase) data.purchase = values[0];
         }
+      }
+      if (/roistat/.test(n)) {
+        const rv = String(values[0] || '').replace(/\D/g, '');
+        if (!data.roistat && rv.length >= 4) data.roistat = rv;
       }
       const cs = courseFieldScore(n);
       if (cs > bestCourseScore) { bestCourse = values[0]; bestCourseScore = cs; }
@@ -1068,6 +1206,28 @@
     });
   }
 
+  // Совпадает ли почта/телефон с карточки OmniDesk с полями amo-контакта.
+  function seedHitsContact(seed, contact) {
+    const emails = new Set((seed.emails || []).map(function (e) { return String(e).toLowerCase().trim(); }));
+    const phones = new Set((seed.phones || []).map(function (p) { return String(p).replace(/\D/g, '').slice(-10); }).filter(function (p) { return p.length === 10; }));
+    return (((contact || {}).custom_fields_values) || []).some(function (f) {
+      const code = (f.field_code || '').toUpperCase();
+      return (f.values || []).some(function (v) {
+        const val = String(v.value || '');
+        if (code === 'EMAIL' && emails.has(val.toLowerCase().trim())) return true;
+        if (code === 'PHONE' && phones.has(val.replace(/\D/g, '').slice(-10))) return true;
+        return false;
+      });
+    });
+  }
+  // amo-контакт (из карточки студента в админке) — это и есть студент, а не покупатель «для другого»?
+  // Да, если ФИО совпало с карточкой OmniDesk, или совпала почта/телефон, или сравнивать не с чем.
+  function amoContactIsStudent(contact, studentName, seed) {
+    if (!contact || !contact.name) return false;
+    if (!studentName) return true;
+    return sameName(contact.name, studentName) || seedHitsContact(seed, contact);
+  }
+
   async function courseFromNotes(leadId, api) {
     try {
       const res = await api('/api/v4/leads/' + leadId + '/notes?limit=250');
@@ -1099,7 +1259,7 @@
   }
   function newClientData(source) {
     return { name: '', emails: [], phones: [], course: '', support: '', purchase: '',
-             purchaseTs: 0, amoLeadId: 0, amoContactId: 0, cardAmoId: '',
+             purchaseTs: 0, amoLeadId: 0, amoContactId: 0, cardAmoId: '', roistat: '', cardEmails: [],
              admin: [], isSuper: false, supportMonths: 0, noPurchase: false,
              source: source, ts: Date.now() };
   }
@@ -1706,8 +1866,19 @@
     if (!err && noDealYet && (seed.emails.length || seed.phones.length)) {
       try {
         const adm = await findDealViaAdmin(seed, api);
-        let viaAdmin = false;
+        let viaAdmin = false, viaAdminOther = false;
+        const studentName = (data && data.name) || omniCardStudentName() || '';
         if (adm && adm.lead) {
+          // amo-контакт сделки = amo_contact_id из tracking_info карточки студента в админке.
+          const leadCs = ((adm.lead._embedded || {}).contacts) || [];
+          const mainRef = leadCs.find(function (c) { return c.is_main; }) || leadCs[0];
+          let leadContact = null;
+          if (mainRef && mainRef.id) {
+            try { leadContact = await api('/api/v4/contacts/' + mainRef.id); }
+            catch (e) { if (e && e.message === 'NOAUTH') throw e; }
+          }
+          const isStudent = amoContactIsStudent(leadContact, studentName, seed);
+
           if (!data) data = newClientData(base + '/leads/detail/' + adm.lead.id);
           data.noPurchase = false;
           data.course = ''; data.support = ''; data.purchaseTs = 0; data.supportMonths = 0;
@@ -1716,6 +1887,16 @@
           data.chosenDeal = { id: adm.lead.id, course: dealCoursePreview(adm.lead),
                               closed: adm.lead.closed_at ? fmtTs(adm.lead.closed_at) : '' };
           viaAdmin = true;
+
+          if (isStudent) {
+            // amo-контакт из карточки студента в админке — это он и есть: берём ФИО/почту/телефон из amo.
+            if (!data.name && leadContact.name) data.name = String(leadContact.name).trim();
+            readAmoFields(leadContact.custom_fields_values, data);
+            data.amoContactId = leadContact.id;
+            note = (note ? note + '; ' : '') + 'нашла по amo-id из карточки студента в админке';
+          } else {
+            viaAdminOther = true;
+          }
         } else if (adm && adm.contact) {
           const d2 = newClientData(base + '/contacts/detail/' + adm.contact.id);
           try {
@@ -1724,22 +1905,25 @@
               if (data && data.name) d2.name = data.name;
               data = d2;
               viaAdmin = true;
+              if (!amoContactIsStudent(adm.contact, studentName, seed)) viaAdminOther = true;
             }
           } catch (e) { if (e && e.message === 'WARM_STOP') return; /* NOAUTH или иное — оставляем что было */ }
         }
         if (viaAdmin) {
-          note = (note ? note + '; ' : '') + 'сделку нашла через админку Эдюсон (возможно, курс купили другому человеку)';
           data.viaAdmin = true;
-          // контакт в сделке — покупателя; амо-contact-id покупателя для поиска карточки
-          // обучающегося не годится (ищем строго по его почте/телефону).
-          data.amoContactId = 0;
-          // почты/телефоны обучающегося — с карточки OmniDesk, не покупателя из сделки
-          (seed.emails || []).forEach(function (e) {
-            if (!/@eduson\.tv$/i.test(e) && data.emails.indexOf(e) === -1) data.emails.unshift(e);
-          });
-          (seed.phones || []).forEach(function (p) {
-            if (data.phones.indexOf(p) === -1) data.phones.unshift(p);
-          });
+          if (viaAdminOther) {
+            note = (note ? note + '; ' : '') + 'сделку нашла через админку Эдюсон (возможно, курс купили другому человеку)';
+            // контакт в сделке — покупателя; амо-contact-id покупателя для поиска карточки
+            // обучающегося не годится (ищем строго по его почте/телефону).
+            data.amoContactId = 0;
+            // почты/телефоны обучающегося — с карточки OmniDesk, не покупателя из сделки
+            (seed.emails || []).forEach(function (e) {
+              if (!/@eduson\.tv$/i.test(e) && data.emails.indexOf(e) === -1) data.emails.unshift(e);
+            });
+            (seed.phones || []).forEach(function (p) {
+              if (data.phones.indexOf(p) === -1) data.phones.unshift(p);
+            });
+          }
         }
       } catch (e) { /* админка недоступна — оставляем как есть */ }
     }
@@ -1751,6 +1935,10 @@
       return;
     }
     data.cardAmoId = amoId || '';
+    // Почта(ы), уже вписанные в карточку OmniDesk. Нужны для поиска студента в админке,
+    // когда в амо почты нет (Наталья, 03.09): «если почта указана в омни, но не в амо —
+    // ищем в админке по почте из омни».
+    data.cardEmails = (seed.emails || []).filter(function (e) { return e && !/@eduson\.tv$/i.test(e); });
     if (data.name) {
       var nameFio = fioOrder(data.name);
       if (nameFio && nameFio !== data.name) {
@@ -1772,6 +1960,22 @@
         }
       }
     } catch (e) { /* админка не критична для имени */ }
+    // Почты/телефона нет в амо → берём их из карточки студента в админке (из таблицы суперюзера)
+    // тем же поиском, что для поля АДМИНКА. Результат кэшируется — runAdminFill его переиспользует.
+    // ВАЖНО: делаем и в warm-режиме — иначе при клике магнит берёт warm-кэш без этой почты.
+    if (ADMIN_LOOKUP && (!(data.emails || []).length || !(data.phones || []).length)) {
+      try {
+        const al = await getAdminLinks(data);
+        let gotE = false, gotP = false;
+        (al && al.emails || []).forEach(function (e) {
+          if (e && !/@eduson\.tv$/i.test(e) && data.emails.indexOf(e) === -1) { data.emails.push(e); gotE = true; }
+        });
+        if (!(data.phones || []).length) (al && al.phones || []).forEach(function (p) {
+          if (p && data.phones.indexOf(p) === -1) { data.phones.push(p); gotP = true; }
+        });
+        if (gotE || gotP) note = (note ? note + '; ' : '') + ((gotE && gotP) ? 'почту и телефон' : gotE ? 'почту' : 'телефон') + ' взяла из карточки студента в админке';
+      } catch (e) { /* админка недоступна — допишет куратор */ }
+    }
     GM_setValue(STORE_KEY, data);
     if (warm) {
       // Фоновый сбор при открытии чата: только запоминаем, карточку НЕ трогаем.
@@ -2212,7 +2416,14 @@
     }
     // EMAIL и другие поля-«теги» — через API Select2 (иначе не сохраняется)
     if (s2) {
-      const r = await fillSelect2Field(block, values, isPhone);
+      // Виджет Select2 иногда «дозревает» (появляется .select2-container, а объект $o.data('select2')
+      // ещё нет) — если onSelect не готов, ждём и пробуем ещё раз, до ~4 сек.
+      try { s2.scrollIntoView({ block: 'center' }); } catch (e) {}
+      let r = await fillSelect2Field(block, values, isPhone);
+      for (let attempt = 0; attempt < 8 && r && r.err === 'S2_NO_ONSELECT'; attempt++) {
+        await sleep(500);
+        r = await fillSelect2Field(block, values, isPhone);
+      }
       if (r.okCount) ok.push(ruName + ' (+' + r.okCount + ' новых)');
       if (r.skipCount) ok.push(ruName + ' (' + r.skipCount + ' уже были, пропущены)');
       if (r.err) {
@@ -2367,6 +2578,10 @@
       await sleep(400);
       if (clickOmniSave()) ok.push('💾 Сохранено');
       else miss.push('💾 кнопка «Сохранить» не нашлась — сохрани вручную');
+    }
+    // Если почта не вписалась сама (виджет OmniDesk) — кладём её в буфер, чтобы куратор просто вставил.
+    if (soft.some(function (s) { return /email/i.test(s); }) && data.emails && data.emails.length) {
+      try { GM_setClipboard(data.emails.join(', ')); soft.push('почта скопирована в буфер — вставь в поле EMAIL (Ctrl+V)'); } catch (e) {}
     }
     // Сохраняем результат
     lastFillResult = { ok, miss, soft, data };
@@ -2792,14 +3007,27 @@
     const x = document.createElement('span');
     x.textContent = '✕';
     x.style.cssText = 'position:absolute;top:5px;right:8px;cursor:pointer;color:#9CA3AF;font-size:12px;line-height:1;';
-    x.onclick = function () { box.remove(); };
     box.appendChild(x);
     document.documentElement.appendChild(box);
 
-    // Окно НЕ закрывается по клику мимо (Наталья: пропадало сразу, приходилось жать ключ заново).
-    // Закрыть — крестиком или повторным кликом по ключу. Логин-линки этой карточки кэшируются
-    // в памяти (не на диск): повторный клик по ключу открывает их мгновенно.
-    setTimeout(function () { if (box.isConnected) box.remove(); }, 600000); // страховка: 10 минут
+    // Окно сворачивается по клику вне его (Наталья, 03.09). Клик по самой кнопке-ключу
+    // не считаем «мимо» — её обработчик сам закроет окно (иначе оно бы тут же открылось заново).
+    // Логин-линки этой карточки кэшируются в памяти: повторный клик по ключу открывает их сразу.
+    const killBox = function () {
+      document.removeEventListener('mousedown', onLLOutside, true);
+      clearTimeout(llGuard);
+      if (box.isConnected) box.remove();
+    };
+    const onLLOutside = function (e) {
+      if (!box.isConnected) { document.removeEventListener('mousedown', onLLOutside, true); return; }
+      if (box.contains(e.target)) return;
+      const kb = document.getElementById('eduson-loginlink-btn');
+      if (kb && kb.contains(e.target)) return;
+      killBox();
+    };
+    x.onclick = killBox;
+    const llGuard = setTimeout(killBox, 600000); // страховка: 10 минут
+    setTimeout(function () { document.addEventListener('mousedown', onLLOutside, true); }, 0);
   }
 
   function readCourseTarget() {
@@ -3062,7 +3290,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.7.17'; // синхр. с Хэлпером
+  const VER = '1.13.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4611,31 +4839,39 @@
     return out.slice(0, 4);
   }
 
-  // Разбор запроса: номер курса из ссылки/цифр, slug области, обычные слова.
+  // Разбор запроса: номер курса из ссылки/цифр, slug области, номер лекции, обычные слова.
   function faqTarget(raw) {
     const isUrl = /https?:\/\/|eduson\.tv/i.test(raw);
     let courseId = null;
     const mc = raw.match(/courses?\/(\d{3,7})/i);
     if (mc) courseId = mc[1];
     if (!courseId) { const bare = raw.trim().match(/^\s*(\d{3,7})\s*$/); if (bare) courseId = bare[1]; }
-    if (!courseId && !isUrl) return null;
+    const msl = raw.match(/academy-([a-z0-9-]+)\.eduson\.tv/i);
+    const slug = msl ? msl[1].toLowerCase() : '';
+    const mlec = raw.match(/lectures?\/(\d{1,6})/i);
+    const lecture = mlec ? mlec[1] : '';
+    if (!courseId && !slug && !isUrl) return null;
     let rest = raw
       .replace(/https?:\/\/\S+/ig, ' ').replace(/\S*eduson\.tv\S*/ig, ' ')
       .replace(/\d{3,}/g, ' ')
       .toLowerCase().split(/\s+/).map(function (w) { return w.replace(/[^a-zа-яё0-9]+/gi, ''); })
       .filter(function (w) { return w.length >= 2 && !FAQ_STOP.has(faqFold(w)); });
-    if (!rest.length && !courseId) {
-      const slug = raw.match(/academy-([a-z0-9-]+)\.eduson\.tv/i);
-      if (slug) rest = slug[1].split('-').filter(function (s) { return s.length > 2; });
+    if (!rest.length && !courseId && slug) {
+      rest = slug.split('-').filter(function (s) { return s.length > 2; });
     }
-    return { courseId: courseId, words: rest.slice(0, 3) };
+    return { courseId: courseId, slug: slug, lecture: lecture, words: rest.slice(0, 3) };
   }
 
-  // Поиск по номеру курса: карточки с точной ссылкой /courses/<id> — вперёд.
+  // Поиск по ссылке на урок / номеру курса. Карточка засчитывается ТОЛЬКО если совпадение
+  // идёт по графе «Номер урока / ссылка» (поле lesson): номер курса, тот же учебный портал
+  // academy-<slug> или голый номер курса в этом поле. Упоминание номера в тексте вопроса или
+  // ответа «карточкой по этому уроку» не считается — так в выдачу не лезут посторонние карточки.
   async function faqSearchByCourse(tgt) {
     const queries = [];
-    if (tgt.courseId) queries.push(tgt.courseId);
-    tgt.words.forEach(function (w) { faqVariants(w).forEach(function (v) { if (queries.indexOf(v) === -1) queries.push(v); }); });
+    const pushQ = function (x) { x = String(x || '').trim(); if (x && queries.indexOf(x) === -1) queries.push(x); };
+    if (tgt.courseId) pushQ(tgt.courseId);
+    if (tgt.slug) { pushQ(tgt.slug); pushQ(tgt.slug.replace(/-/g, ' ')); }
+    tgt.words.forEach(function (w) { faqVariants(w).forEach(pushQ); });
     if (!queries.length) return [];
     const results = await Promise.all(queries.slice(0, 6).map(notionQuerySingle));
     const blocks = {};
@@ -4644,28 +4880,41 @@
     results.forEach(function (r) { r.ids.forEach(function (id) { if (!seen[id]) { seen[id] = 1; order.push(id); } }); });
     const wordStems = tgt.words.map(function (w) { return faqVariants(w).map(faqStem).filter(Boolean); });
     const cidRe = tgt.courseId ? new RegExp('/courses?/' + tgt.courseId + '(?![0-9])') : null;
+    const bareCidRe = tgt.courseId ? new RegExp('(^|[^0-9])' + tgt.courseId + '([^0-9]|$)') : null;
+    const slugRe = tgt.slug ? new RegExp('academy-' + tgt.slug.replace(/[-.]/g, '\\$&') + '\\.eduson\\.tv', 'i') : null;
+    const lecRe = tgt.lecture ? new RegExp('lectures?/' + tgt.lecture + '(?![0-9])') : null;
+    const strict = !!(cidRe || slugRe); // задан курс/урок — чужие карточки не подмешиваем
+
     const scored = order.map(function (id) {
       const row = faqRow(id, blocks);
-      const L = faqFold(row.lesson), Q = faqFold(row.question), A = faqFold(row.answer);
-      let score = 0, exact = false, near = false;
+      const lesson = row.lesson || '';
+      const L = faqFold(lesson), Q = faqFold(row.question), A = faqFold(row.answer);
+      let lessonMatch = false, score = 0;
       if (cidRe) {
-        const firstCourse = (row.lesson.match(/courses?\/(\d{3,7})/i) || [])[1];
-        if (firstCourse === tgt.courseId) { exact = true; score += 100; }        // основной курс карточки
-        else if (cidRe.test(row.lesson)) { exact = true; score += 40; }          // курс упомянут, но не основной
-        else if (L.indexOf(tgt.courseId) !== -1) { near = true; score += 15; }
-        else if ((Q + ' ' + A).indexOf(tgt.courseId) !== -1) { near = true; score += 3; }
+        if (cidRe.test(lesson)) {
+          lessonMatch = true;
+          const firstCourse = (lesson.match(/courses?\/(\d{3,7})/i) || [])[1];
+          score += (firstCourse === tgt.courseId) ? 100 : 45;   // основной курс карточки / просто упомянут
+        } else if (bareCidRe.test(L)) {
+          lessonMatch = true; score += 30;                       // номер курса в поле «Урок» без /courses/
+        }
+      } else if (slugRe && slugRe.test(lesson)) {
+        lessonMatch = true; score += 60;                         // тот же учебный портал (номер курса не задан)
       }
+      if (lecRe && lecRe.test(lesson)) score += 20;              // совпал и номер лекции
       wordStems.forEach(function (stems) {
         if (stems.some(function (s) { return Q.indexOf(s) !== -1; })) score += 5;
         else if (stems.some(function (s) { return L.indexOf(s) !== -1 || A.indexOf(s) !== -1; })) score += 2;
       });
       if (row.answer) score += 1;
       if (row.done) score += 1;
-      return { row: row, score: score, exact: exact, near: near };
+      return { row: row, score: score, lessonMatch: lessonMatch };
     });
-    let use = scored.filter(function (s) { return s.exact; });
-    if (use.length < 2) use = scored.filter(function (s) { return s.exact || s.near; });
-    if (!use.length) use = scored.filter(function (s) { return s.score > 0; });
+
+    let use = scored.filter(function (s) { return s.lessonMatch; });
+    // Ни курса, ни slug в запросе (искали только словами из ссылки) и по графе «Урок» пусто —
+    // тогда покажем найденное по словам. При поиске по курсу/уроку — только строгие совпадения.
+    if (!use.length && !strict) use = scored.filter(function (s) { return s.score > 0; });
     use.sort(function (a, b) { return b.score - a.score; });
     return use.slice(0, 15).map(function (s) { return s.row; });
   }
@@ -4677,7 +4926,7 @@
   async function notionQuestionSearch(term) {
     const raw = String(term || '').trim();
     const tgt = faqTarget(raw);
-    if (tgt && (tgt.courseId || tgt.words.length)) return await faqSearchByCourse(tgt);
+    if (tgt && (tgt.courseId || tgt.slug || tgt.words.length)) return await faqSearchByCourse(tgt);
 
     let rawWords = raw.toLowerCase().split(/\s+/).map(function (w) { return w.replace(/[^a-zа-яё0-9]+/gi, ''); }).filter(Boolean);
     const meaningful = rawWords.filter(function (w) { return w.length >= 2 && !FAQ_STOP.has(faqFold(w)); });
