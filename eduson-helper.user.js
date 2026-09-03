@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.13.0
+// @version      1.13.1
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -121,7 +121,7 @@
 
   /* ================================================ */
 
-  const VER = '1.13.0';
+  const VER = '1.13.1';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -1334,7 +1334,7 @@
       }
     } catch (e) {
       console.error(TAG, 'ошибка чтения amoCRM:', e);
-      toast('Не получилось прочитать amoCRM.\nНажми F12 → вкладка Console и пришли текст возле ' + TAG, 'error');
+      toast('🙀 Не получилось прочитать amoCRM.\nНажми F12 → вкладка Console и пришли текст возле ' + TAG, 'error');
       return;
     }
     if (data.name) data.name = fioOrder(data.name) || data.name;
@@ -1737,8 +1737,8 @@
         const hints = [];
         if (c._hintEmails && c._hintEmails.length) hints.push('✉️ ' + c._hintEmails.slice(0, 3).join(', ') + (c._hintEmails.length > 3 ? ' …' : ''));
         if (c._hintPhones && c._hintPhones.length) hints.push('📞 ' + c._hintPhones.slice(0, 2).join(', '));
-        if (c._matchEmail) hints.push('✅ почта совпала');
-        else if (c._matchPhone) hints.push('✅ телефон совпал');
+        if (c._matchEmail) hints.push('😻 почта совпала');
+        else if (c._matchPhone) hints.push('😻 телефон совпал');
         pick.innerHTML = '<div style="font-weight:600;">' + (c._preferred ? '⭐ ' : '') +
           String(candidateName(c)).replace(/[<>&]/g, '') + '</div>' +
           (hints.length ? '<div style="font-size:11.5px;color:#6B7280;margin-top:2px;">' + hints.join('  ·  ').replace(/[<>]/g, '') + '</div>' : '');
@@ -1851,9 +1851,9 @@
       if (err.message === 'CANCELLED') { if (MR) MR.hide(); toast('Хорошо, никого не выбираю 🙂', 'info'); return; }
       console.error(TAG, 'ошибка:', err);
       if (err.message === 'NOAUTH') {
-        toast('Браузер не пустил меня в амо 😕\nОткрой амо в соседней вкладке, убедись что залогинена, и нажми магнит ещё раз.', 'warn', 12000);
+        toast('Браузер не пустил меня в амо 😿\nОткрой амо в соседней вкладке, убедись что залогинена, и нажми магнит ещё раз.', 'warn', 12000);
       } else {
-        toast('Не получилось связаться с амо: ' + err.message, 'error');
+        toast('🙀 Не получилось связаться с амо: ' + err.message, 'error');
       }
       return;
     }
@@ -1931,7 +1931,7 @@
       if (warm) return;
       GM_setValue(DEBUG_KEY, { version: VER, url: location.href, amoId: amoId, seed: seed, result: 'ничего не нашлось', ts: Date.now() });
       if (MR) MR.fail();
-      toast('В амо ничего не нашлось 😕', 'warn');
+      toast('В амо ничего не нашлось 😿', 'warn');
       return;
     }
     data.cardAmoId = amoId || '';
@@ -2599,13 +2599,13 @@
     const filledCount = ok.filter(function (s) { return !/^💾/.test(s); }).length;
     const softTail = soft.length ? '\n✍️ ' + soft.join('; ') : '';
     if (!ok.length) {
-      toast('❌ Ничего не заполнилось.\nКарточка в режиме «редактировать»?\n👉 нажми сюда — покажу подробности', 'error', 10000, showFillReport);
+      toast('🙀 Ничего не заполнилось.\nКарточка в режиме «редактировать»?\n🐾 нажми сюда — покажу подробности', 'error', 10000, showFillReport);
     } else if (miss.length) {
-      toast('⚠️ Заполнено, но ' + miss.length + ' не вышло.\n👉 нажми сюда — покажу подробности', 'warn', 9000, showFillReport);
+      toast('🙀 Заполнено, но ' + miss.length + ' не вышло.\n🐾 нажми сюда — покажу подробности', 'warn', 9000, showFillReport);
     } else if (soft.length) {
-      toast('✅ Готово и сохранено (' + filledCount + ' полей).' + softTail, 'ok', 8000, showFillReport);
+      toast('😻 Готово и сохранено (' + filledCount + ' полей).' + softTail, 'ok', 8000, showFillReport);
     } else {
-      toast('✅ Готово и сохранено (' + filledCount + ' полей).', 'ok', 4000);
+      toast('😻 Готово и сохранено (' + filledCount + ' полей).', 'ok', 4000);
     }
   }
   // Подробный отчёт по последнему заполнению — по кнопке «Отчёт».
@@ -2625,9 +2625,9 @@
       d.support && '📅 поддержка до ' + d.support,
       d.admin && d.admin.length && '🖥 ' + d.admin.join('  '),
       '— — —',
-      '✅ ' + (R.ok.length ? R.ok.join(', ') : '—'),
-      (R.soft && R.soft.length) ? '✍️ впиши руками: ' + R.soft.join(', ') : null,
-      R.miss.length ? '❌ ' + R.miss.join(', ') : null,
+      '😻 ' + (R.ok.length ? R.ok.join(', ') : '—'),
+      (R.soft && R.soft.length) ? '🐾 впиши руками: ' + R.soft.join(', ') : null,
+      R.miss.length ? '😿 ' + R.miss.join(', ') : null,
     ].filter(Boolean).join('\n');
     toast(lines, R.miss.length ? 'warn' : 'ok', 20000);
     try { GM_setClipboard(JSON.stringify(GM_getValue(DEBUG_KEY) || {}, null, 2)); } catch (e) {}
@@ -2647,8 +2647,8 @@
     updateErrorIcon(miss, ok);
     toast('АДМИНКА:\n' +
       (d.admin && d.admin.length ? d.admin.join('\n') + '\n— — —\n' : '') +
-      (ok.length ? '✅ ' + ok.join(', ') : '') +
-      (miss.length ? (ok.length ? '\n' : '') + '❌ ' + miss.join(', ') : ''),
+      (ok.length ? '😻 ' + ok.join(', ') : '') +
+      (miss.length ? (ok.length ? '\n' : '') + '😿 ' + miss.join(', ') : ''),
       ok.length && !miss.length ? 'ok' : (ok.length ? 'warn' : 'error'), 12000);
   }
   /* ---------- отладка и вспомогательные кнопки ---------- */
@@ -2724,7 +2724,7 @@
     if (hasErrors) {
       errorIcon.style.display = 'flex';
       errorIcon.style.background = hasWarnings ? '#F59E0B' : '#EF4444';
-      errorIcon.textContent = '⚠️';
+      errorIcon.textContent = '🙀';
       // Обновляем содержимое выпадающего списка
       dropdown.innerHTML = '';
       // Добавляем заголовок
@@ -2736,13 +2736,13 @@
       if (ok && ok.length) {
         const okDiv = document.createElement('div');
         okDiv.style.cssText = 'padding: 6px 12px; color: #16A34A; border-bottom: 1px solid #E5E7EB;';
-        okDiv.textContent = '✅ ' + ok.join(' • ');
+        okDiv.textContent = '😻 ' + ok.join(' • ');
         dropdown.appendChild(okDiv);
       }
       // Добавляем ошибки
       const missDiv = document.createElement('div');
       missDiv.style.cssText = 'padding: 6px 12px; color: #DC2626;';
-      missDiv.textContent = '❌ ' + miss.join(' • ');
+      missDiv.textContent = '😿 ' + miss.join(' • ');
       dropdown.appendChild(missDiv);
       // Добавляем кнопку копирования отчета
       const reportBtn = document.createElement('button');
@@ -2868,7 +2868,7 @@
       const errorIcon = document.createElement('div');
       errorIcon.id = 'eduson-error-icon';
       errorIcon.style.cssText = 'display:none;width:28px;height:28px;border-radius:50%;background:#EF4444;color:#fff;align-items:center;justify-content:center;font-size:14px;cursor:pointer;font-weight:700;flex-shrink:0;box-shadow:0 2px 8px rgba(239,68,68,0.3);';
-      errorIcon.textContent = '⚠️';
+      errorIcon.textContent = '🙀';
       errorIcon.onclick = function(e) {
         e.stopPropagation();
         showErrorDropdown();
@@ -3085,13 +3085,13 @@
 
       if (res.error === 'NOAUTH') {
         if (R) R.fail();
-        toast('Админка не пустила 😕\nОткрой www.eduson.tv, залогинься и нажми ключ снова.', 'warn', 10000);
+        toast('Админка не пустила 😿\nОткрой www.eduson.tv, залогинься и нажми ключ снова.', 'warn', 10000);
         return;
       }
       const links = res.links || [];
       if (!links.length) {
         if (R) R.fail();
-        toast('Логин-линк не нашёлся: ' + (res.error || 'неизвестно') + '.', 'warn', 9000);
+        toast('😿 Логин-линк не нашёлся: ' + (res.error || 'неизвестно') + '.', 'warn', 9000);
         return;
       }
       if (R) R.done();
@@ -3112,7 +3112,7 @@
       }
     } catch (e) {
       if (R) R.fail();
-      toast('Ошибка при поиске логин-линка: ' + e.message, 'error');
+      toast('🙀 Ошибка при поиске логин-линка: ' + e.message, 'error');
     } finally {
       loginLinkBusy = false;
     }
@@ -3250,7 +3250,7 @@
         msg.support && '📅 ' + msg.support,
       ].filter(Boolean);
       const missed = ['name', 'emails', 'phones', 'course', 'support'].filter(k => !msg[k] || !msg[k].length);
-      box.textContent = rows.length ? rows.join('\n') : 'Ничего не распознано 😕';
+      box.textContent = rows.length ? rows.join('\n') : 'Ничего не распознано 😿';
       if (missed.length) box.textContent += '\nНе нашлось в амо: ' + missed.join(', ');
       box.textContent += '\n— — —\nДанные сохранены.';
     } else {
@@ -3290,7 +3290,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.13.0'; // синхр. с Хэлпером
+  const VER = '1.13.1'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4625,7 +4625,7 @@
           anyHit = true;
         }
       });
-      if (!anyHit) host.appendChild(elt('div', 'color:#9CA3AF;font-weight:700;font-size:12px;padding:14px 0;text-align:center;', 'Ничего не найдено'));
+      if (!anyHit) host.appendChild(elt('div', 'color:#9CA3AF;font-weight:700;font-size:12px;padding:14px 0;text-align:center;', '😿 Ничего не найдено'));
     }
     q.addEventListener('input', draw);
     draw();
@@ -5216,7 +5216,7 @@
       let rows = lastRows.slice();
       if (only.checked) rows = rows.filter(function (r) { return r.answer; });
       host.innerHTML = '';
-      if (!rows.length) { host.appendChild(elt('div', 'color:#9CA3AF;font-weight:700;font-size:12px;padding:12px 0;text-align:center;', lastRows.length ? 'С ответом ничего нет — сними галочку' : 'Ничего не нашлось')); return; }
+      if (!rows.length) { host.appendChild(elt('div', 'color:#9CA3AF;font-weight:700;font-size:12px;padding:12px 0;text-align:center;', lastRows.length ? '😿 С ответом ничего нет — сними галочку' : '😿 Ничего не нашлось')); return; }
       rows.forEach(function (r) {
         const card = elt('div', 'border:1px solid #E5E7EB;border-radius:11px;padding:9px 11px;margin-bottom:7px;');
 
@@ -5441,7 +5441,7 @@
     if (_qcState.lastUrl) {
       armCopy(_qcState.lastUrl);
       status.style.color = '#16A34A';
-      status.textContent = '✅ Последняя карточка создана.';
+      status.textContent = '😻 Последняя карточка создана.';
       const a = elt('a', 'display:inline-block;margin-top:5px;font-size:11px;font-weight:800;color:' + ACC + ';text-decoration:none;', 'открыть в Notion →');
       a.href = _qcState.lastUrl; a.target = '_blank'; a.rel = 'noopener';
       status.appendChild(document.createElement('br')); status.appendChild(a);
@@ -5481,7 +5481,7 @@
           }
         }
         status.style.color = '#16A34A';
-        status.textContent = '✅ Карточка создана.' + filesMsg;
+        status.textContent = '😻 Карточка создана.' + filesMsg;
         const a = elt('a', 'display:inline-block;margin-top:6px;font-size:11px;font-weight:800;color:' + ACC + ';text-decoration:none;', 'открыть карточку в Notion →');
         a.href = res.url; a.target = '_blank'; a.rel = 'noopener';
         status.appendChild(document.createElement('br')); status.appendChild(a);
@@ -5494,8 +5494,8 @@
         console.error('[eduson-helper] создание карточки Notion:', e);
         status.style.color = '#DC2626';
         status.textContent = (e.message === 'NOAUTH')
-          ? 'Notion не пустил. Открой app.notion.com в соседней вкладке, войди, вернись, попробуй снова.'
-          : ('Не получилось создать карточку.\n' + (e.message || e) + '\n\nНажми F12 → вкладка Console, скопируй красные строки и пришли мне.');
+          ? '🙀 Notion не пустил. Открой app.notion.com в соседней вкладке, войди, вернись, попробуй снова.'
+          : ('🙀 Не получилось создать карточку.\n' + (e.message || e) + '\n\nНажми F12 → вкладка Console, скопируй красные строки и пришли мне.');
       }
       busy = false; btn.style.opacity = '1'; btn.textContent = 'Добавить на доску';
     };
@@ -5657,7 +5657,7 @@
           return terms.every(function (t) { return hay.indexOf(t) !== -1; });
         }).slice(0, 60);
         if (!hits.length) {
-          listBox.appendChild(elt('div', 'padding:9px 11px;font-size:11.5px;color:#9CA3AF;font-weight:700;', 'Ничего не найдено'));
+          listBox.appendChild(elt('div', 'padding:9px 11px;font-size:11.5px;color:#9CA3AF;font-weight:700;', '😿 Ничего не найдено'));
         } else {
           hits.forEach(function (it) {
             const row = elt('div', 'padding:7px 11px;cursor:pointer;border-bottom:1px solid #F3F4F6;');
@@ -5682,7 +5682,7 @@
       const crs = readCourse();
       const m = matchDocCourse(map, crs);
       if (m) {
-        showItem(m.item, m.exact ? '' : '⚠️ сопоставила по близости — проверь курс');
+        showItem(m.item, m.exact ? '' : '🙀 сопоставила по близости — проверь курс');
       } else {
         showItem(null);
         if (crs) {
@@ -5693,8 +5693,8 @@
     }).catch(function (e) {
       status.style.color = '#B45309';
       status.textContent = (e && e.message === 'NOAUTH')
-        ? 'Google не пустил. Открой таблицу «Академ.часы в курсах» в соседней вкладке, войди в аккаунт и открой панель заново.'
-        : 'Не получилось прочитать таблицу (' + (e && e.message || 'ошибка') + ').';
+        ? '🙀 Google не пустил. Открой таблицу «Академ.часы в курсах» в соседней вкладке, войди в аккаунт и открой панель заново.'
+        : '🙀 Не получилось прочитать таблицу (' + (e && e.message || 'ошибка') + ').';
     });
   }
 
@@ -6257,7 +6257,7 @@
       build(amo);
     }).catch(function (e) {
       load.style.color = '#B45309';
-      load.textContent = e.message === 'NOAUTH' ? 'Нет входа в админку/amo. Открой их в соседних вкладках, войди, вернись.' : ('Не получилось прочитать данные: ' + (e.message || e));
+      load.textContent = e.message === 'NOAUTH' ? '🙀 Нет входа в админку/amo. Открой их в соседних вкладках, войди, вернись.' : ('🙀 Не получилось прочитать данные: ' + (e.message || e));
     });
 
     function build(amo) {
@@ -6398,7 +6398,7 @@
           suBox.textContent = 'Суперюзер #' + superId + (subs.length ? (' · курсы: ' + subs.map(function (s) { return s.company || '?'; }).join(', ')) : ' · пусто');
           if (!subs.length && !cardUid) {
             status.style.color = '#B45309';
-            status.textContent = '⚠️ Суперюзер пустой, а платформенного юзера студента в карточке нет. Прикрепи основной курс вручную в админке и повтори.';
+            status.textContent = '🙀 Суперюзер пустой, а платформенного юзера студента в карточке нет. Прикрепи основной курс вручную в админке и повтори.';
             busy = false; btn.style.opacity = '1'; btn.textContent = 'Выдать курс';
             return;
           }
@@ -6416,7 +6416,7 @@
             status.style.color = /ошиб|error|exist|уже|not|нельзя|invalid|fail/i.test(res.flash) ? '#B45309' : '#16A34A';
             status.textContent = res.flash;
           } else if (nowHas > wasHas) {
-            status.style.color = '#16A34A'; status.textContent = '✅ Курс добавлен.';
+            status.style.color = '#16A34A'; status.textContent = '😻 Курс добавлен.';
           } else if (nowHas === wasHas && wasHas > 0) {
             status.style.color = '#B45309'; status.textContent = 'Похоже, этот курс у студента уже был — новых записей не появилось.';
           } else {
@@ -6430,10 +6430,10 @@
           console.error('[eduson-helper] выдача курса:', e);
           status.style.color = '#DC2626';
           const msg = String(e.message || e);
-          status.textContent = msg === 'NOAUTH' ? 'Админка не пустила. Открой www.eduson.tv/admin в соседней вкладке, войди, вернись.'
-            : msg === 'CSRF' ? 'Токен админки протух. Обнови страницу OmniDesk (F5) и попробуй снова.'
-            : /50\d/.test(msg) ? ('Админка не смогла (' + msg + ').\n⚠️ Суперюзер #' + (superId || '?') + ' создан пустым — НЕ удаляй его, при повторе Хэлпер добавит курс в него же.\nF12 → Console: там ЗАГОЛОВОК ошибки и тело ответа — пришли его целиком.')
-            : ('Не получилось: ' + msg + '\n\nF12 → Console → пришли красные строки.');
+          status.textContent = msg === 'NOAUTH' ? '🙀 Админка не пустила. Открой www.eduson.tv/admin в соседней вкладке, войди, вернись.'
+            : msg === 'CSRF' ? '🙀 Токен админки протух. Обнови страницу OmniDesk (F5) и попробуй снова.'
+            : /50\d/.test(msg) ? ('🙀 Админка не смогла (' + msg + ').\n⚠️ Суперюзер #' + (superId || '?') + ' создан пустым — НЕ удаляй его, при повторе Хэлпер добавит курс в него же.\nF12 → Console: там ЗАГОЛОВОК ошибки и тело ответа — пришли его целиком.')
+            : ('🙀 Не получилось: ' + msg + '\n\nF12 → Console → пришли красные строки.');
         }
         busy = false; btn.style.opacity = '1'; btn.textContent = 'Выдать курс';
       };
@@ -6470,7 +6470,7 @@
       loadBar.done(); setTimeout(function () { if (loadBar.el.parentNode) loadBar.el.remove(); }, 400);
       status.style.display = 'none';
       searchLabel.style.display = ''; search.style.display = '';
-      if (data.note) { status.style.display = ''; status.style.color = '#B45309'; status.textContent = '⚠️ ' + data.note; }
+      if (data.note) { status.style.display = ''; status.style.color = '#B45309'; status.textContent = '🙀 ' + data.note; }
 
       // рабочий набор (можно переключать программу/аккаунт студента) — lessonCache не трогаем
       const cur = {
@@ -6675,7 +6675,7 @@
       status.style.color = '#B45309';
       status.textContent = (e && e.message === 'NOAUTH')
         ? 'Не пустило на www.eduson.tv. Открой админку в соседней вкладке, войди и открой панель заново.'
-        : 'Не получилось: ' + ((e && e.message) || 'ошибка') + '.';
+        : '🙀 Не получилось: ' + ((e && e.message) || 'ошибка') + '.';
     });
   }
 
@@ -6876,7 +6876,7 @@
       bar.fail(); status.style.display = ''; status.style.color = '#B45309';
       status.textContent = (e && e.message === 'NOAUTH')
         ? 'Не пустило на www.eduson.tv. Открой админку в соседней вкладке, войди и попробуй снова.'
-        : 'Не получилось: ' + ((e && e.message) || 'ошибка') + '.';
+        : '🙀 Не получилось: ' + ((e && e.message) || 'ошибка') + '.';
     });
 
     /* ---------- отправка ---------- */
