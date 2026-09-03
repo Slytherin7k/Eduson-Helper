@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.13.2
+// @version      1.13.3
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -121,7 +121,7 @@
 
   /* ================================================ */
 
-  const VER = '1.13.2';
+  const VER = '1.13.3';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -1351,8 +1351,11 @@
       for (const lab of labs) {
         const t = (lab.textContent || '').trim().toLowerCase();
         if (!t.includes(pl)) continue;
+        // пропускаем скрытые лейблы (напр. лейбл в закрытой модалке `.mfp-hide`)
+        if (!lab.getClientRects().length) continue;
         let el = lab.parentElement;
-        for (let i = 0; i < 5 && el; i++) {
+        // не поднимаемся до <body>/<html> — иначе прочитаем весь текст страницы (чат клиента)
+        for (let i = 0; i < 4 && el && el !== document.body && el !== document.documentElement; i++) {
           const text = el.innerText || '';
           if (kind === 'email') {
             const matches = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g);
@@ -1393,7 +1396,10 @@
     });
     return out;
   }
-  function grabContactSeed() {
+  // cardOnly = true — читаем ТОЛЬКО поля карточки (для проверки «что уже вписано»).
+  // Без флага дополнительно сканируем весь текст страницы (клиент мог написать почту/телефон
+  // в чат) — это полезно для ПОИСКА клиента, но НЕ годится для «уже в карточке».
+  function grabContactSeed(cardOnly) {
     const seed = { phones: [], emails: [] };
     const emailVals = readCardValueNear(['email-адрес', 'e-mail', 'email', 'почта'], 'email');
     const phoneVals = readCardValueNear(['телефон', 'phone'], 'phone');
@@ -1410,18 +1416,20 @@
         if (!seed.phones.includes(clean)) seed.phones.push(clean);
       }
     });
-    const text = document.body.innerText || '';
-    const emailMatches = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g);
-    if (emailMatches) {
-      emailMatches.forEach(m => {
-        if (!m.toLowerCase().endsWith('@eduson.tv') && !seed.emails.includes(m)) {
-          seed.emails.push(m);
-        }
+    if (!cardOnly) {
+      const text = document.body.innerText || '';
+      const emailMatches = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g);
+      if (emailMatches) {
+        emailMatches.forEach(m => {
+          if (!m.toLowerCase().endsWith('@eduson.tv') && !seed.emails.includes(m)) {
+            seed.emails.push(m);
+          }
+        });
+      }
+      grabPhonesFromText(text).forEach(clean => {
+        if (!seed.phones.includes(clean)) seed.phones.push(clean);
       });
     }
-    grabPhonesFromText(text).forEach(clean => {
-      if (!seed.phones.includes(clean)) seed.phones.push(clean);
-    });
     return seed;
   }
   function grabAmoIdFromPage() {
@@ -2500,7 +2508,9 @@
   function cardEmailSet() {
     const set = new Set();
     try {
-      grabContactSeed().emails.forEach(function (e) { set.add(String(e).toLowerCase().trim()); });
+      // ТОЛЬКО поля карточки — не весь текст страницы (иначе почта из чата клиента
+      // ошибочно считается «уже вписанной», и магнит её пропускает).
+      grabContactSeed(true).emails.forEach(function (e) { set.add(String(e).toLowerCase().trim()); });
     } catch (e) {}
     return set;
   }
@@ -3290,7 +3300,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.13.2'; // синхр. с Хэлпером
+  const VER = '1.13.3'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
