@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.13.3
+// @version      1.14.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -121,7 +121,7 @@
 
   /* ================================================ */
 
-  const VER = '1.13.3';
+  const VER = '1.14.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3286,12 +3286,28 @@
     setTimeout(function () { box.remove(); }, ms || 9000);
   }
   /* ---------- запуск ---------- */
+  // Раньше здесь крутился setInterval каждые 1.5 с — постоянная фоновая нагрузка,
+  // даже когда на странице ничего не менялось. Теперь реагируем на реальные
+  // изменения DOM (с коротким дебаунсом) + редкий страховочный проход,
+  // и ничего не делаем в фоновой вкладке.
+  function keepSynced(fn) {
+    let pending = false;
+    const kick = function () {
+      if (pending) return;
+      pending = true;
+      setTimeout(function () { pending = false; try { fn(); } catch (e) {} }, 200);
+    };
+    try {
+      new MutationObserver(kick).observe(document.body || document.documentElement,
+        { childList: true, subtree: true });
+    } catch (e) { /* нет MutationObserver — останется страховочный интервал */ }
+    window.addEventListener('popstate', kick);
+    setInterval(function () { if (!document.hidden) { try { fn(); } catch (e) {} } }, 5000);
+    try { fn(); } catch (e) {}
+  }
   if (IS_AMO || IS_OMNI) {
     console.log(TAG, 'запущен на', location.host, 'версия ' + VER);
-    ensurePanel();
-    removeHelperBadge();
-    ensureHeaderButtons();
-    setInterval(function () { ensurePanel(); removeHelperBadge(); ensureHeaderButtons(); }, 1500);
+    keepSynced(function () { ensurePanel(); removeHelperBadge(); ensureHeaderButtons(); });
   }
 
   /* ==================== МОДУЛЬ «Пинги и теги» (бывший Eduson Curator — Tools) ====================
@@ -3300,7 +3316,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.13.3'; // синхр. с Хэлпером
+  const VER = '1.14.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -7270,9 +7286,24 @@
 
   console.log(TAG, 'запущен, версия ' + VER, '| host:', location.hostname);
   // На eduson.amocrm.ru скрипт нужен только ради разрешения @connect (чтения сделки) — UI не строим.
+  // Вместо setInterval(1.5с) — реакция на изменения страницы + редкая страховка (см. keepSynced в Хэлпере выше).
+  function keepSynced(fn) {
+    let pending = false;
+    const kick = function () {
+      if (pending) return;
+      pending = true;
+      setTimeout(function () { pending = false; try { fn(); } catch (e) {} }, 200);
+    };
+    try {
+      new MutationObserver(kick).observe(document.body || document.documentElement,
+        { childList: true, subtree: true });
+    } catch (e) { /* нет MutationObserver — останется страховочный интервал */ }
+    window.addEventListener('popstate', kick);
+    setInterval(function () { if (!document.hidden) { try { fn(); } catch (e) {} } }, 5000);
+    try { fn(); } catch (e) {}
+  }
   if (ON_OMNI) {
-    ensureButton();
-    setInterval(function () { ensureButton(); try { warmLessons(); } catch (e) {} }, 1500);
+    keepSynced(function () { ensureButton(); try { warmLessons(); } catch (e) {} });
   }
   })();
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.32.0
+// @version      1.33.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -1824,14 +1824,31 @@
     else bar.appendChild(btn);
   }
 
+  // Раньше здесь крутился setInterval каждые 2 с — постоянная фоновая нагрузка на страницу
+  // OmniDesk, даже когда ничего не менялось. Теперь реагируем на реальные изменения DOM
+  // (с коротким дебаунсом) + редкий страховочный проход, и ничего не делаем в фоновой вкладке.
+  function keepSynced(fn) {
+    let pending = false;
+    const kick = function () {
+      if (pending) return;
+      pending = true;
+      setTimeout(function () { pending = false; try { fn(); } catch (e) {} }, 200);
+    };
+    try {
+      new MutationObserver(kick).observe(document.body || document.documentElement,
+        { childList: true, subtree: true });
+    } catch (e) { /* нет MutationObserver — останется страховочный интервал */ }
+    window.addEventListener('popstate', kick);
+    setInterval(function () { if (!document.hidden) { try { fn(); } catch (e) {} } }, 5000);
+    try { fn(); } catch (e) {}
+  }
+
   if (location.hostname.endsWith('omnidesk.ru')) {
-    console.log(TAG, 'запущен, версия ' + '1.32.0');
-    removeLauncher();
-    ensureMenuItem();
-    setInterval(function () {
+    console.log(TAG, 'запущен, версия ' + '1.33.0');
+    keepSynced(function () {
       removeLauncher();
       ensureMenuItem();
       try { prewarm(); } catch (e) { /* прогрев не критичен */ }
-    }, 2000);
+    });
   }
 })();
