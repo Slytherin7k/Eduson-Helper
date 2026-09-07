@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.16.0
+// @version      1.17.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -121,7 +121,7 @@
 
   /* ================================================ */
 
-  const VER = '1.16.0';
+  const VER = '1.17.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3415,7 +3415,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.16.0'; // синхр. с Хэлпером
+  const VER = '1.17.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3524,7 +3524,10 @@
   // mops: строка «Фамилия Имя» — либо пара ['Фамилия Имя', '@личный_тег'].
   // Личные теги МОПов собраны 31.08.2026 из ТГ-чата «Передача клиентов кураторам»
   // (см. reference-mop-tags). Без пары / без тега — в панели покажем тег руководителя.
-  const TEAMS = {
+  // ЭТО ВСТРОЕННЫЙ (запасной) СПИСОК. Актуальный состав команд подтягивается из
+  // Google-таблицы «Файл для распределения сделок» (см. loadSalesTeams ниже);
+  // если таблица недоступна — работаем по этому списку.
+  const TEAMS_BUILTIN = {
     'Людмила Отрокуша': { tag: '@Mila_Otrokusha', dept: 'департамент Кобзева',
       mops: [['Косарев Юрий', '@KOSAREV_YURII'], ['Перова Юлия', '@perovayu'], ['Лобков Артур', '@lobkovartur'], ['Бондаренко Андрей', '@Bondarenko_Andreyy'], ['Мартышкина Ольга', '@martyshkinaolga'], ['Пасхалиди Димитрий', '@eduson_dimitri'], ['Зинченко Алена', '@alena_zinchenko27']] },
     'Александр Куликов': { tag: '@alexandrkulikof', dept: 'департамент Кобзева',
@@ -3549,22 +3552,180 @@
       mops: [['Белеева Мария', '@maria_beleeva'], ['Фролова Екатерина', '@frol_katrin'], ['Лем Станислав', '@stan_lem'], ['Степанов Петр', '@PeterStepanov'], ['Михайлова Карина', '@karina_michailova'], ['Брудковски Александра', '@brudkovski'], ['Гагилев Дмитрий', '@Gagilev'], 'Вендин Максим', 'Золотарев Игорь'] }
   };
 
+  // Живой справочник команд: сначала — встроенный список выше, после загрузки
+  // Google-таблицы распределения сделок заменяется на актуальный.
+  let TEAMS = TEAMS_BUILTIN;
+
+  // Нормализация ФИО: регистр, ё→е, только буквы, слова по алфавиту (порядок не важен).
+  function mopNorm(s) {
+    return String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^а-яa-z]+/g, ' ')
+      .trim().split(/\s+/).filter(Boolean).sort().join(' ');
+  }
+
+  // Личные ТГ-теги МОПов. Основа — из встроенного списка (собраны 31.08.2026 из ТГ-чата
+  // «Передача клиентов кураторам»). НОВЫЕ теги дописывать сюда, в MOP_TAGS_EXTRA:
+  //   'Фамилия Имя': '@тег',
+  const MOP_TAGS_EXTRA = {
+    // 'Иванов Иван': '@ivanov',
+  };
+  const MOP_TAGS = (function () {
+    const d = {};
+    Object.keys(TEAMS_BUILTIN).forEach(function (lead) {
+      TEAMS_BUILTIN[lead].mops.forEach(function (m) {
+        if (Array.isArray(m) && m[1]) d[mopNorm(m[0])] = m[1];
+      });
+    });
+    Object.keys(MOP_TAGS_EXTRA).forEach(function (nm) { d[mopNorm(nm)] = MOP_TAGS_EXTRA[nm]; });
+    return d;
+  })();
+
+  // Известные РОПы: имя (именительный падеж) → тег. Дописывать при появлении новых.
+  const ROP_TAGS = {
+    'Людмила Отрокуша': '@Mila_Otrokusha',
+    'Александр Куликов': '@alexandrkulikof',
+    'Александр Кондратьев': '@kondratev_av',
+    'Марина Чехова': '@marinachekhova',
+    'Александр Фоменко': '@av_fomenko',
+    'Виталий Львовский': '@lvovskiy_vit',
+    'Анар Шабанов': '@az_anar',
+    'Владислав Кожанов': '@kozhanov_eduson',
+    'Денис Клементович': '@Klem_Den_lucky',
+    'Владимир Толстов': '@Vladimir_Tolstov_m',
+    'Давид Багатурия': '@D_Bagaturia'
+  };
+  const DEPT_GEN = { 'кобзев': 'Кобзева', 'шарипов': 'Шарипова', 'семериков': 'Семерикова' };
+  // «Александра Кондратьева» ≈ «Александр Кондратьев»: первые 4 буквы каждого слова, по алфавиту.
+  function ropStemKey(s) {
+    return String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^а-яa-z ]+/g, ' ')
+      .trim().split(/\s+/).filter(Boolean).map(function (w) { return w.slice(0, 4); }).sort().join(' ');
+  }
+  const ROP_STEM = (function () {
+    const idx = {};
+    Object.keys(ROP_TAGS).forEach(function (nm) { idx[ropStemKey(nm)] = nm; });
+    return idx;
+  })();
+  function resolveRop(gen) {
+    const hit = ROP_STEM[ropStemKey(gen)];
+    if (hit) return { name: hit, tag: ROP_TAGS[hit] };
+    return { name: String(gen || '').replace(/\s+/g, ' ').trim(), tag: '' };
+  }
+
+  // ---- Google-таблица «Файл для распределения сделок» ----
+  // Каждый месяц лид заводит НОВУЮ вкладку с именем «<Месяц> <Год>» (напр. «Сентябрь 2026»),
+  // старые уезжают в группу. Поэтому берём вкладку ПО ИМЕНИ текущего месяца, а не по gid/ссылке
+  // (ссылка/gid привязаны к конкретному месяцу и через месяц устареют).
+  // A — «Команда <РОП в род. падеже> (<Директор>)», B — ФИО МОПа «Фамилия Имя».
+  // Берём только связки МОП↔РОП; личные теги — из MOP_TAGS выше (вручную).
+  const TEAMS_SHEET_ID = '1fMlDk-jAIDIr17qEnJw2lbkmYI5pM8XyHoOwAOVf8bE';
+  const RU_MONTHS = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+    'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
+  function salesSheetName(monthOffset) {
+    const d = new Date();
+    d.setDate(1);
+    d.setMonth(d.getMonth() + (monthOffset || 0));
+    return RU_MONTHS[d.getMonth()] + ' ' + d.getFullYear();
+  }
+
+  function teamsFromRows(rows) {
+    const out = {}, seen = {};
+    (rows || []).forEach(function (r) {
+      const a = (r[0] || '').replace(/\s+/g, ' ').trim();
+      const b = (r[1] || '').replace(/\s+/g, ' ').trim();
+      if (!a || !b) return;
+      const m = a.match(/^команд[аы]\s+(.+?)\s*(?:\(([^)]*)\)\s*)?$/i);
+      if (!m) return;                                        // не строка команды
+      if (!/[а-яё]/i.test(b) || /^менеджер$/i.test(b)) return; // заголовок / мусор
+      const rop = resolveRop(m[1]);
+      const deptRaw = (m[2] || '').toLowerCase().trim();
+      const dept = deptRaw ? ('департамент ' + (DEPT_GEN[deptRaw] || m[2].trim())) : '';
+      if (!out[rop.name]) out[rop.name] = { tag: rop.tag, dept: dept, mops: [] };
+      const nk = mopNorm(b);
+      if (seen[rop.name + '|' + nk]) return;
+      seen[rop.name + '|' + nk] = 1;
+      const personal = MOP_TAGS[nk] || '';
+      out[rop.name].mops.push(personal ? [b, personal] : b);
+    });
+    let cnt = 0;
+    Object.keys(out).forEach(function (k) { cnt += out[k].mops.length; });
+    return cnt >= 5 ? out : null;                            // мало данных — не доверяем, остаёмся на встроенном
+  }
+
+  // gviz отдаёт лист как HTML-таблицу (только колонки A,B). В <title> ответа — имя листа,
+  // который Google РЕАЛЬНО отдал: если запрошенной вкладки ещё нет, gviz молча подставляет
+  // первый лист — ловим это по несовпадению title и не берём чужой месяц.
+  function fetchMonthSheet(name) {
+    const url = 'https://docs.google.com/spreadsheets/d/' + TEAMS_SHEET_ID +
+      '/gviz/tq?tqx=out:html&sheet=' + encodeURIComponent(name) +
+      '&tq=' + encodeURIComponent('select A, B') + '&_cb=' + Date.now();
+    return gmText(url).then(function (html) {
+      if (/id="gaia_loginform"|accounts\.google\.com\/(?:v3\/signin|ServiceLogin)|ServiceLogin/i.test(html.slice(0, 1200))) {
+        throw new Error('NOAUTH');
+      }
+      let doc;
+      try { doc = new DOMParser().parseFromString(html, 'text/html'); } catch (e) { return null; }
+      const title = ((doc.querySelector('title') || {}).textContent || '').trim();
+      if (title && title !== name) return null;   // gviz свалился на другой лист — вкладки месяца ещё нет
+      const rows = [];
+      doc.querySelectorAll('table tr').forEach(function (tr) {
+        const cells = [];
+        tr.querySelectorAll('th,td').forEach(function (td) { cells.push(td.textContent || ''); });
+        if (cells.length) rows.push(cells);
+      });
+      return teamsFromRows(rows);
+    });
+  }
+
+  function loadSalesTeams() {
+    return fetchMonthSheet(salesSheetName(0)).then(function (t) {
+      if (t) { _salesTeamsSheet = salesSheetName(0); return t; }
+      // начало месяца, вкладку ещё не завели — берём прошлый месяц
+      return fetchMonthSheet(salesSheetName(-1)).then(function (t2) {
+        if (t2) _salesTeamsSheet = salesSheetName(-1);
+        return t2;
+      });
+    });
+  }
+
+  let _salesTeamsAt = 0;          // время последней успешной загрузки
+  let _salesTeamsInflight = null;
+  let _salesTeamsErr = '';
+  let _salesTeamsSheet = '';      // с какого листа взят текущий справочник
+  // cb(changed): changed=true, если справочник обновился и открытую вкладку стоит перерисовать.
+  function ensureSalesTeams(cb) {
+    cb = cb || function () {};
+    if (_salesTeamsAt && Date.now() - _salesTeamsAt < 10 * 60 * 1000) { cb(false); return; }
+    if (_salesTeamsInflight) { _salesTeamsInflight.then(cb); return; }
+    _salesTeamsInflight = loadSalesTeams().then(function (parsed) {
+      _salesTeamsInflight = null;
+      if (!parsed) { _salesTeamsErr = 'не нашла вкладку «' + salesSheetName(0) + '» в таблице'; return false; }
+      TEAMS = parsed; _salesTeamsAt = Date.now(); _salesTeamsErr = '';
+      rebuildMopIndex();
+      return true;
+    }).catch(function (e) {
+      _salesTeamsInflight = null;
+      _salesTeamsErr = (e && e.message === 'NOAUTH')
+        ? 'нет доступа — войди в Google-аккаунт с доступом к таблице'
+        : 'не удалось загрузить (' + ((e && e.message) || 'ошибка') + ')';
+      return false;
+    });
+    _salesTeamsInflight.then(cb);
+  }
+
   // МОП (в любом порядке слов) → { tag: личный ТГ, rg: тег руководителя }. Для автоподстановки в пинги.
-  const MOP_INDEX = (function () {
-    const norm = function (s) {
-      return String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^а-яa-z]+/g, ' ')
-        .trim().split(/\s+/).filter(Boolean).sort().join(' ');
-    };
+  let _mopMap = {};
+  function rebuildMopIndex() {
     const idx = {};
     Object.keys(TEAMS).forEach(function (lead) {
       const rg = TEAMS[lead].tag;
       TEAMS[lead].mops.forEach(function (m) {
         const nm = Array.isArray(m) ? m[0] : m;
-        idx[norm(nm)] = { name: nm, tag: (Array.isArray(m) && m[1]) || '', rg: rg };
+        idx[mopNorm(nm)] = { name: nm, tag: (Array.isArray(m) && m[1]) || '', rg: rg };
       });
     });
-    return { get: function (name) { return idx[norm(name)] || null; } };
-  })();
+    _mopMap = idx;
+  }
+  rebuildMopIndex();
+  const MOP_INDEX = { get: function (name) { return _mopMap[mopNorm(name)] || null; } };
 
   const DZ_DEFAULT = { name: 'Мария Старцева', tag: '@maria_startceva' };
   const DZ_REVIEWERS = [
@@ -4043,6 +4204,8 @@
     if (typeof setCatOpen === 'function') setCatOpen(true);
   }
 
+  let hpPanelTab = '';   // какая вкладка панели открыта сейчас ('Пинги' / 'Теги' / …)
+
   function buildPanel() {
     const p = elt('div', 'position:fixed;z-index:2147483646;width:min(360px,calc(100vw - 20px));max-height:82vh;overflow-x:hidden;overflow-y:auto;' +
       'background:#fff;color:#1F2937;border:1px solid #E5E7EB;border-radius:14px;box-shadow:0 18px 48px rgba(15,23,42,.24);' +
@@ -4088,11 +4251,13 @@
       b.onclick = function () {
         Array.from(tabs.children).forEach(function (t) { t.style.background = '#fff'; t.style.color = ACC; });
         b.style.background = ACC; b.style.color = '#fff';
+        hpPanelTab = label;
         body.innerHTML = '';
         fn(body);
       };
       return b;
     };
+    ensureSalesTeams();   // подтянуть актуальные команды продаж из Google-таблицы
     // список уроков — свой у каждого студента; сбрасываем только при смене чата (иначе теряем прогрев)
     if (lessonCache && lessonCache.caseId !== ((location.pathname.match(/(\d{2,4}-\d{5,})/) || [])[1] || '')) { lessonCache = null; _lectCache = {}; }
     const tPing = mkTab('Пинги', renderPings);
@@ -4663,8 +4828,6 @@
       { title: 'Команды продаж (МОП)', teams: teams }
     ];
   }
-  const TAG_SECTIONS = buildTagSections();
-
   function matchRow(row, terms) {
     if (!terms.length) return true;
     const hay = (row.name + ' ' + row.tag + ' ' + (row.note || '') + ' ' + (row.kw || '')).toLowerCase().replace(/ё/g, 'е');
@@ -4672,12 +4835,30 @@
   }
 
   function renderTags(body) {
+    const TAG_SECTIONS = buildTagSections();
     const q = elt('input', 'width:100%;padding:8px 11px;border:1px solid #D1D5DB;border-radius:10px;font:600 13px ' + FONT + ';color:#111827;margin-bottom:8px;');
     q.type = 'search';
     q.placeholder = 'Поиск: МОП, кластер, имя, тег…';
     body.appendChild(q);
     const host = elt('div', '');
     body.appendChild(host);
+
+    // Список команд продаж — из Google-таблицы. Подтянем и, если обновился, перерисуем вкладку.
+    const teamsNote = elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;margin-bottom:6px;', '');
+    function setTeamsNote() {
+      teamsNote.textContent = _salesTeamsErr
+        ? ('команды продаж: ' + _salesTeamsErr + ' — показываю встроенный список')
+        : _salesTeamsSheet ? ('команды продаж — из листа «' + _salesTeamsSheet + '»')
+        : (_salesTeamsAt ? '' : 'команды продаж: загружаю из таблицы…');
+    }
+    setTeamsNote();
+    body.insertBefore(teamsNote, host);
+    ensureSalesTeams(function (changed) {
+      if (changed && hpPanelTab === 'Теги' && document.body.contains(body)) {
+        body.innerHTML = ''; renderTags(body); return;
+      }
+      setTeamsNote();
+    });
 
     function tagRow(row, indent) {
       // Две строки: имя (+ примечание) сверху, тег снизу — ничего не сливается и не едет.
