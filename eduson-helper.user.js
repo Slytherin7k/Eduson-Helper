@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.14.0
+// @version      1.16.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -121,7 +121,7 @@
 
   /* ================================================ */
 
-  const VER = '1.14.0';
+  const VER = '1.16.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -2165,6 +2165,43 @@
     });
     return bestScore >= 45 ? best : null;
   }
+  // Грубая «основа» русского слова: отрезаем частое склонение/окончание, оставляя ≥4 буквы.
+  // Нужно, чтобы «командой» и «командами» считались одним словом (обе → «команд»).
+  const RU_ENDINGS = ['иями', 'ами', 'ями', 'ов', 'ев', 'ей', 'ой', 'ий', 'ый', 'ая', 'яя',
+    'ое', 'ее', 'ые', 'ие', 'ыми', 'ими', 'ого', 'его', 'ому', 'ему', 'ах', 'ях', 'ам', 'ям',
+    'ом', 'ем', 'ью', 'ья', 'у', 'ю', 'а', 'я', 'ы', 'и', 'о', 'е', 'ь'].sort(function (a, b) { return b.length - a.length; });
+  function stemRu(w) {
+    if (w.length <= 4) return w;
+    for (let i = 0; i < RU_ENDINGS.length; i++) {
+      const e = RU_ENDINGS[i];
+      if (w.length - e.length >= 4 && w.slice(-e.length) === e) return w.slice(0, -e.length);
+    }
+    return w;
+  }
+  // «Рыхлый» подбор курса: сравниваем по основам слов. Запасной вариант — вызывается, только
+  // когда строгий pickCourseOption ничего не нашёл. Требуем ≥2 совпавших значимых основы
+  // и высокий порог — чтобы не подставить чужой курс по одному общему слову.
+  function pickCourseOptionLoose(sel, courseName) {
+    const tSig = courseSig(courseName);
+    if (tSig.length < 2) return null;
+    const tStem = tSig.map(stemRu);
+    let best = null, bestScore = -1e9;
+    sel.querySelectorAll('option').forEach(function (o) {
+      const t = (o.textContent || '').trim();
+      if (!t || t === '—' || t === '-') return;
+      const oSig = courseSig(t);
+      if (oSig.length < 2) return;
+      const oStemSet = {}; oSig.forEach(function (w) { oStemSet[stemRu(w)] = 1; });
+      let common = 0, commonReal = 0;
+      tStem.forEach(function (w, i) {
+        if (oStemSet[w]) { common++; if (!tariffKey(tSig[i])) commonReal++; }
+      });
+      if (commonReal < 2) return;
+      const score = (common / tSig.length) * 70 + (common / oSig.length) * 20;
+      if (score > bestScore) { bestScore = score; best = o; }
+    });
+    return bestScore >= 60 ? best : null;
+  }
   function fillCourseSelect(courseName) {
     const sel = document.querySelector(OMNI_FIELDS.course) || findOmniInput(LABELS.course);
     if (!sel || sel.tagName !== 'SELECT') return null;
@@ -2183,30 +2220,32 @@
       }
     }
 
+    const applyOpt = function (o) {
+      sel.value = o.value;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      sel.dispatchEvent(new Event('chosen:updated'));
+      const span = sel.parentElement.querySelector('.chosen-container .chosen-single span');
+      if (span) span.textContent = o.textContent.trim();
+      return o.textContent.trim();
+    };
+
     const opt = pickCourseOption(sel, courseName);
-    if (!opt) {
-      // Пробуем найти по маппингу с другим названием
-      const omniName = findOmniCourseName(courseName);
-      if (omniName !== courseName) {
-        const opt2 = pickCourseOption(sel, omniName);
-        if (opt2) {
-          sel.value = opt2.value;
-          sel.dispatchEvent(new Event('change', { bubbles: true }));
-          sel.dispatchEvent(new Event('chosen:updated'));
-          const span = sel.parentElement.querySelector('.chosen-container .chosen-single span');
-          if (span) span.textContent = opt2.textContent.trim();
-          return opt2.textContent.trim();
-        }
-      }
-      return null;
+    if (opt) return applyOpt(opt);
+
+    // Пробуем найти по маппингу с другим названием
+    const omniName = findOmniCourseName(courseName);
+    if (omniName !== courseName) {
+      const opt2 = pickCourseOption(sel, omniName);
+      if (opt2) return applyOpt(opt2);
     }
 
-    sel.value = opt.value;
-    sel.dispatchEvent(new Event('change', { bubbles: true }));
-    sel.dispatchEvent(new Event('chosen:updated'));
-    const span = sel.parentElement.querySelector('.chosen-container .chosen-single span');
-    if (span) span.textContent = opt.textContent.trim();
-    return opt.textContent.trim();
+    // Последняя попытка: «рыхлое» сравнение по основам слов — ловит склонения
+    // («Управление командой» → «Управление командами») и т.п.
+    const loose = pickCourseOptionLoose(sel, courseName) ||
+      (omniName !== courseName ? pickCourseOptionLoose(sel, omniName) : null);
+    if (loose) return applyOpt(loose);
+
+    return null;
   }
   function setFieldById(sel, value, ruName, patterns, ok, miss) {
     let el = document.querySelector(sel);
@@ -2234,6 +2273,12 @@
       const looksEmail = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(text);
       const looksPhone = /^\+?[\d][\d\s().-]{8,}$/.test(text);
       if ((looksEmail || looksPhone) && !values.includes(text)) values.push(text);
+    });
+    // Сохранённые значения OmniDesk иногда показывает в <div> (не в span/li) — их
+    // перебор выше не ловит. Добираем всё похожее на почту из общего текста блока
+    // (блок узкий — чат клиента сюда не попадает).
+    (String(block.innerText || '').match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || []).forEach(function (m) {
+      if (!values.includes(m)) values.push(m);
     });
     return values;
   }
@@ -2349,15 +2394,22 @@
         '(function(){var res={okCount:0,skipCount:0,err:null};try{' +
         'var $=window.jQuery;if(!$){res.err="нет jQuery на странице";return fin();}' +
         'var b=document.querySelector(\'[data-eduson-target="1"]\');' +
-        'var orig=b.querySelector("input.form-custom-field-acc")||b.querySelector(\'input[name^="field_"]\');' +
+        // Ищем именно тот input, к которому реально привязан виджет Select2 (box «добавить значение»).
+        // Раньше брали первый input.form-custom-field-acc — на новых карточках это уже вписанная
+        // почта БЕЗ select2 → отсюда ложный S2_NO_ONSELECT. Теперь перебираем все input блока.
+        'var orig=null,s2=null,cc=[].slice.call(b.querySelectorAll("input"));' +
+        'for(var ci=0;ci<cc.length;ci++){try{var dd=$(cc[ci]).data("select2");if(dd&&typeof dd.onSelect==="function"){orig=cc[ci];s2=dd;break;}}catch(e0){}}' +
+        'if(!orig){orig=b.querySelector("input.additional_input_field")||b.querySelector("input.select2-offscreen")||b.querySelector("input.form-custom-field-acc")||b.querySelector(\'input[name^="field_"]\');}' +
         'if(!orig){res.err="поле не найдено";return fin();}' +
-        'var $o=$(orig);var s2=$o.data("select2");' +
+        'var $o=$(orig);if(!s2)s2=$o.data("select2");' +
         'var P=' + payload + ';' +
         'var norm=function(v){return P.isPhone?String(v).replace(/\\D/g,"").slice(-10):String(v).toLowerCase().trim();};' +
         // что УЖЕ есть в поле: модель select2 + текст скрытого input + «плашки» в DOM
         'var have=[];' +
         'try{var cur=$o.select2("val");if(!Array.isArray(cur))cur=cur?[cur]:[];cur.forEach(function(v){if(v)have.push(norm(v));});}catch(e0){}' +
         'try{(orig.value||"").split(/[,;\\s]+/).forEach(function(p){p=p.trim();if(p)have.push(norm(p));});}catch(e0){}' +
+        // уже вписанные значения на новых карточках лежат в отдельных input name="field_2[<id>]" —
+        'try{b.querySelectorAll(\'input[name^="field_"]\').forEach(function(x){var p=(x.value||"").trim();if(p)have.push(norm(p));});}catch(e0){}' +
         'try{b.querySelectorAll(".select2-search-choice,.select2-selection__choice,li.select2-selection__choice").forEach(function(x){' +
         'var tt=(x.textContent||"").replace(/^[\\s\\u00d7\\u2715\\u2716x]+|[\\s\\u00d7\\u2715\\u2716x]+$/g,"").trim();if(tt)have.push(norm(tt));});}catch(e0){}' +
         'var toAdd=P.values.filter(function(v){return have.indexOf(norm(v))===-1;});' +
@@ -2447,7 +2499,15 @@
     const skipped = [];
     let hasError = false;
     const uniqueValues = [];
+    const seenNorm = new Set();
     for (const val of values) {
+      // схлопываем одинаковые значения в самом списке (иначе один адрес мог
+      // вписаться дважды — оба раза проверка «есть в блоке?» проходила ДО первой записи)
+      const norm = isPhone
+        ? String(val).replace(/\D/g, '').slice(-10)
+        : String(val).toLowerCase().trim();
+      if (seenNorm.has(norm)) { skipped.push(val); continue; }
+      seenNorm.add(norm);
       if (!valueExistsInBlock(block, val, isPhone)) {
         uniqueValues.push(val);
       } else {
@@ -2504,21 +2564,38 @@
     return saveShown();
   }
 
-  // Что из data.emails уже видно в карточке OmniDesk (чтобы не пытаться вписать снова).
-  function cardEmailSet() {
+  // Что из data.emails / data.phones уже видно в карточке OmniDesk (чтобы не вписывать снова).
+  // kind: 'email' | 'phone'. Ключи нормализованы: почта → lower+trim, телефон → последние 10 цифр.
+  function cardValueSet(kind) {
     const set = new Set();
     try {
-      // ТОЛЬКО поля карточки — не весь текст страницы (иначе почта из чата клиента
-      // ошибочно считается «уже вписанной», и магнит её пропускает).
-      grabContactSeed(true).emails.forEach(function (e) { set.add(String(e).toLowerCase().trim()); });
+      // ТОЛЬКО поля карточки — не весь текст страницы (иначе почта/телефон из чата
+      // клиента ошибочно считаются «уже вписанными», и магнит их пропускает).
+      const seed = grabContactSeed(true);
+      if (kind === 'phone') {
+        (seed.phones || []).forEach(function (p) {
+          const d = String(p).replace(/\D/g, '').slice(-10);
+          if (d.length === 10) set.add(d);
+        });
+      } else {
+        (seed.emails || []).forEach(function (e) { set.add(String(e).toLowerCase().trim()); });
+      }
     } catch (e) {}
     return set;
   }
+  function cardEmailSet() { return cardValueSet('email'); }
 
   // Глобальные переменные для хранения результатов заполнения
   let lastFillResult = { ok: [], miss: [], soft: [], data: null };
   async function fillInputsFromData(data, prefix) {
     const ok = [], miss = [], soft = [];   // soft = «не смогла, но не страшно — допиши руками»
+    // Снимок почт/телефонов, УЖЕ вписанных в карточку, снимаем ДО перехода в режим
+    // «редактировать». В обычном режиме сохранённые значения показаны текстом и читаются
+    // надёжно; после входа в редактирование поле почты на миг превращается в пустой
+    // <input>, и раньше магнит принимал карточку за «без почты» → вписывал адрес второй
+    // раз (дубль). Кейс 742-554294.
+    const preCardEmails = IS_OMNI ? cardValueSet('email') : new Set();
+    const preCardPhones = IS_OMNI ? cardValueSet('phone') : new Set();
     if (IS_OMNI) {
       const edit = await ensureOmniEditMode();
       if (!edit) miss.push('карточка не в режиме «редактировать» — нажми «редактировать» в блоке ДАННЫЕ ПОЛЬЗОВАТЕЛЯ');
@@ -2562,8 +2639,17 @@
     }
 
     if (data.emails && data.emails.length) {
-      const onCard = cardEmailSet();
-      const freshEmails = data.emails.filter(function (e) { return !onCard.has(String(e).toLowerCase().trim()); });
+      // что уже в карточке: снимок до режима правки + то, что видно сейчас
+      const onCard = new Set(preCardEmails);
+      cardValueSet('email').forEach(function (e) { onCard.add(e); });
+      // + не даём одному адресу (в амо он мог задвоиться с другим регистром/пробелом)
+      // вписаться дважды за один проход
+      const seenE = new Set();
+      const freshEmails = data.emails.filter(function (e) {
+        const k = String(e).toLowerCase().trim();
+        if (!k || onCard.has(k) || seenE.has(k)) return false;
+        seenE.add(k); return true;
+      });
       if (!freshEmails.length) {
         ok.push(RU.email + ' — уже в карточке');
       } else {
@@ -2573,7 +2659,20 @@
       miss.push(RU.email + ' — в амо пусто');
     }
     if (data.phones && data.phones.length) {
-      await fillAccFieldAsync(['телефон', 'phone'], data.phones, RU.phone, ok, miss, OMNI_FIELDS.phone);
+      const onCardP = new Set(preCardPhones);
+      cardValueSet('phone').forEach(function (p) { onCardP.add(p); });
+      const seenP = new Set();
+      const freshPhones = data.phones.filter(function (p) {
+        const k = String(p).replace(/\D/g, '').slice(-10);
+        if (k.length < 7) return true;           // не похоже на телефон — не трогаем
+        if (onCardP.has(k) || seenP.has(k)) return false;
+        seenP.add(k); return true;
+      });
+      if (!freshPhones.length) {
+        ok.push(RU.phone + ' — уже в карточке');
+      } else {
+        await fillAccFieldAsync(['телефон', 'phone'], freshPhones, RU.phone, ok, miss, OMNI_FIELDS.phone, soft);
+      }
     } else {
       miss.push(RU.phone + ' — в амо пусто');
     }
@@ -3316,7 +3415,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.14.0'; // синхр. с Хэлпером
+  const VER = '1.16.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -6306,7 +6405,7 @@
       form.appendChild(lab('Amo Contact ID', '— кто купил курс'));
       const cRows = (amo.contacts || []).map(function (c) { return { label: (c.name || 'контакт') + ' · ' + c.id, value: c.id }; });
       let cDefault = '';
-      const byName = (amo.contacts || []).find(function (c) { return cardName && (c.name || '').toLowerCase().indexOf(cardName.split(' ')[0]) !== -1 && (c.name || '').toLowerCase().indexOf(cardName.split(' ')[1] || ' ') !== -1; });
+      const byName = (amo.contacts || []).find(function (c) { return cardName && (c.name || '').toLowerCase().indexOf(cardName.split(' ')[0]) !== -1 && (c.name || '').toLowerCase().indexOf(cardName.split(' ')[1] || '') !== -1; });
       cDefault = (byName && byName.id) || ((amo.contacts.find(function (c) { return c.main; }) || amo.contacts[0] || {}).id) || '';
       const cCombo = combo(cRows.length ? cRows : [{ label: '—', value: '' }], 'ID контакта', cDefault);
       form.appendChild(cCombo.el);
