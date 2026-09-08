@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.17.0
+// @version      1.17.2
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -121,7 +121,7 @@
 
   /* ================================================ */
 
-  const VER = '1.17.0';
+  const VER = '1.17.2';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -1343,6 +1343,10 @@
     toast(data, 'ok');
   }
   /* ---------- чтение данных клиента со страницы OmniDesk ---------- */
+  // Виджет интеграции amoCRM в правой панели OmniDesk (показывает ФИО/телефон контакта
+  // из сделки). Это НЕ поля карточки — если прочитать телефон отсюда, магнит решит, что он
+  // «уже вписан», и не заполнит поле ТЕЛЕФОН. Исключаем этот блок при чтении карточки.
+  const AMO_WIDGET_SEL = '.info_amocrm, [id^="integration_container_amocrm"], [class*="amocrm" i]';
   function readCardValueNear(patterns, kind) {
     const labs = document.querySelectorAll('label, h6, [class*="label"]');
     const results = [];
@@ -1353,9 +1357,13 @@
         if (!t.includes(pl)) continue;
         // пропускаем скрытые лейблы (напр. лейбл в закрытой модалке `.mfp-hide`)
         if (!lab.getClientRects().length) continue;
+        // лейбл внутри виджета amoCRM — это не карточка
+        if (lab.closest && lab.closest(AMO_WIDGET_SEL)) continue;
         let el = lab.parentElement;
         // не поднимаемся до <body>/<html> — иначе прочитаем весь текст страницы (чат клиента)
         for (let i = 0; i < 4 && el && el !== document.body && el !== document.documentElement; i++) {
+          // поднялись до контейнера, где рядом висит виджет amoCRM — дальше текст не читаем
+          if (el.querySelector && el.querySelector(AMO_WIDGET_SEL)) break;
           const text = el.innerText || '';
           if (kind === 'email') {
             const matches = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g);
@@ -1408,6 +1416,7 @@
     document.querySelectorAll('input, textarea').forEach(el => {
       const v = (el.value || '').trim();
       if (!v) return;
+      if (el.closest && el.closest(AMO_WIDGET_SEL)) return;   // поля виджета amoCRM — не карточка
       if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v) && !v.toLowerCase().endsWith('@eduson.tv')) {
         if (!seed.emails.includes(v)) seed.emails.push(v);
       }
@@ -2463,10 +2472,13 @@
     const isPhone = patterns.some(p => p.includes('телефон'));
     const softBucket = soft || miss;   // куда складывать «не смогла, но не страшно»
 
-    // EMAIL — виджет Select2 («теги»). Он инициализируется при входе
-    // в режим «редактировать»; если ещё не готов — ждём и подталкиваем «+».
+    // EMAIL и ТЕЛЕФОН в OmniDesk — поля-«теги» на Select2. Виджет инициализируется
+    // при входе в режим «редактировать»; если ещё не готов — ждём и подталкиваем «+».
+    // Раньше ждали только для email; OmniDesk перевёл и телефон на Select2 — и из-за
+    // гонки телефон уходил в старый путь «простое поле», где в Select2 вписать нельзя,
+    // → «телефон перестал добавляться». Теперь ждём Select2 для любого поля-«тегов».
     let s2 = block.querySelector('.select2-container');
-    if (!s2 && !isPhone) {
+    if (!s2) {
       for (let i = 0; i < 12 && !s2; i++) { await sleep(200); s2 = block.querySelector('.select2-container'); }
       if (!s2) {
         const plus = block.querySelector('.add_field');
@@ -3415,7 +3427,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.17.0'; // синхр. с Хэлпером
+  const VER = '1.17.2'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
