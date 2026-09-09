@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.17.2
+// @version      1.18.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -37,6 +37,7 @@
     email:   '#field_2',
     phone:   '#field_16',
     course:  '#field_4660',
+    cluster: '#field_11786',
     support: '#field_7301',
     admin:   '#field_7302',
     superuser: '#field_10307',
@@ -47,13 +48,14 @@
     email:   ['email', 'e-mail', 'почта'],
     phone:   ['телефон', 'phone'],
     course:  ['курс', 'course'],
+    cluster: ['кластер', 'cluster'],
     support: ['поддержк', 'обслуживан'],
     admin:   ['админк', 'суперюзер', 'супер юзер', 'супер-юзер', 'admin'],
   };
 
   const RU = {
     name: 'ФИО', email: 'EMAIL', phone: 'ТЕЛЕФОН',
-    course: 'КУРС', support: 'ДАТА ПОДДЕРЖКИ', admin: 'АДМИНКА',
+    course: 'КУРС', cluster: 'КЛАСТЕР', support: 'ДАТА ПОДДЕРЖКИ', admin: 'АДМИНКА',
   };
 
   const DEFAULT_SUPPORT_MONTHS = 12;
@@ -121,7 +123,7 @@
 
   /* ================================================ */
 
-  const VER = '1.17.2';
+  const VER = '1.18.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -1070,6 +1072,9 @@
         const rv = String(values[0] || '').replace(/\D/g, '');
         if (!data.roistat && rv.length >= 4) data.roistat = rv;
       }
+      if (/^кластер$/.test(n) && !data.cluster && values[0]) {
+        data.cluster = String(values[0]).trim();
+      }
       const cs = courseFieldScore(n);
       if (cs > bestCourseScore) { bestCourse = values[0]; bestCourseScore = cs; }
     });
@@ -1260,6 +1265,7 @@
   function newClientData(source) {
     return { name: '', emails: [], phones: [], course: '', support: '', purchase: '',
              purchaseTs: 0, amoLeadId: 0, amoContactId: 0, cardAmoId: '', roistat: '', cardEmails: [],
+             cluster: '',
              admin: [], isSuper: false, supportMonths: 0, noPurchase: false,
              source: source, ts: Date.now() };
   }
@@ -2256,6 +2262,38 @@
 
     return null;
   }
+
+  // Поле «Кластер» (#field_11786) — нативный <select> с плагином Chosen, как «Курс».
+  // Значение приходит из поля «Кластер» сделки в амо; вписываем опцию с тем же текстом.
+  // Список амо и список OmniDesk почти совпадают дословно; несовпадающие (Подарочный,
+  // Общее, Бесплатный курс, Английский язык, Косметика) — оставляем куратору.
+  const CLUSTER_ALIASES = {
+    'маркетинг и дизайн': 'Маркетинг',
+    'дизайн': 'Маркетинг',
+    'финансы и бухгалтерия': 'Финансы',
+    'бухучет': 'Бухгалтерия',
+    'психология': 'HR',
+    'hr и психология': 'HR',
+    'it и аналитика': 'IT'
+  };
+  function fillClusterSelect(clusterName) {
+    const sel = document.querySelector(OMNI_FIELDS.cluster) || findOmniInput(LABELS.cluster);
+    if (!sel || sel.tagName !== 'SELECT') return null;
+    const norm = function (s) {
+      return String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
+    };
+    let want = norm(clusterName);
+    if (!want || want === '—' || want === '-') return null;
+    want = norm(CLUSTER_ALIASES[want] || clusterName);
+    const opt = [].slice.call(sel.options).find(function (o) { return norm(o.textContent) === want; });
+    if (!opt) return null;
+    sel.value = opt.value;
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    sel.dispatchEvent(new Event('chosen:updated'));
+    const span = sel.parentElement.querySelector('.chosen-container .chosen-single span');
+    if (span) span.textContent = opt.textContent.trim();
+    return opt.textContent.trim();
+  }
   function setFieldById(sel, value, ruName, patterns, ok, miss) {
     let el = document.querySelector(sel);
     if (!el || !isVisible(el)) el = findOmniInput(patterns);
@@ -2626,6 +2664,17 @@
         miss.push(RU.course + ' — не нашла похожий вариант в списке');
       }
     } else miss.push(RU.course + ' — в амо пусто');
+
+    // КЛАСТЕР — из поля «Кластер» сделки в амо (поле в карточке добавил тимлид, #field_11786).
+    if (IS_OMNI && document.querySelector(OMNI_FIELDS.cluster)) {
+      if (data.cluster) {
+        const clLabel = fillClusterSelect(data.cluster);
+        if (clLabel) ok.push(RU.cluster);
+        else soft.push(RU.cluster + ' «' + data.cluster + '» — нет в списке OmniDesk, выбери вручную');
+      } else {
+        soft.push(RU.cluster + ' — в амо не указан, выбери вручную');
+      }
+    }
 
     // Определяем месяцы поддержки на основе названия курса из amo
     let months = data.supportMonths !== undefined ? data.supportMonths : getSupportMonthsForCourse(data.course);
@@ -3427,7 +3476,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.17.2'; // синхр. с Хэлпером
+  const VER = '1.18.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
