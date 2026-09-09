@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.34.2
+// @version      1.34.3
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -874,31 +874,32 @@
   // Стандартная (голубая) — «Больше 3 дней» и пока сценарий не определён.
   // Кнопки и блоки — сильно закруглённые; шрифт — округлый (Nunito с фолбэком).
   const ACC = 'var(--rm-acc)', ACC_DK = 'var(--rm-acc-dk)', ACC_LT = 'var(--rm-acc-lt)', ACC_BD = 'var(--rm-acc-bd)';
+  const ACC_FG = 'var(--rm-acc-fg,#fff)';  // текст поверх акцента (на кнопках/шапке) — обычно белый, для светлых тем тёмный
   const C_AUTO = '#9CA3AF', C_MAN = ACC;
   const THEME_DEFAULT = {
     '--rm-acc': '#0284C7', '--rm-acc-dk': '#075985', '--rm-acc-lt': '#E0F2FE',
-    '--rm-acc-bd': '#BAE6FD', '--rm-bg': '#FFFFFF', '--rm-card': '#F8FAFC',
+    '--rm-acc-bd': '#BAE6FD', '--rm-bg': '#FFFFFF', '--rm-card': '#F8FAFC', '--rm-acc-fg': '#FFFFFF',
   };
   const THEMES = {
-    before: { '--rm-acc': '#6B7280', '--rm-acc-dk': '#374151', '--rm-acc-lt': '#F1F5F9', '--rm-acc-bd': '#CBD5E1', '--rm-bg': '#F4F4F5', '--rm-card': '#FFFFFF' },
-    le3:    { '--rm-acc': '#EA580C', '--rm-acc-dk': '#9A3412', '--rm-acc-lt': '#FFEFE2', '--rm-acc-bd': '#FDBA74', '--rm-bg': '#FFF7ED', '--rm-card': '#FFFFFF' },
-    resale: { '--rm-acc': '#7C3AED', '--rm-acc-dk': '#5B21B6', '--rm-acc-lt': '#F1EBFF', '--rm-acc-bd': '#C4B5FD', '--rm-bg': '#F5F3FF', '--rm-card': '#FFFFFF' },
-    kids:   { '--rm-acc': '#B4924C', '--rm-acc-dk': '#7C632F', '--rm-acc-lt': '#FAF6EC', '--rm-acc-bd': '#E4D3A8', '--rm-bg': '#FBF9F1', '--rm-card': '#FFFFFF' },
+    before: { '--rm-acc': '#6B7280', '--rm-acc-dk': '#374151', '--rm-acc-lt': '#F1F5F9', '--rm-acc-bd': '#CBD5E1', '--rm-bg': '#F4F4F5', '--rm-card': '#FFFFFF', '--rm-acc-fg': '#FFFFFF' },
+    le3:    { '--rm-acc': '#EA580C', '--rm-acc-dk': '#9A3412', '--rm-acc-lt': '#FFEFE2', '--rm-acc-bd': '#FDBA74', '--rm-bg': '#FFF7ED', '--rm-card': '#FFFFFF', '--rm-acc-fg': '#FFFFFF' },
+    resale: { '--rm-acc': '#7C3AED', '--rm-acc-dk': '#5B21B6', '--rm-acc-lt': '#F1EBFF', '--rm-acc-bd': '#C4B5FD', '--rm-bg': '#F5F3FF', '--rm-card': '#FFFFFF', '--rm-acc-fg': '#FFFFFF' },
+    kids:   { '--rm-acc': '#FCE98B', '--rm-acc-dk': '#6B5610', '--rm-acc-lt': '#FEFBEA', '--rm-acc-bd': '#F3E39C', '--rm-bg': '#FFFDF3', '--rm-card': '#FFFFFF', '--rm-acc-fg': '#5E4C0E' },
   };
   const themeFor = s => THEMES[s] || THEME_DEFAULT;
   const applyTheme = (elm, s) => { const th = themeFor(s); Object.keys(THEME_DEFAULT).forEach(k => elm.style.setProperty(k, th[k])); };
   const FONT = "'Nunito','Varela Round','Segoe UI',system-ui,-apple-system,Roboto,Arial,sans-serif";
   const S = {
     box: 'position:fixed;z-index:2147483646;background:var(--rm-bg,#fff);border-radius:16px;box-shadow:0 12px 36px rgba(15,23,42,.22);width:min(720px,96vw);max-width:96vw;max-height:94vh;min-width:300px;min-height:200px;display:flex;flex-direction:column;font-family:' + FONT + ';border:1px solid #E5E7EB;resize:both;overflow:hidden;transition:background .2s;',
-    head: 'display:flex;justify-content:space-between;align-items:center;gap:6px;padding:9px 10px 9px 13px;background:' + ACC + ';color:#fff;border-radius:16px 16px 0 0;cursor:move;user-select:none;flex:0 0 auto;',
+    head: 'display:flex;justify-content:space-between;align-items:center;gap:6px;padding:9px 10px 9px 13px;background:' + ACC + ';color:' + ACC_FG + ';border-radius:16px 16px 0 0;cursor:move;user-select:none;flex:0 0 auto;',
     title: 'font-size:12.5px;font-weight:800;white-space:nowrap;',
-    hBtn: 'background:rgba(255,255,255,.20);border:none;color:#fff;border-radius:999px;padding:2px 9px;font-size:11px;line-height:1.4;cursor:pointer;font-family:inherit;font-weight:700;',
+    hBtn: 'background:rgba(127,127,127,.18);border:none;color:' + ACC_FG + ';border-radius:999px;padding:2px 9px;font-size:11px;line-height:1.4;cursor:pointer;font-family:inherit;font-weight:700;',
     body: 'padding:10px 14px 14px;overflow:auto;flex:1 1 auto;min-height:0;',
     grid: 'display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap;margin-top:8px;',
     col: 'flex:1 1 300px;min-width:0;display:flex;flex-direction:column;',
     scen: 'font-size:11px;line-height:1.5;margin:0 0 7px;padding:9px 12px;border-radius:14px;background:' + ACC_LT + ';border:1px solid ' + ACC_BD + ';white-space:pre-wrap;color:' + ACC_DK + ';',
     block: 'background:var(--rm-card,#F8FAFC);border:1px solid #E5E7EB;border-radius:16px;padding:11px 13px;margin-top:10px;',
-    blockHdr: 'font-size:11.5px;font-weight:800;color:' + ACC + ';letter-spacing:.2px;margin-bottom:7px;',
+    blockHdr: 'font-size:11.5px;font-weight:800;color:' + ACC_DK + ';letter-spacing:.2px;margin-bottom:7px;',
     grp: 'font-size:9.5px;font-weight:800;color:#6B7280;letter-spacing:.3px;text-transform:uppercase;margin:10px 0 2px;',
     legend: 'font-size:9.5px;margin:2px 0 4px;line-height:1.5;',
     amoCard: 'background:var(--rm-card,#F8FAFC);border:1px solid #E5E7EB;border-radius:16px;padding:10px 13px;margin-top:10px;',
@@ -907,9 +908,9 @@
     lab: 'font-size:10.5px;color:#374151;font-weight:600;margin:0 0 3px;display:flex;justify-content:space-between;align-items:baseline;gap:6px;',
     tag: 'font-size:8px;font-weight:800;text-transform:uppercase;letter-spacing:.3px;flex:0 0 auto;',
     input: 'width:100%;box-sizing:border-box;border:1px solid #D1D5DB;border-radius:12px;padding:6px 10px;font-size:12px;font-family:inherit;background:#fff;',
-    btn: 'width:100%;box-sizing:border-box;background:' + ACC + ';color:#fff;border:none;border-radius:16px;padding:9px 12px;font-size:11.5px;font-weight:700;cursor:pointer;font-family:inherit;margin-top:7px;',
-    btnAlt: 'width:100%;box-sizing:border-box;background:#fff;color:' + ACC + ';border:1.5px solid ' + ACC_BD + ';border-radius:16px;padding:9px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;margin-top:7px;',
-    big: 'width:100%;box-sizing:border-box;background:' + ACC + ';color:#fff;border:none;border-radius:18px;padding:11px;font-size:12px;font-weight:800;cursor:pointer;font-family:inherit;margin-top:7px;',
+    btn: 'width:100%;box-sizing:border-box;background:' + ACC + ';color:' + ACC_FG + ';border:none;border-radius:16px;padding:9px 12px;font-size:11.5px;font-weight:700;cursor:pointer;font-family:inherit;margin-top:7px;',
+    btnAlt: 'width:100%;box-sizing:border-box;background:#fff;color:' + ACC_DK + ';border:1.5px solid ' + ACC_BD + ';border-radius:16px;padding:9px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;margin-top:7px;',
+    big: 'width:100%;box-sizing:border-box;background:' + ACC + ';color:' + ACC_FG + ';border:none;border-radius:18px;padding:11px;font-size:12px;font-weight:800;cursor:pointer;font-family:inherit;margin-top:7px;',
     small: 'width:100%;box-sizing:border-box;background:#F3F4F6;color:#4B5563;border:1px solid #E5E7EB;border-radius:12px;padding:7px 9px;font-size:10.5px;font-weight:700;cursor:pointer;font-family:inherit;margin-top:5px;',
     status: 'font-size:11px;margin-top:8px;line-height:1.5;white-space:pre-wrap;color:#374151;background:#F9FAFB;border:1px solid #EEF0F2;border-radius:14px;padding:8px 11px;',
     hint: 'font-size:9.5px;color:#9CA3AF;margin-top:7px;line-height:1.45;',
@@ -1357,7 +1358,7 @@
     const amoCard = el('div', S.amoCard);
     const amoHdr = el('div', 'display:flex;justify-content:space-between;align-items:center;');
     amoHdr.appendChild(el('span', S.blockHdr + 'margin:0;', '📇 Данные из амо'));
-    const bEdit = el('button', 'background:' + ACC_LT + ';border:none;color:' + ACC + ';border-radius:999px;padding:3px 10px;font-size:10px;font-weight:700;cursor:pointer;font-family:inherit;', '✏️ поправить');
+    const bEdit = el('button', 'background:' + ACC_LT + ';border:none;color:' + ACC_DK + ';border-radius:999px;padding:3px 10px;font-size:10px;font-weight:700;cursor:pointer;font-family:inherit;', '✏️ поправить');
     amoHdr.appendChild(bEdit);
     amoCard.appendChild(amoHdr);
     amoCard.appendChild(amoSummary);
@@ -2175,7 +2176,7 @@
   }
 
   if (location.hostname.endsWith('omnidesk.ru')) {
-    console.log(TAG, 'запущен, версия ' + '1.34.2');
+    console.log(TAG, 'запущен, версия ' + '1.34.3');
     keepSynced(function () {
       removeLauncher();
       ensureMenuItem();
