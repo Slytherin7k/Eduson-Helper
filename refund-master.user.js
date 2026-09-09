@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.34.0
+// @version      1.34.1
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -1652,7 +1652,9 @@
           durCombo.input.placeholder = 'печатай название курса…';
           _durSelectFilled = true;
         }
-        if (selName) durCombo.value = selName;
+        // явное совпадение из таблицы — ставим; иначе, если поле пустое, показываем курс из амо
+        const want = selName || (durCombo.value.trim() ? '' : (clean(T.course) || ''));
+        if (want) durCombo.value = want;
       }).catch(() => { durCombo.input.placeholder = 'таблица недоступна — впиши ак.ч. и дни вручную'; });
     };
     const applyDurByName = (name) => {
@@ -2173,7 +2175,7 @@
   }
 
   if (location.hostname.endsWith('omnidesk.ru')) {
-    console.log(TAG, 'запущен, версия ' + '1.34.0');
+    console.log(TAG, 'запущен, версия ' + '1.34.1');
     keepSynced(function () {
       removeLauncher();
       ensureMenuItem();
