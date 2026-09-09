@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.33.0
+// @version      1.34.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -56,7 +56,7 @@
     'Руденко Диана', 'Фомина Дарья', 'Хациева Расита', 'Цурикова Юлия',
   ];
   const STATUSES = ['Общение', 'Остается', 'Делаем возврат', 'Деньги отправлены'];
-  const RESULTS = ['Возврат', 'Остается'];
+  const RESULTS = ['Возврат', 'Остается', 'В работе'];
   const CLUSTERS = [
     'Аналитика', 'Финансы', 'IT', 'Менеджмент', 'Бухгалтерия', 'HR', 'МПП',
     'Ресейл', 'Детские курсы', 'Отраслевое управление', 'Маркетинг',
@@ -82,6 +82,38 @@
 
   const F_VID_OPLATY = 1285563;   // «Вид оплаты B2C»
   const F_OPERATOR = 1623777;     // «Оператор Рассрочки»
+
+  // Дата смены оферты (= начало расчёта через калькулятор). Название сценария «До ДД.ММ.ГГГГ».
+  const OFFER_DATE_STR = '29.07.2026';
+
+  // Сценарии кейса. Палитра всей панели меняется по сценарию (см. THEMES).
+  //  before — куплено до смены оферты (серая тема, без калькулятора)
+  //  gt3    — куплено после смены оферты, заявка > 3 дней (стандартная голубая тема, калькулятор)
+  //  le3    — заявка ≤ 3 дней (оранжевая тема, передаём РГ)
+  //  resale — ресейл TeachMeSkills (фиолетовая тема; в OmniDesk у курса эмодзи 🅿️)
+  //  kids   — детские курсы (жёлтая тема; эмодзи 🐣, пока не у всех — есть ручной выбор)
+  const SCENARIOS = {
+    before: { name: 'До ' + OFFER_DATE_STR },
+    gt3:    { name: 'Больше 3 дней' },
+    le3:    { name: 'Меньше или равно 3 д.' },
+    resale: { name: 'Ресейл TeachMeSkills' },
+    kids:   { name: 'Детские курсы' },
+  };
+  const SCEN_MANUAL = [
+    ['', '— по кейсу (авто) —'],
+    ['before', SCENARIOS.before.name],
+    ['gt3', SCENARIOS.gt3.name],
+    ['le3', SCENARIOS.le3.name],
+    ['resale', SCENARIOS.resale.name],
+    ['kids', SCENARIOS.kids.name],
+  ];
+  // Метка-эмодзи в поле КУРС карточки OmniDesk → сценарий.
+  const KURS_MARK = { '\u{1F17F}': 'resale', '\u{1F423}': 'kids' }; // 🅿️ ресейл, 🐣 детские
+
+  // Убрать метку-эмодзи из названия курса (в amo её нет, но на всякий случай).
+  function stripMark(s) {
+    return String(s || '').replace(/[\u{1F17F}\u{1F423}]️?/gu, '').replace(/\s+/g, ' ').trim();
+  }
 
   // Команды продаж: тег РГ (руководителя) → его МОПы. Для автоподстановки в блок
   // «Возврат ≤ 3 дней → РГ». Актуально на 31.08.2026. Имена МОПов — в любом порядке слов.
@@ -321,15 +353,21 @@
       name: best.name, exact: bestScore >= 1000, dupes: dupes };
   }
 
-  function fetchCourseDuration(courseName) {
+  let _durRows = null;
+  function fetchDurationRows() {
+    if (_durRows) return Promise.resolve(_durRows);
     return gmFetchText(DURATION_CSV_URL + '&_cb=' + Date.now()).then(text => {
       if (looksLikeLoginPage(text)) throw new Error('нужен вход в Google');
       const rows = parseCsvRows(text).slice(1)
         .map(r => ({ name: (r[0] || '').trim(), hours: (r[1] || '').trim(), days: (r[2] || '').trim() }))
         .filter(r => r.name && (r.hours || r.days));
       if (!rows.length) throw new Error('таблица длительности пустая');
-      return pickDuration(courseName, rows);
+      _durRows = rows;
+      return rows;
     });
+  }
+  function fetchCourseDuration(courseName) {
+    return fetchDurationRows().then(rows => pickDuration(courseName, rows));
   }
 
   function fmtTs(ts) {
@@ -384,8 +422,8 @@
       const n = (f.field_name || '').toLowerCase().trim();
       const vals = fieldValues(f);
       if (!vals.length) return;
-      if (!out.course && /продукт для шаблон/.test(n)) out.course = vals[0];
-      else if (!out.course && /категор/.test(n) && !/старая/.test(n)) out.course = vals[0];
+      if (!out.course && /продукт для шаблон/.test(n)) out.course = stripMark(vals[0]);
+      else if (!out.course && /категор/.test(n) && !/старая/.test(n)) out.course = stripMark(vals[0]);
       if (!out.cluster && n === 'кластер') out.cluster = vals[0];
     });
     if (!out.cluster) {
@@ -394,7 +432,7 @@
         if (!out.cluster && /^кластер$/.test(n)) out.cluster = (fieldValues(f)[0] || '');
       });
     }
-    if (!out.course) out.course = String((lead && lead.name) || '');
+    if (!out.course) out.course = stripMark(String((lead && lead.name) || ''));
     out.payType = mapPayForm(fieldValById(lead, F_VID_OPLATY), fieldValById(lead, F_OPERATOR));
     out.amount = (lead && lead.price) ? String(lead.price) : '';
   }
@@ -832,13 +870,26 @@
     return e;
   }
 
-  // Гамма: голубой акцент + чёрный / серый / белый. Красный — только ошибки.
+  // Гамма панели — через CSS-переменные на корне панели, меняется по сценарию (см. THEMES).
+  // Стандартная (голубая) — «Больше 3 дней» и пока сценарий не определён.
   // Кнопки и блоки — сильно закруглённые; шрифт — округлый (Nunito с фолбэком).
-  const ACC = '#0284C7', ACC_DK = '#075985', ACC_LT = '#E0F2FE', ACC_BD = '#BAE6FD';
+  const ACC = 'var(--rm-acc)', ACC_DK = 'var(--rm-acc-dk)', ACC_LT = 'var(--rm-acc-lt)', ACC_BD = 'var(--rm-acc-bd)';
   const C_AUTO = '#9CA3AF', C_MAN = ACC;
+  const THEME_DEFAULT = {
+    '--rm-acc': '#0284C7', '--rm-acc-dk': '#075985', '--rm-acc-lt': '#E0F2FE',
+    '--rm-acc-bd': '#BAE6FD', '--rm-bg': '#FFFFFF', '--rm-card': '#F8FAFC',
+  };
+  const THEMES = {
+    before: { '--rm-acc': '#6B7280', '--rm-acc-dk': '#374151', '--rm-acc-lt': '#F1F5F9', '--rm-acc-bd': '#CBD5E1', '--rm-bg': '#F4F4F5', '--rm-card': '#FFFFFF' },
+    le3:    { '--rm-acc': '#EA580C', '--rm-acc-dk': '#9A3412', '--rm-acc-lt': '#FFEFE2', '--rm-acc-bd': '#FDBA74', '--rm-bg': '#FFF7ED', '--rm-card': '#FFFFFF' },
+    resale: { '--rm-acc': '#7C3AED', '--rm-acc-dk': '#5B21B6', '--rm-acc-lt': '#F1EBFF', '--rm-acc-bd': '#C4B5FD', '--rm-bg': '#F5F3FF', '--rm-card': '#FFFFFF' },
+    kids:   { '--rm-acc': '#CA8A04', '--rm-acc-dk': '#854D0E', '--rm-acc-lt': '#FEF6D9', '--rm-acc-bd': '#FCD34D', '--rm-bg': '#FEFCE8', '--rm-card': '#FFFFFF' },
+  };
+  const themeFor = s => THEMES[s] || THEME_DEFAULT;
+  const applyTheme = (elm, s) => { const th = themeFor(s); Object.keys(THEME_DEFAULT).forEach(k => elm.style.setProperty(k, th[k])); };
   const FONT = "'Nunito','Varela Round','Segoe UI',system-ui,-apple-system,Roboto,Arial,sans-serif";
   const S = {
-    box: 'position:fixed;z-index:2147483646;background:#fff;border-radius:16px;box-shadow:0 12px 36px rgba(15,23,42,.22);width:min(720px,96vw);max-width:96vw;max-height:94vh;min-width:300px;min-height:200px;display:flex;flex-direction:column;font-family:' + FONT + ';border:1px solid #E5E7EB;resize:both;overflow:hidden;',
+    box: 'position:fixed;z-index:2147483646;background:var(--rm-bg,#fff);border-radius:16px;box-shadow:0 12px 36px rgba(15,23,42,.22);width:min(720px,96vw);max-width:96vw;max-height:94vh;min-width:300px;min-height:200px;display:flex;flex-direction:column;font-family:' + FONT + ';border:1px solid #E5E7EB;resize:both;overflow:hidden;transition:background .2s;',
     head: 'display:flex;justify-content:space-between;align-items:center;gap:6px;padding:9px 10px 9px 13px;background:' + ACC + ';color:#fff;border-radius:16px 16px 0 0;cursor:move;user-select:none;flex:0 0 auto;',
     title: 'font-size:12.5px;font-weight:800;white-space:nowrap;',
     hBtn: 'background:rgba(255,255,255,.20);border:none;color:#fff;border-radius:999px;padding:2px 9px;font-size:11px;line-height:1.4;cursor:pointer;font-family:inherit;font-weight:700;',
@@ -846,12 +897,12 @@
     grid: 'display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap;margin-top:8px;',
     col: 'flex:1 1 300px;min-width:0;display:flex;flex-direction:column;',
     scen: 'font-size:11px;line-height:1.5;margin:0 0 7px;padding:9px 12px;border-radius:14px;background:' + ACC_LT + ';border:1px solid ' + ACC_BD + ';white-space:pre-wrap;color:' + ACC_DK + ';',
-    block: 'background:#F8FAFC;border:1px solid #E5E7EB;border-radius:16px;padding:11px 13px;margin-top:10px;',
+    block: 'background:var(--rm-card,#F8FAFC);border:1px solid #E5E7EB;border-radius:16px;padding:11px 13px;margin-top:10px;',
     blockHdr: 'font-size:11.5px;font-weight:800;color:' + ACC + ';letter-spacing:.2px;margin-bottom:7px;',
     grp: 'font-size:9.5px;font-weight:800;color:#6B7280;letter-spacing:.3px;text-transform:uppercase;margin:10px 0 2px;',
     legend: 'font-size:9.5px;margin:2px 0 4px;line-height:1.5;',
-    amoCard: 'background:#F8FAFC;border:1px solid #E5E7EB;border-radius:16px;padding:10px 13px;margin-top:10px;',
-    negBox: 'background:#F8FAFC;border:1px solid #E5E7EB;border-left:3px solid ' + ACC + ';border-radius:16px;padding:11px 13px;margin-top:10px;',
+    amoCard: 'background:var(--rm-card,#F8FAFC);border:1px solid #E5E7EB;border-radius:16px;padding:10px 13px;margin-top:10px;',
+    negBox: 'background:var(--rm-card,#F8FAFC);border:1px solid #E5E7EB;border-left:3px solid ' + ACC + ';border-radius:16px;padding:11px 13px;margin-top:10px;',
     fwrap: 'margin:7px 0 0;',
     lab: 'font-size:10.5px;color:#374151;font-weight:600;margin:0 0 3px;display:flex;justify-content:space-between;align-items:baseline;gap:6px;',
     tag: 'font-size:8px;font-weight:800;text-transform:uppercase;letter-spacing:.3px;flex:0 0 auto;',
@@ -866,6 +917,58 @@
     err: 'font-size:11px;font-weight:700;color:#B91C1C;background:#FEF2F2;border:1.5px solid #FCA5A5;border-radius:14px;padding:9px 12px;margin-top:9px;line-height:1.4;',
     row: 'display:flex;gap:6px;',
   };
+
+  // Комбо-поле с поиском (как в Хэлпере, вкладка «Создать карточку»): печатаешь — фильтруется,
+  // клик по стрелке/полю — весь список. rows: [{label, value}]. setRows() — подменить список позже.
+  function combo(rows, ph, initial) {
+    const wrap = el('div', 'position:relative;');
+    const inp = el('input', S.input + 'padding-right:26px;font-weight:700;');
+    inp.setAttribute('autocomplete', 'off');
+    inp.placeholder = ph || '';
+    if (initial != null) inp.value = initial;
+    const caret = el('span', 'position:absolute;right:8px;top:8px;padding:3px;color:#9CA3AF;font-size:9px;cursor:pointer;', '▼');
+    const menu = el('div', 'position:absolute;left:0;right:0;top:calc(100% + 2px);z-index:20;background:#fff;border:1px solid #D1D5DB;border-radius:9px;box-shadow:0 10px 28px rgba(15,23,42,.18);max-height:230px;overflow:auto;display:none;');
+    wrap.appendChild(inp); wrap.appendChild(caret); wrap.appendChild(menu);
+    let cb = null;
+    const draw = (filter) => {
+      menu.innerHTML = '';
+      const f = String(filter || '').toLowerCase().replace(/ё/g, 'е');
+      (rows || []).slice(0, 400).forEach(r => {
+        const hay = (r.label + ' ' + (r.value || '')).toLowerCase().replace(/ё/g, 'е');
+        if (f && hay.indexOf(f) === -1) return;
+        const it = el('div', 'padding:7px 10px;font:600 11.5px ' + FONT + ';color:#111827;cursor:pointer;border-bottom:1px solid #F3F4F6;line-height:1.3;', r.label);
+        it.onmouseenter = () => { it.style.background = '#F0F9FF'; };
+        it.onmouseleave = () => { it.style.background = '#fff'; };
+        it.onmousedown = (e) => {
+          e.preventDefault();
+          inp.value = r.value != null ? r.value : r.label;
+          menu.style.display = 'none';
+          if (cb) cb();
+        };
+        menu.appendChild(it);
+      });
+      menu.style.display = menu.children.length ? 'block' : 'none';
+    };
+    let justFocused = false;
+    const openAll = () => draw('');
+    inp.onfocus = () => { justFocused = true; inp.select(); openAll(); };
+    inp.onmouseup = (e) => { if (justFocused) { e.preventDefault(); justFocused = false; } };
+    inp.onclick = () => { if (menu.style.display === 'none') openAll(); };
+    caret.onmousedown = (e) => {
+      e.preventDefault();
+      if (menu.style.display === 'none') { inp.focus(); openAll(); } else { menu.style.display = 'none'; }
+    };
+    inp.oninput = () => { justFocused = false; draw(inp.value); if (cb) cb(); };
+    inp.onkeydown = (e) => { if (e.key === 'Escape') menu.style.display = 'none'; };
+    inp.onblur = () => { setTimeout(() => { menu.style.display = 'none'; }, 150); };
+    return {
+      el: wrap, input: inp,
+      get value() { return inp.value; },
+      set value(v) { inp.value = v; },
+      onPick: (fn) => { cb = fn; },
+      setRows: (r) => { rows = r || []; },
+    };
+  }
 
   function makeDraggable(box, handle) {
     let sx, sy, ox, oy, drag = false;
@@ -917,7 +1020,7 @@
       claimDate: pick('claimDate', todayStr()), accessDate: '',
       progress: pick('progress', ''), cluster: '', course: '', payType: '',
       reason: pick('reason', GM_getValue('rm_reason') || REASONS[0]),
-      amount: '', result: pick('result', GM_getValue('rm_result') || RESULTS[1]),
+      amount: '', result: pick('result', 'В работе'),
       agreedSum: pick('agreedSum', ''), mop: '', mopFromNote: false,
       clientComment: pick('clientComment', ''),
       amoLink: '', omniLink: location.href.split('#')[0], purchaseDate: '',
@@ -925,6 +1028,7 @@
       rgTag: pick('rgTag', GM_getValue('rm_rg') || ''),
       deals: [], dealId: pick('dealId', ''),
       calcHours: pick('calcHours', ''), calcDays: pick('calcDays', ''),
+      scenOverride: '',   // сценарий при каждом открытии — «авто»; ручной выбор не запоминаем
     };
     // калькулятор: если по кейсу уже сохранены ак.ч./дни — считаем, что куратор их проверил,
     // и не перетираем автоподстановкой из таблицы.
@@ -944,6 +1048,7 @@
     };
 
     panel = el('div', S.box);
+    applyTheme(panel, '');   // стартовая палитра — стандартная; сменится в updateScenario
 
     const head = el('div', S.head);
     head.appendChild(el('div', S.title, '🌀 Возврат-мастер'));
@@ -961,9 +1066,24 @@
     const body = el('div', S.body);
     panel.appendChild(body);
 
-    // scenarioBox и statusBox — на всю ширину, над двумя колонками
-    const scenarioBox = el('div', S.scen, 'Определяю сценарий…');
-    body.appendChild(scenarioBox);
+    // scenarioBox и statusBox — на всю ширину, над двумя колонками.
+    // Мягкая заливка фона по сценарию + акцентная полоска слева (как у блоков панели).
+    const scenBox = el('div', 'margin:0 0 7px;');
+    const scenarioBox = el('div', 'font-size:11px;line-height:1.5;margin:0;padding:9px 12px;border-radius:12px;' +
+      'border:1px solid #E5E7EB;border-left:3px solid ' + ACC + ';background:' + ACC_LT + ';white-space:pre-wrap;color:#374151;');
+    const scenName = el('div', 'font-size:12px;font-weight:800;margin-bottom:3px;color:' + ACC_DK + ';', 'Определяю сценарий…');
+    const scenText = el('div', '', '');
+    scenarioBox.appendChild(scenName);
+    scenarioBox.appendChild(scenText);
+    const scenPick = el('select', S.input);
+    scenPick.style.cssText += 'margin-top:5px;font-size:11px;font-weight:700;';
+    SCEN_MANUAL.forEach(([v, t]) => { const o = el('option', null, t); o.value = v; scenPick.appendChild(o); });
+    scenPick.value = T.scenOverride || '';
+    scenPick.title = 'Обычно определяется сам. Здесь можно задать сценарий вручную.';
+    scenBox.appendChild(scenarioBox);
+    scenBox.appendChild(scenPick);
+    body.appendChild(scenBox);
+    scenPick.addEventListener('change', () => { T.scenOverride = scenPick.value; saveCase(); updateScenario(); });
     const statusBox = el('div', S.status, 'Собираю данные из амо…');
     body.appendChild(statusBox);
     // Полный отчёт по сбору из амо — прячется за кнопкой «ℹ️» в шапке.
@@ -983,7 +1103,7 @@
 
     // блок-«карточка» с заголовком; accent=true → сиреневая полоска слева
     const mkBlock = (parent, titleText, accent) => {
-      const b = el('div', S.block + (accent ? 'border-left:3px solid #7C3AED;' : ''));
+      const b = el('div', S.block + (accent ? 'border-left:3px solid ' + ACC + ';' : ''));
       if (titleText) b.appendChild(el('div', S.blockHdr, titleText));
       parent.appendChild(b);
       return b;
@@ -993,7 +1113,7 @@
       opts = opts || {};
       const wrap = el('div', S.fwrap);
       const lab = el('div', S.lab);
-      lab.appendChild(el('span', 'flex:1 1 auto;', label));
+      lab.appendChild(el('span', 'flex:1 1 auto;' + (opts.danger ? 'color:#DC2626;font-weight:800;' : ''), label));
       // тег «из амо» показываем только у предзаполненных полей; «впиши» убрали совсем
       if (kind === 'auto' && !opts.noTag) lab.appendChild(el('span', S.tag + 'color:' + C_AUTO + ';', 'из амо'));
       wrap.appendChild(lab);
@@ -1017,6 +1137,7 @@
         field.value = T[key];
         field.addEventListener('input', () => { T[key] = field.value; saveCase(); if (opts.onChange) opts.onChange(); });
       }
+      if (opts.danger) field.style.cssText += ';border-color:#DC2626;border-width:1.5px;';
       wrap.appendChild(field);
       parent.appendChild(wrap);
       inputs[key] = field;
@@ -1031,11 +1152,12 @@
     const agreedRaw = () => num(T.agreedSum);
     // Число суммы для проверок: NaN, если вписано не число.
     const agreedNum = () => { const n = parseFloat(agreedRaw().replace(',', '.')); return isFinite(n) ? n : NaN; };
-    // Для таблицы (столбец O): «0» при «Остаётся», иначе число.
-    const agreed = () => T.result === 'Остается' ? '0' : agreedRaw();
-    // Для сообщений и Асаны: «15000 ₽» / «0».
+    // Для таблицы (столбец O): «0» при «Остаётся», пусто при «В работе», иначе число.
+    const agreed = () => T.result === 'Остается' ? '0' : (T.result === 'В работе' ? '' : agreedRaw());
+    // Для сообщений и Асаны: «15000 ₽» / «0» / пусто.
     const agreedTxt = () => {
       if (T.result === 'Остается') return '0';
+      if (T.result === 'В работе') return '';
       const a = agreedRaw();
       return a ? a + ' ₽' : '';
     };
@@ -1046,9 +1168,36 @@
     const link = u => { u = clean(u).replace(/"/g, ''); return u ? '=HYPERLINK("' + u + '")' : ''; };
     const fF = r => '=D' + r + '-E' + r;
     const fM = r => '=МАКС(0;L' + r + '*ЕСЛИ(F' + r + '<=3;1;ЕСЛИ(F' + r + '<=14;0,5;ЕСЛИ(F' + r + '<=30;0,3;ЕСЛИ(F' + r + '<=45;0,15;0))))-L' + r + '*G' + r + ')';
+    // Блеклая подпись «✓ скопировано» рядом с кнопкой, откуда копировали.
+    let copyHintEl = null, copyHintT = 0;
+    const flashCopied = (text, bad) => {
+      try {
+        const btn = document.activeElement;
+        const r = (btn && btn.tagName === 'BUTTON' && panel && panel.contains(btn)) ? btn.getBoundingClientRect() : null;
+        if (!copyHintEl) {
+          copyHintEl = el('div', 'position:fixed;z-index:2147483647;font:700 10.5px ' + FONT + ';pointer-events:none;' +
+            'padding:2px 8px;border-radius:8px;background:#fff;box-shadow:0 2px 8px rgba(15,23,42,.14);transition:opacity .25s;opacity:0;');
+          document.documentElement.appendChild(copyHintEl);
+        }
+        copyHintEl.textContent = text;
+        copyHintEl.style.color = bad ? '#DC2626' : '#9CA3AF';
+        if (r) {
+          copyHintEl.style.left = Math.round(Math.max(4, r.left + r.width / 2 - 45)) + 'px';
+          copyHintEl.style.top = Math.round(r.bottom + 4) + 'px';
+        } else {
+          copyHintEl.style.left = '50%'; copyHintEl.style.top = '16px';
+        }
+        copyHintEl.style.opacity = '1';
+        clearTimeout(copyHintT);
+        copyHintT = setTimeout(() => { if (copyHintEl) copyHintEl.style.opacity = '0'; }, 1500);
+      } catch (e) { /* не критично */ }
+    };
     const copy = (text, msg, warn) => {
-      try { GM_setClipboard(text); statusBox.textContent = msg; statusBox.style.color = warn ? '#B45309' : '#15803D'; }
-      catch (e) { statusBox.textContent = 'Не получилось скопировать 😕'; statusBox.style.color = '#DC2626'; }
+      try {
+        GM_setClipboard(text); statusBox.textContent = msg; statusBox.style.color = warn ? '#B45309' : '#15803D';
+        flashCopied('✓ скопировано');
+      }
+      catch (e) { statusBox.textContent = 'Не получилось скопировать 😕'; statusBox.style.color = '#DC2626'; flashCopied('не скопировалось', true); }
     };
     // Маркеры для сообщений: B('...') — «впиши сам», Q('...') — цитата клиента.
     // Простой буфер: B -> ✍️【…】, Q -> просто текст.
@@ -1079,54 +1228,106 @@
       if (!ok) { try { GM_setClipboard(plain); ok = true; } catch (e) {} }
       statusBox.textContent = ok ? msg : 'Не получилось скопировать 😕';
       statusBox.style.color = ok ? (warn ? '#B45309' : '#15803D') : '#DC2626';
+      flashCopied(ok ? '✓ скопировано' : 'не скопировалось', !ok);
     };
 
     /* ---- сценарий: текст + видимость блоков ---- */
-    let tableBlock = null, calcBlock = null, rgBlock = null, tgBlock = null, rowLinkBtn = null, negBox = null;
+    let tableBlock = null, calcBlock = null, rgBlock = null, tgBlock = null, tgHdr = null, rowLinkBtn = null, negBox = null;
     let sumWrap = null, errBox = null;
     const dateWarn = el('div', S.warn);
     const show = (elm, v) => { if (elm) elm.style.display = v ? 'block' : 'none'; };
     // При результате «Возврат» сумма обязательна: конкретное число больше нуля.
     const sumMissing = () => T.result === 'Возврат' && !(agreedNum() > 0);
+
+    // Текущий сценарий кейса (пересчитывается в updateScenario). Пусто, пока не знаем дату.
+    let curScen = '', _rkClusterApplied = '';
+    const markScen = () => {
+      const k = omniCardField(4660) || '';
+      for (const mark in KURS_MARK) { if (k.indexOf(mark) !== -1) return KURS_MARK[mark]; }
+      return '';
+    };
+    const isRK = () => curScen === 'resale' || curScen === 'kids';
+
     const updateScenario = () => {
       const p = parseRu(T.accessDate), c = parseRu(T.claimDate);
-      const known = !!p;
       const days = (p && c) ? Math.round((c - p) / 86400000) : null;
-      const rg = days != null && days <= 3;
-      const post = !!(p && p >= CUTOFF_DATE);
       const needSum = sumMissing();
+
+      // 1) сценарий: ручной выбор → метка в OmniDesk → по датам
+      let scen = T.scenOverride || markScen();
+      if (!scen) {
+        if (!p) scen = '';
+        else if (p < CUTOFF_DATE) scen = 'before';
+        else if (days != null && days <= 3) scen = 'le3';
+        else if (days != null) scen = 'gt3';
+        else scen = 'postUnknown';
+      }
+      curScen = scen;
+
+      // 2) для ресейла/детских — кластер и продакт подставляются по сценарию (один раз;
+      //    дальше куратор при желании может поправить вручную). «Пройдено = 0» ставим
+      //    ТОЛЬКО когда амо ничего не дало — в refreshFromAmo, чтобы не мешать подтяжке из админки.
+      if ((scen === 'resale' || scen === 'kids') && _rkClusterApplied !== scen) {
+        _rkClusterApplied = scen;
+        const wantCl = scen === 'resale' ? 'Ресейл' : 'Детские курсы';
+        if (T.cluster !== wantCl) {
+          T.cluster = wantCl;
+          if (inputs.cluster && inputs.cluster._fill) inputs.cluster._fill(wantCl);
+          T.producer = PRODUCERS[wantCl] || '';
+          if (inputs.producer) inputs.producer.value = T.producer;
+          renderAmoCard();
+        }
+      }
+      if (scen !== 'resale' && scen !== 'kids') _rkClusterApplied = '';
 
       // Возврат в день покупки — нормально (c == p); ругаемся только если заявка РАНЬШЕ выдачи доступа.
       dateWarn.textContent = (p && c && c < p) ? '⚠️ Дата заявки раньше даты выдачи доступа — проверь даты.' : '';
       // поле «Согласованная сумма» видно только при результате «Возврат»
       if (sumWrap) sumWrap.style.display = (T.result === 'Возврат') ? 'block' : 'none';
       if (negBox) {
-        negBox.style.borderLeftColor = needSum ? '#DC2626' : '#0284C7';
-        negBox.style.background = needSum ? '#FEF2F2' : '#F8FAFC';
+        negBox.style.borderLeftColor = needSum ? '#DC2626' : 'var(--rm-acc)';
+        negBox.style.background = needSum ? '#FEF2F2' : 'var(--rm-card,#F8FAFC)';
       }
       if (inputs.agreedSum) inputs.agreedSum.style.borderColor = needSum ? '#DC2626' : '#D1D5DB';
-      if (errBox && !needSum) errBox.style.display = 'none';
+      if (errBox && !needSum && T.result !== 'В работе') errBox.style.display = 'none';
 
-      const L = ['📋 Что делать по этому кейсу:'];
-      if (!known) {
-        L.push('Впиши «Дата выдачи доступа» — покажу сценарий.');
-      } else {
-        if (rg) L.push('⏱ ' + days + ' дн. с покупки — ВОЗВРАТ ≤ 3 ДНЕЙ.\n→ Справа: «Сообщение РГ». Слева всё равно заполняем строку в таблице возвратов.');
-        else if (days != null) L.push('⏱ ' + days + ' дн. с покупки — обычный процесс: слева строка в таблице возвратов.');
-        else L.push('Впиши «Дата заявки», чтобы посчитать дни.');
-        if (post) L.push('📅 Куплено после 29.07 → дополнительно калькулятор (слева, внизу).');
-        else L.push('📅 Куплено до 29.07.');
+      // 3) палитра всей панели по сценарию + плашка сценария (имя жирным + что делать)
+      applyTheme(panel, scen === 'gt3' || scen === 'postUnknown' || !scen ? '' : scen);
+      const meta = SCENARIOS[scen] || { name: '' };
+      const nm = scen === 'postUnknown' ? 'После ' + OFFER_DATE_STR + ' — впиши дату заявки'
+        : scen ? (meta.name || '—') : 'Сначала впиши дату выдачи доступа';
+      scenName.textContent = '● ' + nm;
+
+      const L = [];
+      // 1-я строка — счётчик дней (во всех сценариях, когда обе даты есть)
+      if (days != null) L.push('⏱ ' + days + ' дн. с покупки до заявки');
+      // 2-я строка — что делать
+      if (scen === 'resale') L.push('→ Заполни строку в таблице возвратов и отправь «Сообщение в ТГ» (справа).');
+      else if (scen === 'kids') L.push('→ Заполни строку в таблице возвратов и отправь «Сообщение в ТГ» (справа).');
+      else if (scen === 'before') L.push('→ Старая оферта, калькулятор не нужен. Заполни строку в таблице возвратов.');
+      else if (scen === 'le3') L.push('→ Возврат ≤ 3 дней: справа «Сообщение РГ» + строка в таблице возвратов + калькулятор (слева, внизу).');
+      else if (scen === 'gt3') L.push('→ Заполни строку в таблице возвратов, потом калькулятор (слева, внизу).');
+      else if (scen === 'postUnknown') L.push('→ Куплено после ' + OFFER_DATE_STR + '. Впиши «Дата заявки на возврат» — покажу, ≤ 3 дней или больше.');
+      else L.push('→ Впиши «Дата выдачи доступа» в блоке «Данные из амо».');
+      // 3-я строка — длительность курса (из таблицы), как только подтянулась
+      if (clean(T.calcDays) || clean(T.calcHours)) {
+        L.push('📚 Курс по таблице: ' + (clean(T.calcHours) || '?') + ' ак.ч. · ' + (clean(T.calcDays) || '?') + ' дн. — сверь в калькуляторе');
       }
-      scenarioBox.textContent = L.join('\n');
+      if (T.result === 'В работе') L.push('⚠️ «В работе»: карточку Асаны можно скопировать только после решения «Возврат».');
+      scenText.textContent = L.join('\n');
 
-      show(rgBlock, rg);
+      show(rgBlock, scen === 'le3');
       show(tableBlock, true);   // строка в таблице возвратов — нужна ВСЕГДА
-      show(calcBlock, post);    // калькулятор — дополнительно, если куплено после 29.07
+      // калькулятор — для «после новой оферты» сценариев (в т.ч. выбранных вручную), не для ресейла/детских/старой оферты
+      show(calcBlock, scen === 'gt3' || scen === 'le3' || scen === 'postUnknown');
       show(tgBlock, true);
       show(rowLinkBtn, true);
+      if (tgHdr) tgHdr.textContent = (scen === 'resale' || scen === 'kids') ? '📨 Сообщение в ТГ' : '📨 Сообщение продакту в Телеграм';
     };
     const onDate = () => updateScenario();
-    const syncAgreed = () => { if (T.result === 'Остается') { T.agreedSum = '0'; if (inputs.agreedSum) inputs.agreedSum.value = '0'; } };
+    const syncAgreed = () => {
+      if (T.result === 'Остается') { T.agreedSum = '0'; if (inputs.agreedSum) inputs.agreedSum.value = '0'; }
+    };
 
     /* ---- карточка «из амо» (сводка) ---- */
     const amoSummary = el('div', 'margin-top:3px;');
@@ -1149,8 +1350,8 @@
     mkField(bForm, 'claimDate', 'Дата заявки на возврат', 'man', { ph: 'дд.мм.гггг', onChange: onDate });
     bForm.appendChild(dateWarn);
     mkField(bForm, 'progress', 'Пройдено, % (подтянется из админки, можно поправить)', 'man', { ph: 'например 15 или 0' });
-    mkField(bForm, 'reason', 'Причина возврата', 'man', { list: REASONS, save: 'rm_reason' });
-    mkField(bForm, 'clientComment', 'Комментарий клиента (цитата)', 'man', { area: true, ph: 'Вставь текст клиента' });
+    mkField(bForm, 'reason', 'Причина возврата', 'man', { list: REASONS, save: 'rm_reason', danger: true });
+    mkField(bForm, 'clientComment', 'Комментарий клиента (цитата)', 'man', { area: true, ph: 'Вставь текст клиента', danger: true });
 
     // 2) Данные из амо (сворачивается для правки)
     const amoCard = el('div', S.amoCard);
@@ -1161,13 +1362,19 @@
     amoCard.appendChild(amoHdr);
     amoCard.appendChild(amoSummary);
 
-    // Выбор курса — виден, только если клиент купил несколько курсов (несколько выигранных сделок)
-    const dealPick = el('div', 'display:none;margin:8px 0 2px;padding:9px 11px;background:#FEF3C7;border:1px solid #FCD34D;border-radius:12px;');
-    dealPick.appendChild(el('div', 'font-size:10.5px;font-weight:800;color:#92400E;margin-bottom:6px;line-height:1.35;',
-      '🎓 У клиента несколько купленных курсов — выбери, на какой просят возврат:'));
+    // Выбор курса — виден, только если у клиента несколько выигранных сделок.
+    // Красный, крупный — часто это главный источник ошибок.
+    const dealPick = el('div', 'display:none;margin:9px 0 4px;padding:11px 12px;background:#FEF2F2;border:2px solid #EF4444;border-radius:12px;');
+    dealPick.appendChild(el('div', 'font-size:11.5px;font-weight:800;color:#B91C1C;margin-bottom:6px;line-height:1.4;',
+      '🚨 В АМО НЕСКОЛЬКО ЗАЯВОК'));
+    const dealHint = el('div', 'font-size:10px;font-weight:600;color:#7F1D1D;margin-bottom:8px;line-height:1.45;white-space:pre-wrap;', '');
+    dealPick.appendChild(dealHint);
     const dealSelect = el('select', S.input);
-    dealSelect.style.cssText += 'font-weight:700;background:#fff;';
+    dealSelect.style.cssText += 'font-weight:800;background:#fff;font-size:12.5px;padding:8px 10px;border:1.5px solid #EF4444;';
     dealPick.appendChild(dealSelect);
+    const bSumDeals = el('button', S.small, '➕ Это апгрейд — сложить суммы заявок');
+    bSumDeals.style.cssText += 'background:#fff;color:#B91C1C;border:1.5px solid #EF4444;font-weight:800;margin-top:7px;';
+    dealPick.appendChild(bSumDeals);
     amoCard.appendChild(dealPick);
 
     const amoFields = el('div', 'display:none;margin-top:4px;');
@@ -1203,6 +1410,7 @@
       T.amoLink = 'https://' + AMO_SUBDOMAIN + '.amocrm.ru/leads/detail/' + d.id;
       T.producer = PRODUCERS[T.cluster] || '';
       if (inputs.producer) inputs.producer.value = T.producer;
+      _rkClusterApplied = ''; // курс/сделка сменились — заново кластер по сценарию
       renderAmoCard(); updateScenario();
       if (!opts.refetch) return;
       T.progress = ''; if (inputs.progress) inputs.progress.value = '';
@@ -1227,18 +1435,30 @@
         statusBox.style.color = '#B45309';
       });
     };
+    const dealAmt = d => parseInt(String((d && d.amount) || '').replace(/\D/g, ''), 10) || 0;
+    // Грубая «база» названия курса — без слова «тариф …» и знаков, для сравнения «один курс или разные».
+    const courseBase = s => String(s || '').toLowerCase().replace(/ё/g, 'е')
+      .replace(/тариф.*$/, '').replace(/[^а-яa-z0-9]+/g, ' ').trim();
     const renderDealPick = () => {
       const ds = T.deals || [];
       if (ds.length < 2) { dealPick.style.display = 'none'; return; }
       dealPick.style.display = 'block';
       dealSelect.innerHTML = '';
       ds.forEach(d => {
-        const amt = String(d.amount || '').replace(/\D/g, '');
-        const label = (d.course || 'курс?') + '  ·  ' + (amt ? (+amt).toLocaleString('ru-RU') + ' ₽' : '—') +
+        const amt = dealAmt(d);
+        const label = (d.course || 'курс?') + '  ·  ' + (amt ? amt.toLocaleString('ru-RU') + ' ₽' : '—') +
           (d.purchaseDate ? '  ·  ' + d.purchaseDate : '');
         const o = el('option', null, label); o.value = d.id; dealSelect.appendChild(o);
       });
       dealSelect.value = ds.some(d => d.id === T.dealId) ? T.dealId : ds[0].id;
+      const total = ds.reduce((a, d) => a + dealAmt(d), 0);
+      const oneCourse = new Set(ds.map(d => courseBase(d.course)).filter(Boolean)).size <= 1;
+      dealHint.style.color = '#7F1D1D';
+      dealHint.textContent = (oneCourse
+        ? '🔼 Похоже на АПГРЕЙД одного курса (докупка тарифа). Тогда для таблицы суммы заявок СКЛАДЫВАЕМ — жми кнопку ниже.'
+        : 'Курсы РАЗНЫЕ — выбери в списке тот, на который просят возврат.') +
+        '\nЕсли всё же апгрейд одного курса — «сложить суммы» = ' + total.toLocaleString('ru-RU') + ' ₽.';
+      bSumDeals.textContent = '➕ Это апгрейд — сложить суммы (' + total.toLocaleString('ru-RU') + ' ₽)';
     };
     dealSelect.addEventListener('change', () => {
       const d = (T.deals || []).find(x => x.id === dealSelect.value);
@@ -1246,13 +1466,28 @@
       T.dealId = d.id; saveCase();
       applyDeal(d, { refetch: true });
     });
+    // Апгрейд: берём самую дорогую заявку как основной курс, а «Сумму оплаты» = сумма всех заявок.
+    bSumDeals.onclick = () => {
+      const ds = T.deals || [];
+      if (ds.length < 2) return;
+      const total = ds.reduce((a, d) => a + dealAmt(d), 0);
+      const main = ds.slice().sort((a, b) => dealAmt(b) - dealAmt(a))[0];
+      T.dealId = main.id; saveCase();
+      applyDeal(main, { refetch: true });
+      T.amount = String(total);
+      if (inputs.amount) inputs.amount.value = T.amount;
+      renderAmoCard(); saveCase();
+      dealHint.textContent = '✓ Сложены ' + ds.length + ' заявки = ' + total.toLocaleString('ru-RU') +
+        ' ₽ → в «Сумму оплаты». Основной курс — «' + (main.course || '?') + '». Проверь курс и сумму.';
+      dealHint.style.color = '#166534';
+    };
 
     // 3) Строка в таблице возвратов
     tableBlock = mkBlock(colL, 'Строка в таблице возвратов');
     const rowNumWrap = el('div', 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:' + ACC_LT + ';border:1px solid ' + ACC_BD + ';border-radius:12px;padding:8px 11px;');
     rowNumWrap.appendChild(el('span', 'font-size:11.5px;font-weight:700;color:' + ACC_DK + ';flex:1 1 auto;line-height:1.3;', '№ свободной строки внизу таблицы:'));
     const rowNumInput = el('input', S.input);
-    rowNumInput.style.cssText += 'width:74px;flex:0 0 auto;font-size:15px;font-weight:800;text-align:center;border:1.5px solid #7DD3FC;color:' + ACC_DK + ';padding:6px;';
+    rowNumInput.style.cssText += 'width:74px;flex:0 0 auto;font-size:15px;font-weight:800;text-align:center;border:1.5px solid ' + ACC_BD + ';color:' + ACC_DK + ';padding:6px;';
     rowNumInput.placeholder = '—';
     rowNumInput.value = T.rowNumber;
     rowNumWrap.appendChild(rowNumInput);
@@ -1370,21 +1605,26 @@
     bCalcOpen.onclick = () => { try { window.open(CALC_URL, '_blank'); } catch (e) { copy(CALC_URL, 'Ссылка на калькулятор в буфере ✓'); } };
     calcBlock.appendChild(bCalcOpen);
 
-    // Длительность курса (ак.ч. C6 + дней C7) — подставляется из таблицы длительности, редактируется.
-    const durWrap = el('div', 'margin:8px 0 2px;padding:9px 11px;background:#F0F9FF;border:1px solid ' + ACC_BD + ';border-radius:12px;');
-    durWrap.appendChild(el('div', 'font-size:10.5px;font-weight:800;color:' + ACC_DK + ';margin-bottom:6px;line-height:1.35;',
-      '⏳ Длительность курса — подставится из таблицы, проверь:'));
+    // Длительность курса (ак.ч. C6 + дней C7). ЯРКИЙ блок — авто-подбор часто не точный.
+    const durWrap = el('div', 'margin:9px 0 3px;padding:11px 12px;background:#FFFBEB;border:2px solid #F59E0B;border-radius:12px;');
+    durWrap.appendChild(el('div', 'font-size:11.5px;font-weight:800;color:#92400E;margin-bottom:8px;line-height:1.4;',
+      '⚠️ ПРОВЕРЬ длительность курса'));
+    durWrap.appendChild(el('div', 'font-size:10px;color:#374151;font-weight:700;margin-bottom:3px;', 'Курс в таблице длительности (по умолчанию из амо, можно сменить):'));
+    const durCombo = combo([], 'загружаю список курсов…', clean(T.course) || '');
+    durCombo.el.style.marginBottom = '9px';
+    durCombo.input.style.border = '1.5px solid #F59E0B';
+    durWrap.appendChild(durCombo.el);
     const durRow = el('div', 'display:flex;gap:8px;');
     const mkDur = (key, label) => {
       const w = el('div', 'flex:1 1 0;min-width:0;');
-      w.appendChild(el('div', 'font-size:10px;color:#374151;font-weight:600;margin-bottom:3px;', label));
+      w.appendChild(el('div', 'font-size:10px;color:#374151;font-weight:700;margin-bottom:3px;', label));
       const inp = el('input', S.input);
-      inp.style.cssText += 'text-align:center;font-weight:700;';
+      inp.style.cssText += 'text-align:center;font-weight:800;font-size:15px;padding:7px;';
       inp.placeholder = '—';
       inp.value = T[key] || '';
       inp.addEventListener('input', () => {
         T[key] = inp.value.replace(/[^\d]/g, ''); inp.value = T[key];
-        T.calcDurTouched = true; inp.style.background = ''; saveCase();
+        T.calcDurTouched = true; inp.style.background = ''; saveCase(); updateScenario();
       });
       inputs[key] = inp;
       w.appendChild(inp);
@@ -1393,9 +1633,42 @@
     durRow.appendChild(mkDur('calcHours', 'Академ. часы (C6)'));
     durRow.appendChild(mkDur('calcDays', 'Срок, дней (C7)'));
     durWrap.appendChild(durRow);
-    const durNote = el('div', 'font-size:9.5px;color:#6B7280;margin-top:5px;line-height:1.4;', '');
+    const durNote = el('div', 'font-size:10px;color:#6B7280;margin-top:6px;line-height:1.4;font-weight:600;', '');
     durWrap.appendChild(durNote);
     calcBlock.appendChild(durWrap);
+
+    // Список курсов таблицы длительности → в комбо (один раз).
+    let _durSelectFilled = false;
+    const fillDurSelect = (selName) => {
+      fetchDurationRows().then(rows => {
+        if (!_durSelectFilled) {
+          const seen = {};
+          const opts = [];
+          rows.forEach(r => {
+            if (seen[r.name]) return; seen[r.name] = 1;
+            opts.push({ label: r.name + '  —  ' + (r.hours || '?') + ' ак.ч., ' + (r.days || '?') + ' дн.', value: r.name });
+          });
+          durCombo.setRows(opts);
+          durCombo.input.placeholder = 'печатай название курса…';
+          _durSelectFilled = true;
+        }
+        if (selName) durCombo.value = selName;
+      }).catch(() => { durCombo.input.placeholder = 'таблица недоступна — впиши ак.ч. и дни вручную'; });
+    };
+    const applyDurByName = (name) => {
+      const r = (_durRows || []).find(x => x.name === name);
+      if (!r) return false;
+      T.calcHours = r.hours; T.calcDays = r.days; T.calcDurTouched = true;
+      if (inputs.calcHours) { inputs.calcHours.value = r.hours; inputs.calcHours.style.background = '#DCFCE7'; }
+      if (inputs.calcDays) { inputs.calcDays.value = r.days; inputs.calcDays.style.background = '#DCFCE7'; }
+      durNote.style.color = '#15803D';
+      durNote.textContent = '✓ Взято: «' + name + '» — ' + (r.hours || '?') + ' ак.ч., ' + (r.days || '?') + ' дн.';
+      saveCase(); updateScenario();
+      return true;
+    };
+    // onPick срабатывает и при вводе, и при выборе из списка — применяем только точное совпадение.
+    durCombo.onPick(() => { applyDurByName(durCombo.value.trim()); });
+    fillDurSelect('');
 
     // Подтягиваем ак.ч./дни по названию курса. force=true — при смене курса (сбрасываем «проверено»).
     let calcDurLoading = false;
@@ -1403,9 +1676,9 @@
       const c = String(courseName || T.course || '').trim();
       if (!c || calcDurLoading) return;
       if (force) T.calcDurTouched = false;
-      if (T.calcDurTouched) return;
+      if (T.calcDurTouched) { fillDurSelect(''); return; }
       calcDurLoading = true;
-      durNote.style.color = ACC_DK;
+      durNote.style.color = '#92400E';
       durNote.textContent = 'Смотрю таблицу длительности курсов…';
       fetchCourseDuration(c).then(r => {
         if (r && (r.hours || r.days)) {
@@ -1415,14 +1688,18 @@
             if (inputs.calcDays) { inputs.calcDays.value = r.days; inputs.calcDays.style.background = '#FEF9C3'; }
             saveCase();
           }
+          fillDurSelect(r.name);
           durNote.style.color = r.exact ? '#15803D' : '#B45309';
-          durNote.textContent = (r.exact ? '✓ «' : '⚠️ по близости — «') + r.name + '»: ' +
+          durNote.textContent = (r.exact ? '✓ подобрал «' : '⚠️ по близости — «') + r.name + '»: ' +
             (r.hours || '?') + ' ак.ч., ' + (r.days || '?') + ' дн.' +
+            (r.exact ? '' : ' — если не тот, выбери курс в списке выше') +
             (r.dupes > 1 ? ' · в таблице несколько строк с этим курсом — сверь!' : '');
         } else {
+          fillDurSelect('');
           durNote.style.color = '#B45309';
-          durNote.textContent = '⚠️ Не нашла курс «' + c + '» в таблице длительности — впиши ак.ч. и дни вручную.';
+          durNote.textContent = '⚠️ Не нашёл курс «' + c + '» в таблице длительности — выбери в списке выше или впиши вручную.';
         }
+        updateScenario();
       }).catch(e => {
         durNote.style.color = '#B45309';
         durNote.textContent = '⚠️ Таблица длительности недоступна (' + ((e && e.message) || '?') + ') — впиши вручную.';
@@ -1440,7 +1717,13 @@
       '✓ Оконч. расчёт в буфере → «Оплаченная сумма» 2-го блока, Ctrl+V.');
     calcBlock.appendChild(bCalcPre);
     calcBlock.appendChild(bCalcFin);
-    calcBlock.appendChild(el('div', S.hint, 'Значения: сумма · ак.ч. · дней · дата доступа · дата обращения · комиссия · [CPL]. Ак.ч. и дни подставляются из таблицы длительности (жёлтым — проверь). Вручную впиши: CPL; в оконч. расчёте — ещё комиссию по факту. «Итого» посчитается само.'));
+    calcBlock.appendChild(el('div', S.hint + 'white-space:pre-wrap;',
+      'Как посчитать:\n' +
+      '1. Проверь курс и ак.ч./дни в жёлтом блоке выше (если не тот — выбери в списке).\n' +
+      '2. «Предварительный расчёт» → Ctrl+V в жёлтую ячейку «Оплаченная сумма» ПЕРВОГО блока калькулятора.\n' +
+      '3. В калькуляторе руками впиши CPL (в амо его нет). «Итого возврата» посчитается само — это сумма по оферте.\n' +
+      '4. После согласования: «Окончательный расчёт» → во ВТОРОЙ блок; там же руками впиши фактическую комиссию.\n' +
+      'Копируется 7 значений в столбик: сумма · ак.ч. · дней · дата доступа · дата обращения · комиссия · (CPL пусто).'));
 
     /* ============ ПРАВАЯ КОЛОНКА ============ */
 
@@ -1448,7 +1731,7 @@
     negBox = el('div', S.negBox);
     colR.appendChild(negBox);
     negBox.appendChild(el('div', S.blockHdr, '💬 После переговоров со студентом'));
-    mkField(negBox, 'result', 'Результат', 'man', { list: RESULTS, save: 'rm_result', onChange: () => { syncAgreed(); updateScenario(); } });
+    mkField(negBox, 'result', 'Результат', 'man', { list: RESULTS, onChange: () => { syncAgreed(); updateScenario(); } });
     sumWrap = el('div', T.result === 'Возврат' ? '' : 'display:none;');
     sumWrap.appendChild(el('div', 'font-size:11px;font-weight:700;color:#374151;margin-top:8px;', 'Сумма возврата, ₽'));
     const sumInput = el('input', S.input);
@@ -1463,15 +1746,27 @@
 
     errBox = el('div', S.err + 'display:none;');
     colR.appendChild(errBox);
-    // При результате «Возврат» без конкретной суммы — не даём копировать сообщения продакту и карточку Асаны.
+    // При результате «Возврат» без конкретной суммы — не даём копировать всю строку.
     const guardSum = () => {
-      if (!sumMissing()) { if (errBox) errBox.style.display = 'none'; return true; }
+      if (!sumMissing()) { if (errBox && T.result !== 'В работе') errBox.style.display = 'none'; return true; }
       if (errBox) {
-        errBox.textContent = '⚠️ Впиши «Сумму возврата» — конкретное число больше нуля. Без этого сообщение продакту и карточку Асаны скопировать нельзя.';
+        errBox.textContent = '⚠️ Впиши «Сумму возврата» — конкретное число больше нуля.';
         errBox.style.display = 'block';
       }
       updateScenario();
       return false;
+    };
+    // Карточка Асаны — только когда решение принято и (при возврате) есть сумма.
+    // (Сообщение в ТГ при «В работе» копировать МОЖНО.)
+    const guardHandoff = () => {
+      if (T.result === 'В работе') {
+        if (errBox) {
+          errBox.textContent = '⚠️ Результат «В работе»: карточку Асаны можно скопировать только после решения «Возврат».';
+          errBox.style.display = 'block';
+        }
+        return false;
+      }
+      return guardSum();
     };
 
     // 2) РГ — только при возврате ≤ 3 дней
@@ -1483,7 +1778,7 @@
       const lines = [
         'Здравствуйте! Возврат в течение 3-х дней.',
         '1) ' + clean(T.amoLink),
-        '2) ' + clean(T.course),
+        '2) ' + stripMark(clean(T.course)),
         '3) ' + (clean(T.rgTag) || B('тег РГ')),
         '4) Покупка ' + clean(T.purchaseDate || T.accessDate) + ', запрос возврата ' + clean(T.claimDate),
         '5) Причина: ',
@@ -1498,23 +1793,50 @@
 
     // 3) Сообщение продакту в Телеграм
     tgBlock = mkBlock(colR, '📨 Сообщение продакту в Телеграм', true);
+    tgHdr = tgBlock.firstElementChild;
     mkField(tgBlock, 'producer', 'Тег продакта в ТГ (по кластеру)', 'auto', { ph: '@hey_juliko' });
     const bTG = el('button', S.big, '📨 Скопировать сообщение для ТГ');
+    const courseTxt = () => stripMark(clean(T.course));
+    const dealDatesTxt = () => 'Покупка ' + clean(T.purchaseDate || T.accessDate) + ', запрос возврата ' + clean(T.claimDate);
+    // Ресейл TeachMeSkills — @Dmitriy_PR0 (всегда, кластер IT) + @n_ekimov в п.7
+    const tgResale = () => [
+      'Здравствуйте!',
+      '1. ' + clean(T.amoLink),
+      '2. ' + (courseTxt() || B('курс')),
+      '3. @Dmitriy_PR0',
+      '4. ' + dealDatesTxt(),
+      '5. курс ресейла, поэтому процент прохождения не знаю',
+      '6. Причина:',
+      Q(clean(T.clientComment) || B('вставь текст клиента')),
+      '7. @n_ekimov Нужно, чтобы партнеры связались для отработки. Передайте, пожалуйста.',
+    ].join('\n');
+    // Детские курсы — только @dd_terentev
+    const tgKids = () => [
+      '@dd_terentev Привет! Поступила заявка на возврат.',
+      '',
+      '1. ' + clean(T.amoLink),
+      '2. ' + (courseTxt() || B('курс')),
+      '3. Дата покупки: ' + clean(T.purchaseDate || T.accessDate) + ' Дата заявки: ' + clean(T.claimDate),
+      '4. Причина: ' + (clean(T.clientComment) || B('вставь текст клиента')),
+      '5. Пожалуйста, свяжитесь для отработки возврата.',
+    ].join('\n');
+    const tgNormal = () => [
+      'Здравствуйте!',
+      '1) ' + clean(T.amoLink),
+      '2) ' + courseTxt(),
+      '3) ' + clean(T.producer),
+      '4) ' + dealDatesTxt(),
+      '5) ' + clean(T.progress) + '% прохождения',
+      '6) Причина:',
+      Q(clean(T.clientComment) || B('вставь текст клиента')),
+      '7) ' + B('комментарий куратора — впиши'),
+      '8) По оферте: ' + (T.result === 'В работе' ? '(решение в работе)' : (agreedTxt() + ' FYI')),
+    ].join('\n');
     bTG.onclick = () => {
-      if (!guardSum()) return;
-      const lines = [
-        'Здравствуйте!',
-        '1) ' + clean(T.amoLink),
-        '2) ' + clean(T.course),
-        '3) ' + clean(T.producer),
-        '4) Покупка ' + clean(T.purchaseDate || T.accessDate) + ', запрос возврата ' + clean(T.claimDate),
-        '5) ' + clean(T.progress) + '% прохождения',
-        '6) Причина:',
-        Q(clean(T.clientComment) || B('вставь текст клиента')),
-        '7) ' + B('комментарий куратора — впиши'),
-        '8) По оферте: ' + agreedTxt() + ' FYI',
-      ];
-      copyMsg(lines.join('\n'), 'Сообщение для ТГ в буфере ✓ Жирным — что дописать.');
+      if (curScen === 'resale') { copyMsg(tgResale(), 'Сообщение для ресейла в буфере ✓ Отправь в ТГ (@Dmitriy_PR0 и @n_ekimov).'); return; }
+      if (curScen === 'kids')   { copyMsg(tgKids(), 'Сообщение для @dd_terentev в буфере ✓ Отправь в ТГ.'); return; }
+      if (!guardSum()) return;   // сообщение в ТГ можно и при «В работе»; только Возврат без суммы блокируем
+      copyMsg(tgNormal(), 'Сообщение для ТГ в буфере ✓ Жирным — что дописать.');
     };
     tgBlock.appendChild(bTG);
 
@@ -1523,7 +1845,7 @@
       const pt = clean(T.payType);
       return /полн/i.test(pt) ? 'Полная (' + B('укажи банк') + ')' : pt;
     };
-    const asanaTitle = () => payForTitle() + '/' + clean(T.name) + '/' + clean(T.course) + '/' + agreedTxt();
+    const asanaTitle = () => payForTitle() + '/' + clean(T.name) + '/' + stripMark(clean(T.course)) + '/' + agreedTxt();
     const asanaBody = () => [
       'Куратор: ' + clean(T.curator),
       'Ссылка на амо: ' + clean(T.amoLink),
@@ -1535,9 +1857,9 @@
     const asanaBlock = mkBlock(colR, '🗂 Карточка Асаны', true);
     const rowA = el('div', S.row);
     const bAsanaT = el('button', S.btnAlt + 'flex:1;margin-top:0;', '📋 Заголовок');
-    bAsanaT.onclick = () => { if (!guardSum()) return; copyMsg(asanaTitle(), 'Заголовок Асаны в буфере ✓ Жирным — что дописать.'); };
+    bAsanaT.onclick = () => { if (!guardHandoff()) return; copyMsg(asanaTitle(), 'Заголовок Асаны в буфере ✓ Жирным — что дописать.'); };
     const bAsanaB = el('button', S.btnAlt + 'flex:1;margin-top:0;', '📋 Описание');
-    bAsanaB.onclick = () => { if (!guardSum()) return; copyMsg(asanaBody(), 'Описание карточки Асаны в буфере ✓ Жирным — что дописать (ссылка на согласование).'); };
+    bAsanaB.onclick = () => { if (!guardHandoff()) return; copyMsg(asanaBody(), 'Описание карточки Асаны в буфере ✓ Жирным — что дописать (ссылка на согласование).'); };
     rowA.appendChild(bAsanaT); rowA.appendChild(bAsanaB);
     asanaBlock.appendChild(rowA);
 
@@ -1627,8 +1949,10 @@
           const rg = rgByMop(d.mop);
           if (rg) { T.rgTag = rg; if (inputs.rgTag) inputs.rgTag.value = rg; }
         }
-        // «Пройдено, %» — «0» тоже валидно (setF его бы пропустил как falsy)
+        // «Пройдено, %» — «0» тоже валидно (setF его бы пропустил как falsy).
+        // Для ресейла/детских, если админка ничего не дала, ставим 0 (в ресейле % не знаем).
         if (d.progress !== '') { T.progress = d.progress; if (inputs.progress) inputs.progress.value = d.progress; saveCase(); }
+        else if (markScen() && !clean(T.progress)) { T.progress = '0'; if (inputs.progress) inputs.progress.value = '0'; saveCase(); }
         T.producer = d.producer || PRODUCERS[T.cluster] || '';
         if (inputs.producer) inputs.producer.value = T.producer;
 
@@ -1642,6 +1966,7 @@
         }
         renderDealPick();
 
+        _rkClusterApplied = ''; // после свежего сбора из амо — заново подставить кластер по сценарию
         syncAgreed(); renderAmoCard(); updateScenario();
         loadCalcDuration(d.course); // ак.ч. + дни для калькулятора — по названию курса
 
@@ -1672,13 +1997,17 @@
           (what.length < 6 ? '\nПусто? Открой карточку клиента в OmniDesk (виджет amoCRM) и нажми 🔄' : '');
         // в панели — только короткая строка
         const manyCourses = (T.deals || []).length > 1;
-        const coursesNote = manyCourses ? ' · 🎓 курсов ' + T.deals.length + ' — ПРОВЕРЬ ВЫБОР' : '';
-        if (!what.length) {
+        statusBox.style.fontWeight = manyCourses ? '800' : '';
+        if (manyCourses) {
+          statusBox.textContent = '🚨 В АМО ' + T.deals.length + ' ЗАЯВКИ — в красном блоке «Данные из амо» реши: апгрейд одного курса (сложить суммы) или разные курсы (выбрать)' +
+            (d.amoId ? ' · сделка ' + d.amoId : '');
+          statusBox.style.color = '#B91C1C';
+        } else if (!what.length) {
           statusBox.textContent = '⚠️ Из амо почти ничего — проверь карточку в OmniDesk, детали в «ℹ️»';
           statusBox.style.color = '#DC2626';
-        } else if (what.length < 6 || !mopSure || manyCourses) {
+        } else if (what.length < 6 || !mopSure) {
           statusBox.textContent = '⚠️ Из амо' + (d.amoId ? ' (сделка ' + d.amoId + ')' : '') +
-            (!mopSure ? ' · МОП проверь' : (!manyCourses ? ' · часть полей пуста' : '')) + coursesNote + ' — детали в «ℹ️»';
+            (!mopSure ? ' · МОП проверь' : ' · часть полей пуста') + ' — детали в «ℹ️»';
           statusBox.style.color = '#B45309';
         } else {
           statusBox.textContent = '✓ Данные из амо' + (d.amoId ? ' · сделка ' + d.amoId : '') + ' — детали в «ℹ️»';
@@ -1844,7 +2173,7 @@
   }
 
   if (location.hostname.endsWith('omnidesk.ru')) {
-    console.log(TAG, 'запущен, версия ' + '1.33.0');
+    console.log(TAG, 'запущен, версия ' + '1.34.0');
     keepSynced(function () {
       removeLauncher();
       ensureMenuItem();
