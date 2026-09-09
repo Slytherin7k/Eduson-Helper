@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.34.3
+// @version      1.34.4
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -1493,7 +1493,7 @@
     rowNumInput.value = T.rowNumber;
     rowNumWrap.appendChild(rowNumInput);
     const bFindRow = el('button', S.small, '🔍 найти');
-    bFindRow.style.cssText += 'width:auto;flex:0 0 auto;margin-top:0;padding:7px 11px;white-space:nowrap;background:#fff;color:' + ACC + ';border:1.5px solid ' + ACC_BD + ';';
+    bFindRow.style.cssText += 'width:auto;flex:0 0 auto;margin-top:0;padding:7px 11px;white-space:nowrap;background:#fff;color:' + ACC_DK + ';border:1.5px solid ' + ACC_BD + ';';
     bFindRow.title = 'Посмотреть в гугл-таблице возвратов, какая строка внизу свободна';
     rowNumWrap.appendChild(bFindRow);
     const rowNote = el('div', 'flex:1 1 100%;font-size:10px;font-weight:700;line-height:1.4;color:' + ACC_DK + ';', '');
@@ -1563,7 +1563,7 @@
     };
     tableBlock.appendChild(bAll);
 
-    const moreToggle = el('button', 'background:none;border:none;color:' + ACC + ';font-size:10px;font-weight:700;cursor:pointer;padding:6px 0 0;font-family:inherit;text-decoration:underline;', 'по частям, если что-то поехало ▾');
+    const moreToggle = el('button', 'background:none;border:none;color:' + ACC_DK + ';font-size:10px;font-weight:700;cursor:pointer;padding:6px 0 0;font-family:inherit;text-decoration:underline;', 'по частям, если что-то поехало ▾');
     const moreBox = el('div', 'display:none;');
     moreToggle.onclick = () => {
       const v = moreBox.style.display === 'none';
@@ -2176,7 +2176,7 @@
   }
 
   if (location.hostname.endsWith('omnidesk.ru')) {
-    console.log(TAG, 'запущен, версия ' + '1.34.3');
+    console.log(TAG, 'запущен, версия ' + '1.34.4');
     keepSynced(function () {
       removeLauncher();
       ensureMenuItem();
