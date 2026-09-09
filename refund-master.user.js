@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.34.1
+// @version      1.34.2
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -883,7 +883,7 @@
     before: { '--rm-acc': '#6B7280', '--rm-acc-dk': '#374151', '--rm-acc-lt': '#F1F5F9', '--rm-acc-bd': '#CBD5E1', '--rm-bg': '#F4F4F5', '--rm-card': '#FFFFFF' },
     le3:    { '--rm-acc': '#EA580C', '--rm-acc-dk': '#9A3412', '--rm-acc-lt': '#FFEFE2', '--rm-acc-bd': '#FDBA74', '--rm-bg': '#FFF7ED', '--rm-card': '#FFFFFF' },
     resale: { '--rm-acc': '#7C3AED', '--rm-acc-dk': '#5B21B6', '--rm-acc-lt': '#F1EBFF', '--rm-acc-bd': '#C4B5FD', '--rm-bg': '#F5F3FF', '--rm-card': '#FFFFFF' },
-    kids:   { '--rm-acc': '#CA8A04', '--rm-acc-dk': '#854D0E', '--rm-acc-lt': '#FEF6D9', '--rm-acc-bd': '#FCD34D', '--rm-bg': '#FEFCE8', '--rm-card': '#FFFFFF' },
+    kids:   { '--rm-acc': '#B4924C', '--rm-acc-dk': '#7C632F', '--rm-acc-lt': '#FAF6EC', '--rm-acc-bd': '#E4D3A8', '--rm-bg': '#FBF9F1', '--rm-card': '#FFFFFF' },
   };
   const themeFor = s => THEMES[s] || THEME_DEFAULT;
   const applyTheme = (elm, s) => { const th = themeFor(s); Object.keys(THEME_DEFAULT).forEach(k => elm.style.setProperty(k, th[k])); };
@@ -2175,7 +2175,7 @@
   }
 
   if (location.hostname.endsWith('omnidesk.ru')) {
-    console.log(TAG, 'запущен, версия ' + '1.34.1');
+    console.log(TAG, 'запущен, версия ' + '1.34.2');
     keepSynced(function () {
       removeLauncher();
       ensureMenuItem();
