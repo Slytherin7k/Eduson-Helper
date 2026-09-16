@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.20.2
+// @version      1.20.3
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -125,7 +125,7 @@
 
   /* ================================================ */
 
-  const VER = '1.20.2';
+  const VER = '1.20.3';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3489,7 +3489,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.20.2'; // синхр. с Хэлпером
+  const VER = '1.20.3'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -6496,17 +6496,24 @@
   }
   // Порядок выдачи при поиске курса для выдачи (вкладка «Добавить курс»): в админке на одно
   // «чистое» название курса приходятся десятки корпоративных копий (курс + компания-заказчик,
-  // одна на юрлицо), демоверсий и архивных — они забивают выдачу, а нужный «чистый» курс тонет
-  // среди них. Сортируем: 0 чистое название → 1 с тарифом → 2 юрлицо (ИП/ООО/…, либо
-  // «Курс. Компания») → 3 демоверсия → 4 архив → остальное как есть.
+  // одна на юрлицо), демоверсий и архивных — они забивают выдачу, а нужный курс тонет среди
+  // них. Сортируем: 0 самые короткие чистые названия (без тарифа/юрлица/демо/архива) →
+  // 1 с пометкой тарифа (Базовый/PRO/Мастер и т.п.) → 2 юрлицо/демо/архив — всё это в конце,
+  // внутри каждой группы — от короткого названия к длинному.
+  // Границу слова делаем вручную: \b в JS — ASCII-граница, кириллицу не видит
+  // (проверено: /\bооо\b/i.test('ооо') === false, а не должно быть).
+  function hasWordCI(s, word) {
+    return new RegExp('(?:^|[^a-zа-яё0-9])' + word + '(?:[^a-zа-яё0-9]|$)', 'i').test(s);
+  }
+  const COURSE_TARIFF_WORDS = ['базовый', 'базовая', 'стандарт', 'премиум', 'максимум', 'мастер',
+    'старт', 'стартовый', 'эксперт', 'экспертный', 'продвинутый', 'расширенный', 'ультра',
+    'начальный', 'мини', 'вип', 'vip', 'lite', 'лайт', 'pro', 'про', 'профи', 'профессионал', 'профессиональный'];
   function courseVariantRank(name) {
     const s = String(name || '');
-    if (/архив/i.test(s)) return 4;
-    if (/демо/i.test(s)) return 3;
-    // \b не годится — это ASCII-граница, кириллицу не видит («ооо» вообще не находил.
-    // Проверено: /\bооо\b/i.test('ооо') === false). Границу слова делаем вручную.
-    if (/(?:^|[^a-zа-яё0-9])(ооо|ип|зао|оао|пао|ао)(?:[^a-zа-яё0-9]|$)/i.test(s) || /\.\s+\S/.test(s)) return 2;
-    if (/тариф/i.test(s)) return 1;
+    if (/архив/i.test(s)) return 2;
+    if (/демо/i.test(s)) return 2;
+    if (hasWordCI(s, '(?:ооо|ип|зао|оао|пао|ао)') || /\.\s+\S/.test(s)) return 2;
+    if (COURSE_TARIFF_WORDS.some(function (w) { return hasWordCI(s, w); })) return 1;
     return 0;
   }
   // Список курсов админки — это server-side DataTables: настоящие строки отдаёт JSON-эндпоинт
@@ -6526,7 +6533,10 @@
       const name = cell.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
       if (m && name && !out.some(function (x) { return x.id === m[1]; })) out.push({ id: m[1], name: name, users: r.users_count });
     });
-    out.sort(function (a, b) { return courseVariantRank(a.name) - courseVariantRank(b.name); });
+    out.sort(function (a, b) {
+      const ra = courseVariantRank(a.name), rb = courseVariantRank(b.name);
+      return ra !== rb ? ra - rb : a.name.length - b.name.length;
+    });
     return out.slice(0, 40);
   }
   async function adminSuperCourses(superId) {
