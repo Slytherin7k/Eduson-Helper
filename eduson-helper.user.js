@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.22.2
+// @version      1.23.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -125,7 +125,7 @@
 
   /* ================================================ */
 
-  const VER = '1.22.2';
+  const VER = '1.23.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3489,7 +3489,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.22.2'; // синхр. с Хэлпером
+  const VER = '1.23.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4405,7 +4405,7 @@
     // список уроков — свой у каждого студента; сбрасываем только при смене чата (иначе теряем прогрев)
     if (lessonCache && lessonCache.caseId !== ((location.pathname.match(/(\d{2,4}-\d{5,})/) || [])[1] || '')) { lessonCache = null; _lectCache = {}; }
     const tPing = mkTab('Пинги', renderPings);
-    const tQ = mkTab('Вопросы', renderQuestions);
+    const tQ = mkTab('Ноушен', renderQuestions);
     const tCourses = mkTab('Курсы', renderCourses);
     const tDoc = mkTab('Документ', renderDoc);
     const tTag = mkTab('Теги', renderTags);
@@ -5464,9 +5464,11 @@
     return rows.slice(0, 20);
   }
 
-  /* ==================== ВКЛАДКА «ВОПРОСЫ» — 2 под-вкладки: Поиск | Создать карточку ==================== */
+  /* ==================== ВКЛАДКА «НОУШЕН» — 3 под-вкладки: Поиск | Создать карточку | Ревью резюме ==================== */
   // Состояние под-вкладки «создать» — переживает сворачивание панели (только мутируем, не пересоздаём).
   var _qcState = { sub: '', theme: '', course: null, link: '', mail: null, q: '', files: [], lastUrl: '' };
+  // Состояние под-вкладки «Ревью резюме» — та же логика (мутируем, не пересоздаём).
+  var _qrState = { name: null, course: null, mail: null, files: [], lastUrl: '' };
   var _faqSchemaCache = null;
 
   function nUid() {
@@ -5606,12 +5608,111 @@
     await notionTx([{ pointer: { table: 'block', id: cardId, spaceId: FAQ_SPACE }, path: ['properties', pf.id], command: 'set', args: val }]);
   }
 
+  /* ---------- Notion: доска «Ревью резюме студентов» (отдельная от «Вопросы студентов») ----------
+     Страница https://app.notion.com/p/eduson/19b9fc87e8ac484a9d1fc8ebc3d6d731 . Поля доски:
+     Name(title) / Почта студента(text) / Точное название курса(text) / Файл резюме студента(file) /
+     Когда добавлено на доску(date, авто) / Кто добавил(person, авто) / Status(status: To-do →
+     «Not started» / In progress / Complete — новая карточка всегда в «Not started» = столбец To-do).
+     «Дедлайн проверки» (formula) и «Кто проверяет» — заполняет HR, мы не трогаем. */
+  const RESUME_COLLECTION = '138bed08-ea0d-4a1c-adbb-f1523be43a2e';
+  const RESUME_SPACE = '816a0709-d1b1-494e-8060-6340ffac6df1';
+  var _resumeSchemaCache = null;
+  async function resumeSchema() {
+    if (_resumeSchemaCache) return _resumeSchemaCache;
+    const j = await notionPost('syncRecordValues', { requests: [{ pointer: { table: 'collection', id: RESUME_COLLECTION, spaceId: RESUME_SPACE }, version: -1 }] });
+    const rec = j.recordMap.collection[RESUME_COLLECTION];
+    const cv = (rec && rec.value && rec.value.value) ? rec.value.value : (rec && rec.value) || {};
+    _resumeSchemaCache = { raw: cv.schema || {}, parent_id: cv.parent_id || '' };
+    return _resumeSchemaCache;
+  }
+  async function notionTxResume(operations) {
+    const body = { requestId: nUid(), transactions: [{ id: nUid(), spaceId: RESUME_SPACE, operations: operations }] };
+    try { return await notionWrite('saveTransactionsFanout', body); }
+    catch (e1) {
+      if (e1.message === 'NOAUTH') throw e1;
+      try { return await notionWrite('saveTransactions', body); }
+      catch (e2) {
+        if (e2.message === 'NOAUTH') throw e2;
+        console.warn('[eduson-helper] обе транзакции (резюме) не прошли:', e1.message, '||', e2.message);
+        throw e2;
+      }
+    }
+  }
+  // Создать карточку на доске «Ревью резюме студентов». d = {name, email, course}. → {id, url}
+  async function notionCreateResumeCard(d) {
+    const me = await notionMe();
+    const schema = await resumeSchema();
+    const seg = function (txt) { return [[String(txt == null ? '' : txt)]]; };
+    const props = { title: seg(d.name) };
+    const pMail = faqProp(schema, ['почта студента', 'почта клиента', 'email']);
+    const pCourse = faqProp(schema, ['точное название курса', 'название курса', 'курс']);
+    const pDate = faqProp(schema, ['когда добавлено на доску', 'когда добавлено', 'когда добавлен']);
+    const pWho = faqProp(schema, ['кто добавил']);
+    const pStatus = faqProp(schema, ['status', 'статус']);
+    if (pMail && d.email) props[pMail.id] = seg(d.email);
+    if (pCourse && d.course) props[pCourse.id] = seg(d.course);
+    if (pDate && pDate.type === 'date') {
+      const dd = new Date();
+      props[pDate.id] = [['‣', [['d', { type: 'date', start_date: dd.getFullYear() + '-' + p2(dd.getMonth() + 1) + '-' + p2(dd.getDate()) }]]]];
+    }
+    if (pWho && pWho.type === 'person' && me) props[pWho.id] = [['‣', [['u', me]]]];
+    // значение статуса — как у обычного select: текст = имя опции («Not started» лежит в группе To-do).
+    if (pStatus && pStatus.type === 'status') props[pStatus.id] = seg('Not started');
+
+    const NEW = nUid();
+    const now = Date.now();
+    const ptr = { table: 'block', id: NEW, spaceId: RESUME_SPACE };
+    const ops = [{
+      pointer: ptr, path: [], command: 'set', args: {
+        type: 'page', id: NEW, version: 1, alive: true,
+        parent_id: RESUME_COLLECTION, parent_table: 'collection', space_id: RESUME_SPACE,
+        properties: props,
+        created_time: now, last_edited_time: now,
+        created_by_table: 'notion_user', created_by_id: me,
+        last_edited_by_table: 'notion_user', last_edited_by_id: me
+      }
+    }];
+    const resp = await notionTxResume(ops);
+    console.log('[eduson-helper] карточка «Ревью резюме» создана:', NEW, resp);
+    return { id: NEW, url: 'https://www.notion.so/' + NEW.replace(/-/g, '') };
+  }
+  async function notionUploadResumeFile(cardId, file) {
+    const info = await notionPost('getUploadFileUrl', {
+      bucket: 'secure',
+      name: file.name || ('file-' + Date.now()),
+      contentType: file.type || 'application/octet-stream',
+      record: { table: 'block', id: cardId, spaceId: RESUME_SPACE }
+    });
+    const putUrl = info.signedPutUrl || info.signedUploadUrl;
+    const finalUrl = info.url;
+    if (!putUrl || !finalUrl) throw new Error('Notion не дал ссылку для загрузки');
+    await new Promise(function (resolve, reject) {
+      GM_xmlhttpRequest({
+        method: 'PUT', url: putUrl, data: file, timeout: 90000,
+        headers: { 'Content-Type': file.type || 'application/octet-stream' },
+        onload: function (r) { (r.status >= 200 && r.status < 300) ? resolve() : reject(new Error('хранилище ответило ' + r.status)); },
+        onerror: function () { reject(new Error('сеть при загрузке файла')); },
+        ontimeout: function () { reject(new Error('файл грузился слишком долго')); }
+      });
+    });
+    return { name: file.name || 'файл', url: finalUrl };
+  }
+  // Прикрепить загруженное резюме к свойству «Файл резюме студента».
+  async function notionAttachResumeFile(cardId, infos) {
+    const schema = await resumeSchema();
+    const pf = faqProp(schema, ['файл резюме студента', 'файл резюме', 'резюме']);
+    if (!pf) throw new Error('поле «Файл резюме студента» не нашлось');
+    const val = [];
+    infos.forEach(function (f, i) { if (i) val.push([',', []]); val.push([f.name, [['a', f.url]]]); });
+    await notionTxResume([{ pointer: { table: 'block', id: cardId, spaceId: RESUME_SPACE }, path: ['properties', pf.id], command: 'set', args: val }]);
+  }
+
   function renderQuestions(body) {
     const barCss = 'display:flex;gap:6px;margin-bottom:9px;';
     const tCss = 'flex:1;text-align:center;cursor:pointer;font-weight:800;font-size:11px;padding:6px 4px;border-radius:8px;border:1.5px solid ' + ACC_BD + ';color:' + ACC + ';';
     const bar = elt('div', barCss);
     const inner = elt('div', '');
-    const defs = [['Поиск', renderQSearch, 'search'], ['Создать карточку', renderQCreate, 'create']];
+    const defs = [['Поиск', renderQSearch, 'search'], ['Создать карточку', renderQCreate, 'create'], ['Ревью резюме', renderQResume, 'resume']];
     const btns = defs.map(function (d) {
       const b = elt('div', tCss, d[0]);
       b.onclick = function () {
@@ -5626,7 +5727,7 @@
     btns.forEach(function (b) { bar.appendChild(b); });
     body.appendChild(bar);
     body.appendChild(inner);
-    (_qcState.sub === 'create' ? btns[1] : btns[0]).onclick();
+    (_qcState.sub === 'create' ? btns[1] : _qcState.sub === 'resume' ? btns[2] : btns[0]).onclick();
   }
 
   function renderQSearch(body) {
@@ -5955,6 +6056,149 @@
         themeInp.value = ''; linkInp.value = ''; qArea.value = ''; drawChips();
       } catch (e) {
         console.error('[eduson-helper] создание карточки Notion:', e);
+        status.style.color = '#DC2626';
+        status.textContent = (e.message === 'NOAUTH')
+          ? '🙀 Notion не пустил. Открой app.notion.com в соседней вкладке, войди, вернись, попробуй снова.'
+          : ('🙀 Не получилось создать карточку.\n' + (e.message || e) + '\n\nНажми F12 → вкладка Console, скопируй красные строки и пришли мне.');
+      }
+      busy = false; btn.style.opacity = '1'; btn.textContent = 'Добавить на доску';
+    };
+  }
+
+  /* ---------- под-вкладка «Ревью резюме» ----------
+     Наталья: «Всю информацию по студенту можно взять из карточки омни. Больше ничего не
+     вписывается» — только ФИО/почта/курс из карточки OmniDesk (можно поправить, если магнит
+     ошибся) + файл резюме. Карточка всегда уходит в столбец To-do (Status = «Not started»),
+     дату и автора-куратора Notion проставляет сам. */
+  function renderQResume(body) {
+    const lab = function (n, t) {
+      const d = elt('div', 'display:flex;align-items:baseline;gap:6px;margin:12px 0 4px;');
+      d.appendChild(elt('span', 'flex:0 0 auto;width:16px;height:16px;border-radius:50%;background:' + ACC + ';color:#fff;font-size:9px;font-weight:900;display:flex;align-items:center;justify-content:center;', String(n)));
+      d.appendChild(elt('span', 'font-size:12px;font-weight:800;color:#1F2937;', t));
+      return d;
+    };
+    const inCss = 'width:100%;box-sizing:border-box;padding:8px 10px;border:1.5px solid #CBD5E1;border-radius:9px;font:600 12px ' + FONT + ';color:#111827;background:#fff;';
+    const note = 'font-size:10px;color:#94A3B8;font-weight:600;margin-top:3px;';
+
+    if (!Array.isArray(_qrState.files)) _qrState.files = [];
+    if (_qrState.name == null) _qrState.name = readUser().name || '';
+    if (_qrState.mail == null) _qrState.mail = readUser().email || '';
+    if (_qrState.course == null) _qrState.course = readCourse() || '';
+    function save() {
+      _qrState.name = nameInp.value;
+      _qrState.mail = mailInp.value;
+      _qrState.course = courseInp.value;
+    }
+
+    body.appendChild(elt('div', 'font-size:10.5px;color:#64748B;font-weight:700;line-height:1.4;', 'Новая карточка на доске «Ревью резюме студентов» — сразу в To-do'));
+
+    // 1 · ФИО (заголовок карточки)
+    body.appendChild(lab(1, 'ФИО студента'));
+    const nameInp = elt('input', inCss); nameInp.placeholder = 'Фамилия Имя Отчество';
+    nameInp.value = _qrState.name || ''; body.appendChild(nameInp);
+    body.appendChild(elt('div', note, 'подставлено из карточки OmniDesk — проверь'));
+    nameInp.addEventListener('input', save);
+
+    // 2 · ПОЧТА
+    body.appendChild(lab(2, 'Почта студента'));
+    const mailInp = elt('input', inCss); mailInp.placeholder = 'client@mail.ru';
+    mailInp.value = _qrState.mail || ''; body.appendChild(mailInp);
+    body.appendChild(elt('div', note, 'подставлена из карточки OmniDesk — проверь'));
+    mailInp.addEventListener('input', save);
+
+    // 3 · ТОЧНОЕ НАЗВАНИЕ КУРСА
+    body.appendChild(lab(3, 'Точное название курса'));
+    const courseInp = elt('input', inCss); courseInp.placeholder = 'название курса, который студент прошёл';
+    courseInp.value = _qrState.course || ''; body.appendChild(courseInp);
+    body.appendChild(elt('div', note, 'подставлено из карточки OmniDesk — HR просит указывать точно, проверь'));
+    courseInp.addEventListener('input', save);
+
+    // 4 · ФАЙЛ РЕЗЮМЕ
+    body.appendChild(lab(4, 'Файл резюме'));
+    const fileInp = elt('input', 'display:none'); fileInp.type = 'file'; fileInp.multiple = true;
+    const pickBtn = elt('div', 'display:flex;align-items:center;justify-content:center;gap:8px;width:100%;box-sizing:border-box;background:#EEF2F7;color:#334155;border:1.5px dashed #94A3B8;border-radius:8px;padding:12px 14px;font-weight:800;font-size:13px;line-height:1;cursor:pointer;', '📎 Прикрепить резюме');
+    pickBtn.onmouseenter = function () { pickBtn.style.background = '#E2E8F0'; };
+    pickBtn.onmouseleave = function () { pickBtn.style.background = '#EEF2F7'; };
+    pickBtn.onclick = function () { fileInp.click(); };
+    const chips = elt('div', 'display:flex;flex-wrap:wrap;gap:5px;margin-top:7px;');
+    body.appendChild(pickBtn); body.appendChild(fileInp); body.appendChild(chips);
+    body.appendChild(elt('div', note, 'без файла резюме HR ревью делать не будет — прикрепи обязательно'));
+    function drawChips() {
+      chips.innerHTML = '';
+      _qrState.files.forEach(function (f, i) {
+        const c = elt('span', 'display:inline-flex;align-items:center;gap:5px;background:#E0F2FE;color:#075985;border-radius:999px;padding:3px 6px 3px 10px;font-size:10.5px;font-weight:800;max-width:100%;');
+        c.appendChild(elt('span', 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:170px;', f.name));
+        const xx = elt('span', 'cursor:pointer;font-weight:900;color:#0369A1;padding:0 2px;', '×');
+        xx.onclick = function () { _qrState.files.splice(i, 1); drawChips(); };
+        c.appendChild(xx);
+        chips.appendChild(c);
+      });
+      pickBtn.textContent = _qrState.files.length ? ('📎 Добавить ещё (' + _qrState.files.length + ')') : '📎 Прикрепить резюме';
+    }
+    fileInp.addEventListener('change', function () {
+      Array.from(fileInp.files).forEach(function (f) { _qrState.files.push(f); });
+      fileInp.value = '';
+      drawChips();
+    });
+    drawChips();
+
+    const status = elt('div', 'font-size:11px;font-weight:700;line-height:1.45;margin-top:12px;white-space:pre-wrap;');
+    const btn = elt('div', 'margin-top:10px;text-align:center;background:' + ACC + ';color:#fff;font-weight:800;font-size:12.5px;padding:10px 0;border-radius:8px;cursor:pointer;', 'Добавить на доску');
+    const copyBtn = elt('div', 'margin-top:7px;text-align:center;background:#fff;color:' + ACC + ';border:1.5px solid ' + ACC_BD + ';font-weight:800;font-size:11.5px;padding:8px 0;border-radius:8px;cursor:pointer;display:none;', '🔗 Скопировать ссылку на карточку');
+    body.appendChild(btn); body.appendChild(copyBtn); body.appendChild(status);
+
+    function armCopy(url) {
+      copyBtn.style.display = 'block';
+      copyBtn.onclick = function () { copyText(url); toast('Ссылка на карточку скопирована'); };
+    }
+    if (_qrState.lastUrl) {
+      armCopy(_qrState.lastUrl);
+      status.style.color = '#16A34A';
+      status.textContent = '😻 Последняя карточка создана.';
+      const a = elt('a', 'display:inline-block;margin-top:5px;font-size:11px;font-weight:800;color:' + ACC + ';text-decoration:none;', 'открыть в Notion →');
+      a.href = _qrState.lastUrl; a.target = '_blank'; a.rel = 'noopener';
+      status.appendChild(document.createElement('br')); status.appendChild(a);
+    }
+
+    let busy = false;
+    btn.onclick = async function () {
+      if (busy) return;
+      save();
+      const name = nameInp.value.trim();
+      const mail = mailInp.value.trim();
+      const course = courseInp.value.trim();
+      const files = _qrState.files.slice();
+      if (!name) { toast('Впиши ФИО студента'); nameInp.focus(); return; }
+      if (!files.length) { toast('Прикрепи файл резюме'); return; }
+      if (!window.confirm('Создать карточку на доске «Ревью резюме студентов» (столбец To-do)?\n\n' +
+        name + '\nПочта: ' + (mail || '—') + '\nКурс: ' + (course || '— не указан —') + '\nФайлов: ' + files.length)) return;
+
+      busy = true; btn.style.opacity = '.55'; btn.textContent = 'Создаю карточку…';
+      copyBtn.style.display = 'none'; status.style.color = '#6B7280'; status.textContent = '';
+      try {
+        const res = await notionCreateResumeCard({ name: name, email: mail, course: course });
+        let filesMsg = '';
+        btn.textContent = 'Загружаю файл…';
+        try {
+          const infos = [];
+          for (const f of files) { infos.push(await notionUploadResumeFile(res.id, f)); }
+          await notionAttachResumeFile(res.id, infos);
+          filesMsg = '\nФайл прикреплён (' + infos.length + ').';
+        } catch (fe) {
+          console.error('[eduson-helper] резюме не прикрепилось:', fe);
+          filesMsg = '\n⚠️ Файл не прикрепился (' + (fe.message || fe) + ') — открой карточку и добавь вручную.';
+        }
+        status.style.color = '#16A34A';
+        status.textContent = '😻 Карточка создана.' + filesMsg;
+        const a = elt('a', 'display:inline-block;margin-top:6px;font-size:11px;font-weight:800;color:' + ACC + ';text-decoration:none;', 'открыть карточку в Notion →');
+        a.href = res.url; a.target = '_blank'; a.rel = 'noopener';
+        status.appendChild(document.createElement('br')); status.appendChild(a);
+        _qrState.lastUrl = res.url;
+        armCopy(res.url);
+        _qrState.files = [];
+        drawChips();
+      } catch (e) {
+        console.error('[eduson-helper] создание карточки «Ревью резюме»:', e);
         status.style.color = '#DC2626';
         status.textContent = (e.message === 'NOAUTH')
           ? '🙀 Notion не пустил. Открой app.notion.com в соседней вкладке, войди, вернись, попробуй снова.'
