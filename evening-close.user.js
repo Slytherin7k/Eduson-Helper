@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson — Вечернее закрытие обращений
 // @namespace    eduson-evening-close
-// @version      1.0.0
+// @version      1.2.0
 // @description  С 19:56 до 20:50 автоматически вставляет прощальный шаблон в поле ответа во всех открытых обращениях OmniDesk. НЕ отправляет — отправляешь и закрываешь сама.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -108,54 +108,62 @@
   function consts(kind) {
     return 'var KIND=' + JSON.stringify(kind) +
            ';var TEXT=' + JSON.stringify(TEXT) +
-           ';var HTMLV=' + JSON.stringify('<p>' + TEXT.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</p>') +
            ';var MARK=' + JSON.stringify(MARK) + ';';
   }
 
-  // Общий кусок: находит редактор поля ответа, его видимый узел и текст.
+  // ЧАТ (#comment) — это ПРОСТОЙ <textarea>, Redactor к нему не трогаем (иначе появляется
+  // панель форматирования и текст оборачивается в «<p>…</p>», которые уходят клиенту).
+  // ПОЧТА (#response_html) — там Redactor нужен (письму нужен HTML).
   const FIND_EDITOR =
     'var RID=(KIND==="chat")?"comment":"response_html";' +
-    'var app=null;try{app=window.$R("#"+RID);}catch(e){}' +
-    'var el=null;try{el=app.editor.getElement();}catch(e){}' +
-    'var node=null;try{node=(el&&el.nodes)?el.nodes[0]:((el&&el[0])||el||null);}catch(e){}' +
-    'if(!node){try{node=document.querySelector(".redactor-in-0");}catch(e){}}' +
-    'function edTxt(){try{if(el&&el.text)return el.text();}catch(e){}return node?(node.textContent||""):"";}' +
-    'function edEmpty(){try{if(app&&app.editor&&app.editor.isEmpty)return app.editor.isEmpty();}catch(e){}' +
-    ' var t=edTxt().replace(/\\uFEFF/g,"").trim();return !t||(node&&node.classList&&node.classList.contains("redactor-placeholder"));}' +
-    'var ta=document.getElementById(RID);';
+    'var ta=document.getElementById(RID);' +
+    'var app=null,node=null;' +
+    'if(KIND==="email"){try{app=window.$R("#"+RID);node=(app&&app.editor)?app.editor.getElement().nodes[0]:null;}catch(e){}}' +
+    'function taVal(){return ta?String(ta.value||""):"";}' +
+    'function bodyText(){return KIND==="chat"?taVal().replace(/<[^>]*>/g," ").replace(/\\uFEFF/g,"").trim()' +
+    ' :((node?(node.innerText||node.textContent||""):taVal()).replace(/\\uFEFF/g,"").trim());}' +
+    'function setTa(v){try{var st=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,"value").set;if(st)st.call(ta,v);else ta.value=v;}catch(e){ta.value=v;}' +
+    ' ta.dispatchEvent(new Event("input",{bubbles:true}));ta.dispatchEvent(new Event("change",{bubbles:true}));}';
 
   const PROBE_BODY = FIND_EDITOR +
-    'R.hasEditor=!!(app&&app.insertion&&app.source);' +
-    'if(R.hasEditor){' +
-    ' R.editorEmpty=edEmpty();' +
-    ' R.hasMark=edTxt().indexOf(MARK)!==-1;' +
+    'if(KIND==="chat"){' +
+    ' R.hasEditor=!!(ta && ta.offsetParent!==null);' +
+    ' R.editorEmpty=!bodyText();' +
+    ' R.hasMark=taVal().indexOf(MARK)!==-1;' +
+    ' var rb=document.querySelector(".btn_add_reply");var fr=document.querySelector(".for-reply-text");' +
+    ' R.replyMode=!!(rb&&rb.offsetParent!==null)||!!(fr&&/ответ/i.test(fr.textContent||""));' +
+    '}else{' +
+    ' R.hasEditor=!!(app&&app.insertion);' +
+    ' R.editorEmpty=!bodyText();' +
+    ' R.hasMark=bodyText().indexOf(MARK)!==-1;' +
+    ' R.replyMode=true;' +
     '}' +
-    // для чата: доступен ли режим «ответ клиенту» (в нерабочем статусе поле запечатано, есть только заметка)
-    'if(KIND==="chat"){var rb=document.querySelector(".btn_add_reply");var fr=document.querySelector(".for-reply-text");' +
-    ' R.replyMode=!!(rb&&rb.offsetParent!==null)||!!(fr&&/ответ/i.test(fr.textContent||""));}else{R.replyMode=true;}' +
-    // сохранённый черновик OmniDesk по этому кейсу
     'try{var sid=window.staff_id,cid=window.CurrentCaseId;R.caseId=cid;' +
     ' var dr=localStorage.getItem("case_reply_"+sid+"_"+cid)||"";' +
     ' var clean=dr.replace(/<[^>]*>/g,"").replace(/\\uFEFF|\\s/g,"");' +
     ' R.draft=!!(clean.length>0&&dr.indexOf(MARK)===-1);}catch(e){}' ;
 
   const INSERT_BODY = FIND_EDITOR +
-    'if(!app||!app.insertion){R.err="редактор не готов";}else{' +
-    ' try{app.editor.startFocus();}catch(e){}' +
-    ' try{app.insertion.set(TEXT);}catch(e){try{app.source.setCode(HTMLV);}catch(e2){}}' +
-    ' try{app.editor.startFocus();}catch(e){}' +
-    ' if(ta){ta.value=HTMLV;try{ta.dispatchEvent(new Event("change",{bubbles:true}));}catch(e){}}' +
-    ' if(node){try{node.dispatchEvent(new Event("input",{bubbles:true}));}catch(e){}}' +
-    ' R.ok=true;}' ;
+    'if(KIND==="chat"){' +
+    ' if(!ta){R.err="нет поля ответа";}else{' +
+    '  try{if(window.$R&&document.querySelector(".redactor-box")){$R("#comment","destroy");}}catch(e){}' +
+    '  ta.style.display="";' +
+    '  setTa(TEXT);' +
+    '  try{ta.dispatchEvent(new KeyboardEvent("keyup",{bubbles:true}));}catch(e){}' +
+    '  R.ok=true;}' +
+    '}else{' +
+    ' if(!app||!app.insertion){R.err="редактор не готов";}else{' +
+    '  try{app.editor.startFocus();}catch(e){}' +
+    '  try{app.insertion.set(TEXT);}catch(e){R.err=(e&&e.message)||String(e);}' +
+    '  try{if(app.selection&&app.selection.collapseToEnd)app.selection.collapseToEnd();}catch(e){}' +
+    '  try{var n2=app.editor.getElement().nodes[0];if(ta){setTa(n2.innerHTML);}n2.dispatchEvent(new Event("input",{bubbles:true}));}catch(e){}' +
+    '  R.ok=true;}' +
+    '}' ;
 
   const CLEAR_BODY = FIND_EDITOR +
-    'var txt=edTxt();' +
-    'if(app&&txt.indexOf(MARK)!==-1){' +
-    ' try{app.editor.startFocus();}catch(e){}' +
-    ' try{app.insertion.set("");}catch(e){}' +
-    ' try{app.source.setCode("");}catch(e){}' +
-    ' if(node)node.innerHTML="<p><br></p>";' +
-    ' if(ta){ta.value="";try{ta.dispatchEvent(new Event("change",{bubbles:true}));}catch(e){}}' +
+    'if(bodyText().indexOf(MARK)!==-1 || taVal().indexOf(MARK)!==-1){' +
+    ' if(KIND==="chat"){setTa("");}' +
+    ' else{try{app.editor.startFocus();app.insertion.set("");}catch(e){}if(ta){setTa("");}}' +
     ' R.cleared=true;}' ;
 
   // Кто написал последним: 'staff' (мы ответили — шаблон уместен) / 'client' (висит вопрос) / null
@@ -327,7 +335,7 @@
     }
   }
 
-  console.log(TAG, 'запущен, версия 1.0.0 · окно ' + START + '–' + END + (FORCE_ON ? ' · FORCE_ON' : ''));
+  console.log(TAG, 'запущен, версия 1.2.0 · окно ' + START + '–' + END + (FORCE_ON ? ' · FORCE_ON' : ''));
   setInterval(function () { watchPath(); tick(); }, 12000);
   setTimeout(tick, 2500);
 })();
