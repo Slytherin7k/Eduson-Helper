@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.21.2
+// @version      1.22.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -125,7 +125,7 @@
 
   /* ================================================ */
 
-  const VER = '1.21.2';
+  const VER = '1.22.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3489,7 +3489,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.21.2'; // синхр. с Хэлпером
+  const VER = '1.22.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -6465,7 +6465,7 @@
     const bar = elt('div', 'display:flex;gap:6px;margin-bottom:9px;');
     const inner = elt('div', '');
     const tCss = 'flex:1;text-align:center;cursor:pointer;font-weight:800;font-size:10.5px;padding:6px 3px;border-radius:8px;border:1.5px solid ' + ACC_BD + ';color:' + ACC + ';white-space:nowrap;';
-    const defs = [['Урок', renderLesson, 'lesson'], ['Прогресс 80', renderProgress80, 'progress'], ['Добавить курс', renderAddCourse, 'add']];
+    const defs = [['Урок', renderLesson, 'lesson'], ['Прогресс 80', renderProgress80, 'progress'], ['Блок', renderProgressBlock, 'block'], ['Добавить курс', renderAddCourse, 'add']];
     const btns = defs.map(function (d) {
       const b = elt('div', tCss, d[0]);
       b.onclick = function () {
@@ -6480,7 +6480,7 @@
     btns.forEach(function (b) { bar.appendChild(b); });
     body.appendChild(bar);
     body.appendChild(inner);
-    const idx = { lesson: 0, progress: 1, add: 2 }[_coursesSub] || 0;
+    const idx = { lesson: 0, progress: 1, block: 2, add: 3 }[_coursesSub] || 0;
     btns[idx].onclick();
   }
 
@@ -7486,65 +7486,10 @@
 
       // курсы ВЫБРАННОЙ программы (источник для совпадений «нет в списке»); в сам список не идут
       let stuCourses = [];
-      // разделы курса (для батч-завершения блоками — Наталья: иногда нужно подтянуть
-      // прогресс сразу очень большому числу уроков, бывало больше 50 за раз).
-      let stuSections = [];
       const setStu = function (lessons) {
         stuCourses = (lessons || []).filter(function (l) { return !seen[l.id]; })
           .map(function (l) { return { id: l.id, n: l.name, stu: true }; });
-        const bySec = {}, order = [];
-        (lessons || []).forEach(function (l) {
-          const sec = l.section || 'Без раздела';
-          if (!bySec[sec]) { bySec[sec] = []; order.push(sec); }
-          bySec[sec].push({ id: l.id, n: l.name });
-        });
-        stuSections = order.map(function (nm) { return { name: nm, items: bySec[nm] }; });
         drawList();
-        drawSections();
-      };
-
-      // Батч по разделам: отмечаешь один или несколько разделов курса — завершаются
-      // ВСЕ уроки внутри них одним запуском (последовательно, чтобы не словить 500 от админки).
-      // Спрятано за кнопкой-раскрывашкой (как «вставить ссылку» ниже) — панель и так длинная,
-      // а этот блок нужен далеко не в каждом обращении.
-      // Кнопка видна СРАЗУ (не ждёт загрузки курса) — пока данных нет, показывает
-      // «загружаю» и не реагирует на клик; как только программа студента прогрузится,
-      // сама переключается в обычный вид (или в «разделов нет», если курс плоский).
-      const secToggle = elt('div', S.more, '⏳ Загружаю разделы курса…');
-      const secBody = elt('div', 'display:none;margin-top:5px;');
-      const secBox = elt('div', S.list);
-      const secGo = elt('div', S.go, 'Завершить отмеченные разделы');
-      secBody.appendChild(secBox); secBody.appendChild(secGo);
-      let secHas = false;
-      secToggle.onclick = function () {
-        if (!secHas) return;
-        const open = secBody.style.display !== 'none';
-        secBody.style.display = open ? 'none' : 'block';
-        secToggle.textContent = (open ? '▸' : '▾') + ' Завершить разделы курса целиком';
-      };
-      main.appendChild(secToggle); main.appendChild(secBody);
-      const drawSections = function () {
-        secHas = stuSections.length > 1 || (stuSections.length === 1 && stuSections[0].name !== 'Без раздела');
-        secToggle.textContent = secHas ? '▸ Завершить разделы курса целиком' : 'В этом курсе разделов не нашла';
-        secToggle.style.opacity = secHas ? '' : '.55';
-        secToggle.style.cursor = secHas ? 'pointer' : 'default';
-        secBox.innerHTML = '';
-        stuSections.forEach(function (sec, i) {
-          const row = elt('label', S.row + 'display:flex;align-items:center;gap:7px;cursor:pointer;');
-          const cb = elt('input', ''); cb.type = 'checkbox'; cb.dataset.idx = String(i);
-          row.appendChild(cb);
-          row.appendChild(document.createTextNode(sec.name + ' (' + sec.items.length + ')'));
-          secBox.appendChild(row);
-        });
-      };
-      secGo.onclick = function () {
-        const idxs = Array.prototype.slice.call(secBox.querySelectorAll('input:checked')).map(function (c) { return Number(c.dataset.idx); });
-        if (!idxs.length) { toast('Отметь хотя бы один раздел'); return; }
-        const items = [];
-        idxs.forEach(function (i) { items.push.apply(items, stuSections[i].items); });
-        if (!window.confirm('Завершить ' + items.length + ' урок(ов) из ' + idxs.length + ' раздел(ов) для «' + student + '»?')) return;
-        secGo.style.pointerEvents = 'none'; secGo.style.opacity = '.6';
-        completeSeq(log, items, acctUid);
       };
 
       loadLessons().then(function (d) {
@@ -7688,6 +7633,113 @@
       all.onclick = function () { all.style.pointerEvents = 'none'; all.style.opacity = '.6'; completeSeq(log, rows, tu); };
       main.appendChild(all);
       main.appendChild(log);
+    }
+  }
+
+  /* ==================== ВКЛАДКА «БЛОК» — завершить сразу разделами ====================
+     Отдельная от «Прогресс 80» вкладка (не встраиваем внутрь неё, чтобы та осталась
+     короткой): для случаев, когда нужно подтянуть прогресс сразу очень многим урокам —
+     Наталья: «бывало больше 50 шт подтягивали». Показывает разделы курса ВЫБРАННОЙ
+     программы студента (как в «Прогресс 80»/«Урок»); отмечаешь один или несколько —
+     завершаются ВСЕ уроки внутри них одним запуском (последовательно, чтобы не словить
+     500 от админки). Студент/токен — тот же путь, что у «Прогресс 80»
+     (resolveStudentAccount + fetchAdminMeta), т.к. отправка тем же create_course_diploma. */
+  function renderProgressBlock(body) {
+    body.appendChild(elt('div', 'font-weight:800;font-size:13px;margin-bottom:4px;', 'Завершить разделы курса'));
+    body.appendChild(elt('div', 'font-size:10px;color:#6B7280;font-weight:600;line-height:1.45;margin-bottom:6px;',
+      'Для больших батчей: отмечаешь разделы курса — завершатся все уроки внутри, один за другим.'));
+
+    const status = elt('div', 'font-size:11.5px;font-weight:700;color:#9CA3AF;', 'Ищу студента в админке…');
+    body.appendChild(status);
+    const bar = miniBar(); bar.osc(); body.appendChild(bar.el);
+    const main = elt('div', '');
+    body.appendChild(main);
+
+    let uid = '', token = '', student = '', acctUid = '';
+
+    function doComplete(logEl, id, name, targetUid) {
+      const tu = targetUid || acctUid || uid;
+      const line = elt('div', 'color:#6B7280;font-weight:700;', '… ' + id + (name ? (' «' + name + '»') : '') + ' — отправляю');
+      logEl.appendChild(line);
+      return gmPostForm(EDU_ADMIN + '/admin/users/' + tu + '/create_course_diploma?language=ru', {
+        authenticity_token: token, course_id: id, commit: 'Завершить курс'
+      }).then(function (r) {
+        if (r.noauth) { line.textContent = '✗ ' + id + ' — не пустило в админку'; line.style.color = '#B91C1C'; }
+        else if (r.csrf) { line.textContent = '✗ ' + id + ' — токен устарел, открой панель заново'; line.style.color = '#B91C1C'; }
+        else if (r.ok || r.maybe) { line.textContent = '✓ ' + id + (name ? (' «' + name + '»') : '') + ' — завершено'; line.style.color = '#16A34A'; }
+        else { line.textContent = '✗ ' + id + ' — не отправилось (код ' + (r.code || '?') + ')'; line.style.color = '#B91C1C'; }
+        return r;
+      });
+    }
+    function completeSeq(logEl, items) {
+      let i = 0;
+      const step = function () {
+        if (i >= items.length) { logEl.appendChild(elt('div', 'color:#6B7280;font-weight:800;margin-top:2px;', 'Готово: ' + items.length)); toast('Готово: ' + items.length + ' урок(ов)'); return; }
+        const x = items[i++];
+        doComplete(logEl, x.id, x.n).then(function () { setTimeout(step, 400); });
+      };
+      step();
+    }
+
+    resolveStudentAccount().then(function (a) { uid = a.uid; acctUid = a.uid; return fetchAdminMeta(a.uid); }).then(function (meta) {
+      bar.done(); setTimeout(function () { if (bar.el.parentNode) bar.el.remove(); }, 400);
+      status.style.display = 'none';
+      token = meta.token; student = meta.studentName || readUser().name || '?';
+      if (!token) { main.appendChild(elt('div', 'font-size:11.5px;color:#B45309;font-weight:700;', 'Не нашла токен в админке — открой админку в соседней вкладке, войди, и открой панель заново.')); return; }
+      buildUI();
+    }).catch(function (e) {
+      bar.fail(); status.style.display = ''; status.style.color = '#B45309';
+      status.textContent = (e && e.message === 'NOAUTH')
+        ? 'Не пустило на www.eduson.tv. Открой админку в соседней вкладке, войди и попробуй снова.'
+        : '🙀 Не получилось: ' + ((e && e.message) || 'ошибка') + '.';
+    });
+
+    function buildUI() {
+      main.appendChild(elt('div', 'font-size:12.5px;font-weight:800;color:#111827;margin-bottom:1px;', 'Студент: ' + student));
+      main.appendChild(elt('div', 'font-size:10px;color:#9CA3AF;font-weight:700;margin-bottom:8px;', 'ID в админке ' + uid + ' · проверь, что это тот студент'));
+
+      const note = elt('div', 'font-size:11px;color:#9CA3AF;font-weight:700;', 'Загружаю разделы курса…');
+      const secBox = elt('div', 'margin-top:5px;max-height:230px;overflow-y:auto;border:1px solid #EEF2F5;border-radius:9px;display:none;');
+      const secGo = elt('div', 'margin-top:9px;text-align:center;cursor:pointer;font-weight:800;font-size:11.5px;padding:8px 0;border-radius:8px;background:#16A34A;color:#fff;display:none;', 'Завершить отмеченные разделы');
+      const log = elt('div', 'margin-top:8px;font-size:10.5px;font-weight:700;line-height:1.6;white-space:pre-wrap;max-height:150px;overflow-y:auto;');
+      main.appendChild(note); main.appendChild(secBox); main.appendChild(secGo); main.appendChild(log);
+
+      let stuSections = [];
+      const rowCss = 'padding:6px 10px;border-bottom:1px solid #F3F4F6;cursor:pointer;font-size:11px;font-weight:700;color:#111827;line-height:1.3;display:flex;align-items:center;gap:7px;';
+      const drawSections = function () {
+        const has = stuSections.length > 1 || (stuSections.length === 1 && stuSections[0].name !== 'Без раздела');
+        note.textContent = has ? 'Отметь один или несколько разделов:' : 'В этом курсе разделов не нашла — раздели вручную ссылками во вкладке «Урок».';
+        secBox.style.display = has ? '' : 'none';
+        secGo.style.display = has ? '' : 'none';
+        secBox.innerHTML = '';
+        stuSections.forEach(function (sec, i) {
+          const row = elt('label', rowCss);
+          const cb = elt('input', ''); cb.type = 'checkbox'; cb.dataset.idx = String(i);
+          row.appendChild(cb);
+          row.appendChild(document.createTextNode(sec.name + ' (' + sec.items.length + ')'));
+          secBox.appendChild(row);
+        });
+      };
+      secGo.onclick = function () {
+        const idxs = Array.prototype.slice.call(secBox.querySelectorAll('input:checked')).map(function (c) { return Number(c.dataset.idx); });
+        if (!idxs.length) { toast('Отметь хотя бы один раздел'); return; }
+        const items = [];
+        idxs.forEach(function (i) { items.push.apply(items, stuSections[i].items); });
+        if (!window.confirm('Завершить ' + items.length + ' урок(ов) из ' + idxs.length + ' раздел(ов) для «' + student + '»?')) return;
+        secGo.style.pointerEvents = 'none'; secGo.style.opacity = '.6';
+        completeSeq(log, items);
+      };
+
+      loadLessons().then(function (d) {
+        const bySec = {}, order = [];
+        (d.lessons || []).forEach(function (l) {
+          const sec = l.section || 'Без раздела';
+          if (!bySec[sec]) { bySec[sec] = []; order.push(sec); }
+          bySec[sec].push({ id: l.id, n: l.name });
+        });
+        stuSections = order.map(function (nm) { return { name: nm, items: bySec[nm] }; });
+        drawSections();
+      }).catch(function () { note.textContent = 'Не получилось загрузить программу студента — попробуй открыть панель заново.'; });
     }
   }
 
