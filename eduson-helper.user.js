@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.18.0
+// @version      1.19.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -123,7 +123,7 @@
 
   /* ================================================ */
 
-  const VER = '1.18.0';
+  const VER = '1.19.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3476,7 +3476,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.18.0'; // синхр. с Хэлпером
+  const VER = '1.19.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -3935,14 +3935,48 @@
   function lastClientMsg() { const m = clientMsgs(); return m[m.length - 1] || ''; }
   function firstClientMsg() { const m = clientMsgs(); return m[0] || ''; }
 
-  function amoDealNum() {
+  // Все сделки, ссылки на которые есть на странице кейса, в порядке появления в DOM
+  // (обычно это порядок «последние сделки» в амо-виджете — то есть по свежести, НЕ по тому,
+  // какая из них реально успешная). Дедуп по номеру.
+  function amoDealNums() {
+    const ids = [];
     const num = sidebarValue(/amocrm/i);
-    let m = (num || '').match(/\d{5,}/);
-    if (m) return m[0];
-    const a = Array.from(document.querySelectorAll('a[href*="/leads/detail/"]'))
-      .find(function (x) { return /leads\/detail\/\d+/.test(x.href); });
-    m = a && a.href.match(/leads\/detail\/(\d+)/);
+    const m0 = (num || '').match(/\d{5,}/);
+    if (m0) ids.push(m0[0]);
+    Array.from(document.querySelectorAll('a[href*="/leads/detail/"]')).forEach(function (a) {
+      const m = a.href.match(/leads\/detail\/(\d+)/);
+      if (m && ids.indexOf(m[1]) === -1) ids.push(m[1]);
+    });
+    return ids;
+  }
+  function amoDealNum() {
+    return amoDealNums()[0] || '';
+  }
+
+  function amoContactId() {
+    const a = document.querySelector('a[href*="amocrm.ru/contacts/detail/"]');
+    const m = a && a.href.match(/contacts\/detail\/(\d+)/);
     return m ? m[1] : '';
+  }
+
+  // OmniDesk в карточке кейса показывает только несколько «последних» сделок клиента — нужная
+  // (та, что реально оплачена) может быть старше и в этот список не попасть, если после неё было
+  // ещё обращение/лид. Поэтому дополнительно тянем ПОЛНЫЙ список сделок контакта через API амо
+  // (как во вкладке «Сделки» карточки контакта) и объединяем со сделками, видимыми на странице.
+  async function amoAllDealIds() {
+    const ids = amoDealNums();
+    const contactId = amoContactId();
+    if (contactId) {
+      try {
+        const j = await gmFetch('https://eduson.amocrm.ru/api/v4/contacts/' + contactId + '?with=leads');
+        const leads = (j && j._embedded && j._embedded.leads) || [];
+        leads.forEach(function (l) {
+          const id = String(l.id);
+          if (ids.indexOf(id) === -1) ids.push(id);
+        });
+      } catch (e) { /* не получилось достучаться до контакта — работаем со сделками со страницы */ }
+    }
+    return ids;
   }
   function amoLink() {
     const n = amoDealNum();
@@ -3984,47 +4018,77 @@
   //  1) заметка «Коллега <Имя> продал курс…» — фактическая запись о продаже (как у Возврат-мастера);
   //  2) поле сделки «УР МОП» / «Первый Менеджер» / «Менеджер КЦ».
   // Никаких догадок (по «Лид получил» / ответственному — там часто не тот). Возвращает { name, sure, err }.
+  // rank оценивает надёжность источника: 3 = явная заметка «Коллега … продал», 2 = поле
+  // «УР МОП»/«Первый Менеджер» (реальный продавец), 1 = «Менеджер КЦ» (колл-центр, не всегда
+  // тот, кто вёл продажу — самый слабый сигнал, берём только если ничего лучше не нашлось).
   async function fetchMopName(dealNum, _depth) {
     _depth = _depth || 0;
-    if (!dealNum) return { name: '', sure: false, err: 'no-deal' };
+    if (!dealNum) return { name: '', sure: false, err: 'no-deal', rank: 0, dealNum: '' };
     const base = 'https://eduson.amocrm.ru';
 
-    // 1) заметка о продаже
+    // 1) заметка о продаже + попутно ищем заметку-ссылку на «основную/исходную сделку»
+    let parentFromNote = '';
     try {
       const j = await gmFetch(base + '/api/v4/leads/' + dealNum + '/notes?filter[note_type]=common&order[id]=desc&limit=250');
       const notes = ((j && j._embedded) || {}).notes || [];
       for (const n of notes) {
         const t = (n.params && (n.params.text || n.params.message)) || '';
         const m = t.match(/Коллега\s+(.+?)\s+продал/i);
-        if (m) return { name: m[1].replace(/["'«».,]+/g, '').replace(/\s+/g, ' ').trim(), sure: true, err: '' };
+        if (m) return { name: m[1].replace(/["'«».,]+/g, '').replace(/\s+/g, ' ').trim(), sure: true, err: '', rank: 3, dealNum: dealNum };
+        if (!parentFromNote) {
+          const p = t.match(/(?:основн\w*|исходн\w*)\s*сделк\w*[^\d]*(\d{6,})/i);
+          if (p) parentFromNote = p[1];
+        }
       }
-    } catch (e) { if (e.message === 'NOAUTH') return { name: '', sure: false, err: 'NOAUTH' }; }
+    } catch (e) { if (e.message === 'NOAUTH') return { name: '', sure: false, err: 'NOAUTH', rank: 0, dealNum: dealNum }; }
 
     // 2) поле сделки
     let l;
     try { l = await gmFetch(base + '/api/v4/leads/' + dealNum); }
-    catch (e) { return { name: '', sure: false, err: e.message }; }
+    catch (e) { return { name: '', sure: false, err: e.message, rank: 0, dealNum: dealNum }; }
     const cf = (l && l.custom_fields_values) || [];
     const fieldVal = function (re) {
       const f = cf.find(function (x) { return re.test(x.field_name || ''); });
       const v = f && f.values && f.values[0] && f.values[0].value;
       return (typeof v === 'string' && /[а-яёa-z]/i.test(v)) ? v.replace(/\s+/g, ' ').trim() : '';
     };
-    const mop = fieldVal(/^ур\s*моп$/i) || fieldVal(/первый\s*менеджер/i) || fieldVal(/менеджер\s*кц/i);
-    if (mop) return { name: mop, sure: true, err: '' };
+    const mopStrong = fieldVal(/^ур\s*моп$/i) || fieldVal(/первый\s*менеджер/i);
+    if (mopStrong) return { name: mopStrong, sure: true, err: '', rank: 2, dealNum: dealNum };
+    const mopWeak = fieldVal(/менеджер\s*кц/i);
 
-    // 3) «Автосделка / Апгрейд» без данных о продаже — данные о МОПе в исходной сделке
+    // 3) «Автосделка / Апгрейд / второй платёж» без своих данных о продаже — данные о МОПе
+    // ищем в исходной сделке: либо через поле «ID старой сделки», либо через заметку-ссылку
+    // «Основная сделка: …» (амо иногда пишет её, а собственного поля нет).
     if (_depth < 2) {
       const oldF = cf.find(function (x) { return /id\s*стар/i.test(x.field_name || ''); });
       const oldRaw = oldF && oldF.values && oldF.values[0] && String(oldF.values[0].value || '');
-      const oldId = oldRaw && oldRaw.match(/\d{6,}/);
-      if (oldId && oldId[0] !== String(dealNum)) {
-        const r = await fetchMopName(oldId[0], _depth + 1);
+      const oldId = (oldRaw && oldRaw.match(/\d{6,}/) && oldRaw.match(/\d{6,}/)[0]) || parentFromNote;
+      if (oldId && oldId !== String(dealNum)) {
+        const r = await fetchMopName(oldId, _depth + 1);
         if (r.name) return r;
       }
     }
 
-    return { name: '', sure: false, err: '' };
+    if (mopWeak) return { name: mopWeak, sure: true, err: '', rank: 1, dealNum: dealNum };
+    return { name: '', sure: false, err: '', rank: 0, dealNum: dealNum };
+  }
+
+  // Сделка, найденная первой на странице, часто не та, по которой реально куплен курс
+  // (LOST-сделка, «второй платёж», автосделка апгрейда — все они попадают в «последние сделки»
+  // раньше настоящей успешной продажи). Поэтому опрашиваем ВСЕ сделки со страницы и берём
+  // ответ с самым надёжным источником (rank), а не первый попавшийся.
+  async function resolveMopForCase() {
+    const ids = (await amoAllDealIds()).slice(0, 10);
+    if (!ids.length) return { name: '', sure: false, err: 'no-deal', rank: 0, dealNum: '' };
+    const results = await Promise.all(ids.map(function (id) {
+      return fetchMopName(id).catch(function (e) { return { name: '', sure: false, err: e.message, rank: 0, dealNum: id }; });
+    }));
+    let best = results.reduce(function (a, b) { return (b.rank || 0) > (a.rank || 0) ? b : a; });
+    if (!best.name) {
+      const noauth = results.find(function (r) { return r.err === 'NOAUTH'; });
+      if (noauth) return noauth;
+    }
+    return best;
   }
 
   function detectCluster(course) {
@@ -4587,20 +4651,21 @@
       body.appendChild(mopInput);
       mopNote = elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;margin-top:2px;', '');
       body.appendChild(mopNote);
-      const deal = amoDealNum();
-      if (deal) {
-        mopNote.textContent = 'смотрю в амо (сделка ' + deal + ')…';
-        fetchMopName(deal).then(function (r) {
+      const hasAnyLead = amoDealNums().length > 0 || !!amoContactId();
+      if (hasAnyLead) {
+        mopNote.textContent = 'смотрю сделки клиента в амо…';
+        resolveMopForCase().then(function (r) {
           if (r.name) {
             mopInput.value = r.name;
             mopName = r.name;
-            mopNote.textContent = r.sure ? 'из амо — кто продал сделку' : 'по данным амо — проверь, тот ли это МОП';
+            const src = r.rank >= 2 ? 'из амо — кто продал сделку' : 'по данным амо — проверь, тот ли это МОП';
+            mopNote.textContent = src + (r.dealNum ? ' (сделка ' + r.dealNum + ')' : '');
             applyMopTag(r.name);
             recompute();
           } else if (r.err === 'NOAUTH') {
-            mopNote.textContent = 'амо не пустило (' + deal + '). Открой eduson.amocrm.ru в соседней вкладке, войди, вернись и открой пинг заново. Если не помогает — впиши МОП сам.';
+            mopNote.textContent = 'амо не пустило. Открой eduson.amocrm.ru в соседней вкладке, войди, вернись и открой пинг заново. Если не помогает — впиши МОП сам.';
           } else if (r.err && r.err !== 'no-deal') {
-            mopNote.textContent = 'амо ответило «' + r.err + '» по сделке ' + deal + ' — впиши имя МОП сам.';
+            mopNote.textContent = 'амо ответило «' + r.err + '» — впиши имя МОП сам.';
           } else {
             mopNote.textContent = 'МОП в амо не нашёлся — впиши имя сам.';
           }
