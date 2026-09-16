@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.34.6
+// @version      1.34.7
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -1760,11 +1760,22 @@
       return false;
     };
     // Карточка Асаны — только когда решение принято и (при возврате) есть сумма.
-    // (Сообщение в ТГ при «В работе» копировать МОЖНО.)
     const guardHandoff = () => {
       if (T.result === 'В работе') {
         if (errBox) {
           errBox.textContent = '⚠️ Результат «В работе»: карточку Асаны можно скопировать только после решения «Возврат».';
+          errBox.style.display = 'block';
+        }
+        return false;
+      }
+      return guardSum();
+    };
+    // Сообщение продакту в ТГ — только когда результат «Возврат» и указана сумма
+    // (при «Остаётся»/«В работе» решение ещё не принято — продакту сообщать рано).
+    const guardRefund = () => {
+      if (T.result !== 'Возврат') {
+        if (errBox) {
+          errBox.textContent = '⚠️ Сообщение продакту можно скопировать только после результата «Возврат» и с указанной суммой.';
           errBox.style.display = 'block';
         }
         return false;
@@ -1833,12 +1844,12 @@
       '6) Причина:',
       Q(clean(T.clientComment) || B('вставь текст клиента')),
       '7) ' + B('комментарий куратора — впиши'),
-      '8) По оферте: ' + (T.result === 'В работе' ? '(решение в работе)' : (agreedTxt() + ' FYI')),
+      '8) По оферте: ' + agreedTxt() + ' FYI',
     ].join('\n');
     bTG.onclick = () => {
       if (curScen === 'resale') { copyMsg(tgResale(), 'Сообщение для ресейла в буфере ✓ Отправь в ТГ (@Dmitriy_PR0 и @n_ekimov).'); return; }
       if (curScen === 'kids')   { copyMsg(tgKids(), 'Сообщение для @dd_terentev в буфере ✓ Отправь в ТГ.'); return; }
-      if (!guardSum()) return;   // сообщение в ТГ можно и при «В работе»; только Возврат без суммы блокируем
+      if (!guardRefund()) return;   // копировать можно только при результате «Возврат» и с указанной суммой
       copyMsg(tgNormal(), 'Сообщение для ТГ в буфере ✓ Жирным — что дописать.');
     };
     tgBlock.appendChild(bTG);
@@ -2176,7 +2187,7 @@
   }
 
   if (location.hostname.endsWith('omnidesk.ru')) {
-    console.log(TAG, 'запущен, версия ' + '1.34.6');
+    console.log(TAG, 'запущен, версия ' + '1.34.7');
     keepSynced(function () {
       removeLauncher();
       ensureMenuItem();
