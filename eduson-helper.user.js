@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.21.0
+// @version      1.21.1
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -125,7 +125,7 @@
 
   /* ================================================ */
 
-  const VER = '1.21.0';
+  const VER = '1.21.1';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3489,7 +3489,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.21.0'; // синхр. с Хэлпером
+  const VER = '1.21.1'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -7499,14 +7499,23 @@
 
       // Батч по разделам: отмечаешь один или несколько разделов курса — завершаются
       // ВСЕ уроки внутри них одним запуском (последовательно, чтобы не словить 500 от админки).
-      const secTitle = elt('div', S.or, '…или отметь разделы курса — завершатся все уроки внутри:');
+      // Спрятано за кнопкой-раскрывашкой (как «вставить ссылку» ниже) — панель и так длинная,
+      // а этот блок нужен далеко не в каждом обращении.
+      const secToggle = elt('div', S.more, '▸ Завершить разделы курса целиком');
+      const secBody = elt('div', 'display:none;margin-top:5px;');
       const secBox = elt('div', S.list);
       const secGo = elt('div', S.go, 'Завершить отмеченные разделы');
-      secTitle.style.display = secBox.style.display = secGo.style.display = 'none';
-      main.appendChild(secTitle); main.appendChild(secBox); main.appendChild(secGo);
+      secBody.appendChild(secBox); secBody.appendChild(secGo);
+      secToggle.onclick = function () {
+        const open = secBody.style.display !== 'none';
+        secBody.style.display = open ? 'none' : 'block';
+        secToggle.textContent = (open ? '▸' : '▾') + ' Завершить разделы курса целиком';
+      };
+      secToggle.style.display = 'none';
+      main.appendChild(secToggle); main.appendChild(secBody);
       const drawSections = function () {
         const has = stuSections.length > 1 || (stuSections.length === 1 && stuSections[0].name !== 'Без раздела');
-        secTitle.style.display = secBox.style.display = secGo.style.display = has ? '' : 'none';
+        secToggle.style.display = has ? '' : 'none';
         secBox.innerHTML = '';
         stuSections.forEach(function (sec, i) {
           const row = elt('label', S.row + 'display:flex;align-items:center;gap:7px;cursor:pointer;');
