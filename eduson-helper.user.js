@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.23.0
+// @version      1.24.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -6209,15 +6209,20 @@
   }
 
   /* ==================== ВКЛАДКА «ДОКУМЕНТ» ====================
-     Таблица «Академ.часы в курсах» (лист «Список курсов»): A — курс, B — ак.ч.,
-     C — что выдаём (ДПП / УПК / «Диплом от Эдюсон» / …). По умолчанию показываем
-     документ по курсу из карточки OmniDesk; можно выбрать любой другой курс. */
+     Таблица курсов: A — наименование программы, B — количество академических часов,
+     C — срок освоения (дней), D — тип диплома (ДПП / УПК / пусто). По умолчанию
+     показываем документ по курсу из карточки OmniDesk; можно выбрать любой другой курс. */
   const DOC_SHEET_CSV =
-    'https://docs.google.com/spreadsheets/d/1XTS-f9ndG4J5StlnqZJK4GbSR1m6Vxq1LmRVoKlneeE/gviz/tq?tqx=out:csv&gid=0';
+    'https://docs.google.com/spreadsheets/d/1p0Yo4ikx_AegiJitKjgAiYN7ydpHcENIjT-3Xppkon4/gviz/tq?tqx=out:csv&gid=0';
   const DOC_FULL = {
     'ДПП': 'Диплом о профессиональной переподготовке',
     'УПК': 'Удостоверение о повышении квалификации',
   };
+  // Таблица «Гарантия содействия в трудоустройстве»: блоки по группам —
+  // заголовок группы (A — название, B — «Отправляем шаблон»), дальше в A — курсы
+  // группы, в B (и C для оферты) — текст про гарантию для этой группы.
+  const GUAR_SHEET_CSV =
+    'https://docs.google.com/spreadsheets/d/1XTS-f9ndG4J5StlnqZJK4GbSR1m6Vxq1LmRVoKlneeE/gviz/tq?tqx=out:csv&gid=1199768420';
   // кириллические двойники латиницы → латиница: чтобы «1С-Разработчик» (омник)
   // и «1C-Разработчик — 112 часов» (таблица) считались одним курсом.
   const DOC_FOLD = { 'а':'a','е':'e','о':'o','р':'p','с':'c','х':'x','к':'k','м':'m','т':'t','н':'h','в':'b','у':'y','і':'i','ѕ':'s' };
@@ -6260,7 +6265,7 @@
     return rows;
   }
 
-  let docMapCache = null; // { list:[{course,doc,hours,section}], byNorm:{} }
+  let docMapCache = null; // { list:[{course,doc,hours,srok,section}], byNorm:{} }
   function loadDocMap() {
     if (docMapCache) return Promise.resolve(docMapCache);
     return gmText(DOC_SHEET_CSV + '&_cb=' + Date.now()).then(function (csv) {
@@ -6268,11 +6273,11 @@
       const rows = parseCsv(csv);
       const list = []; let section = '';
       rows.forEach(function (r, idx) {
-        const course = (r[0] || '').trim(), hours = (r[1] || '').trim(), doc = (r[2] || '').trim();
+        const course = (r[0] || '').trim(), hours = (r[1] || '').trim(), srok = (r[2] || '').trim(), doc = (r[3] || '').trim();
         if (!course) return;
-        if (idx === 0) return;                         // строка заголовков
-        if (!hours && !doc) { section = course; return; } // раздел / подраздел
-        list.push({ course: course, doc: doc, hours: hours, section: section });
+        if (idx === 0) return;                                  // строка заголовков
+        if (!hours && !srok && !doc) { section = course; return; } // раздел / подраздел (если появится)
+        list.push({ course: course, doc: doc, hours: hours, srok: srok, section: section });
       });
       if (!list.length) throw new Error('таблица пустая');
       const byNorm = {};
@@ -6280,6 +6285,59 @@
       docMapCache = { list: list, byNorm: byNorm };
       return docMapCache;
     });
+  }
+
+  // Таблица «Гарантия трудоустройства» → группы { name, isGuarantee, courses[], lines[], offerLink, important }.
+  let guarMapCache = null; // { groups:[...], byNorm:{}, defaultGroup }
+  function loadGuarMap() {
+    if (guarMapCache) return Promise.resolve(guarMapCache);
+    return gmText(GUAR_SHEET_CSV + '&_cb=' + Date.now()).then(function (csv) {
+      if (/<!doctype|<html|accounts\.google\.com/i.test(csv.slice(0, 400))) throw new Error('NOAUTH');
+      const rows = parseCsv(csv);
+      const groups = []; let cur = null;
+      rows.forEach(function (r) {
+        const a = (r[0] || '').trim(), b = (r[1] || '').trim(), c = (r[2] || '').trim();
+        if (/^Отправляем шаблон/i.test(b)) {
+          cur = { name: a, isGuarantee: /^Гарантия/i.test(a), courses: [], lines: [], offerLink: '', important: '', isDefault: false };
+          groups.push(cur);
+          return;
+        }
+        if (!cur) return;
+        if (a === 'Все остальные продукты') cur.isDefault = true;
+        else if (a) cur.courses.push(a);
+        if (b) {
+          if (/^Ссылка на оферту/i.test(b)) cur.offerLink = c;
+          else if (/^❗/.test(b)) cur.important = b;
+          else cur.lines.push(b);
+        }
+      });
+      if (!groups.length) throw new Error('таблица пустая');
+      const byNorm = {}; let defaultGroup = null;
+      groups.forEach(function (g) {
+        if (g.isDefault) defaultGroup = g;
+        g.courses.forEach(function (co) { byNorm[docNorm(co)] = g; });
+      });
+      guarMapCache = { groups: groups, byNorm: byNorm, defaultGroup: defaultGroup };
+      return guarMapCache;
+    });
+  }
+
+  // Курс → группа гарантии (fuzzy, как matchDocCourse). Возвращает defaultGroup, если не нашла.
+  function matchGuarantee(map, course) {
+    const n = docNorm(course);
+    if (!n) return map.defaultGroup;
+    if (map.byNorm[n]) return map.byNorm[n];
+    let a = null, aLen = 0;
+    Object.keys(map.byNorm).forEach(function (k) {
+      if (k.length >= 5 && n.indexOf(k) !== -1 && k.length > aLen) { a = map.byNorm[k]; aLen = k.length; }
+    });
+    if (a) return a;
+    let b = null, bLen = 1e9;
+    Object.keys(map.byNorm).forEach(function (k) {
+      if (k.length >= 5 && n.length >= 5 && k.indexOf(n) !== -1 && k.length < bLen) { b = map.byNorm[k]; bLen = k.length; }
+    });
+    if (b) return b;
+    return map.defaultGroup;
   }
 
   // Курс из карточки → запись таблицы. { item, exact } либо null.
@@ -6321,6 +6379,8 @@
     body.appendChild(status);
     const result = elt('div', 'margin-top:8px;');
     body.appendChild(result);
+    const guarBox = elt('div', 'margin-top:8px;');
+    body.appendChild(guarBox);
     const searchLabel = elt('div', fieldLabel, 'Другой курс — печатай название');
     searchLabel.style.display = 'none';
     const search = elt('input', inputCss);
@@ -6335,19 +6395,57 @@
       'ДПП — диплом о профессиональной переподготовке\nУПК — удостоверение о повышении квалификации');
     body.appendChild(legend);
 
-    function showItem(it, note) {
+    function showItem(it, note, rawCourse) {
       result.innerHTML = '';
       if (!it) {
         result.appendChild(elt('div', 'font-weight:800;font-size:13px;color:#B45309;', 'Курс в таблице не нашла'));
         result.appendChild(elt('div', 'font-size:11.5px;color:#6B7280;font-weight:600;margin-top:3px;', 'Найди курс через поиск ниже.'));
-        return;
+      } else {
+        const card = elt('div', 'border:1px solid ' + ACC_BD + ';background:#F0F9FF;border-radius:12px;padding:10px 12px;');
+        card.appendChild(elt('div', 'font-size:11px;color:#6B7280;font-weight:700;line-height:1.35;', it.course));
+        card.appendChild(elt('div', 'font-weight:900;font-size:17px;color:' + ACC_DEEP + ';margin-top:3px;', it.doc || 'документ не указан'));
+        const meta = [];
+        if (it.hours) meta.push(it.hours + ' ак. ч.');
+        if (it.srok) meta.push(it.srok + ' дн. освоения');
+        if (meta.length) card.appendChild(elt('div', 'font-size:11px;color:#9CA3AF;font-weight:600;margin-top:4px;', meta.join(' · ')));
+        if (note) card.appendChild(elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;margin-top:5px;line-height:1.4;', note));
+        result.appendChild(card);
       }
-      const card = elt('div', 'border:1px solid ' + ACC_BD + ';background:#F0F9FF;border-radius:12px;padding:10px 12px;');
-      card.appendChild(elt('div', 'font-size:11px;color:#6B7280;font-weight:700;line-height:1.35;', it.course));
-      card.appendChild(elt('div', 'font-weight:900;font-size:17px;color:' + ACC_DEEP + ';margin-top:3px;', it.doc || 'документ не указан'));
-      if (it.hours) card.appendChild(elt('div', 'font-size:11px;color:#9CA3AF;font-weight:600;margin-top:4px;', it.hours + ' ак. ч.'));
-      if (note) card.appendChild(elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;margin-top:5px;line-height:1.4;', note));
-      result.appendChild(card);
+      showGuarantee(it ? it.course : rawCourse);
+    }
+
+    function guarCard(g) {
+      const card = elt('div', 'border:1px solid ' + (g.isGuarantee ? '#BBF7D0' : '#E5E7EB') + ';background:' + (g.isGuarantee ? '#F0FDF4' : '#F9FAFB') + ';border-radius:12px;padding:10px 12px;');
+      card.appendChild(elt('div', 'font-size:11px;color:#6B7280;font-weight:700;',
+        g.isGuarantee ? '✅ Входит в гарантию трудоустройства' : 'ℹ️ Гарантии нет — обычная помощь в трудоустройстве'));
+      card.appendChild(elt('div', 'font-weight:900;font-size:14px;color:' + (g.isGuarantee ? '#166534' : '#374151') + ';margin-top:3px;', g.name));
+      if (g.lines.length) card.appendChild(elt('div', 'font-size:11px;color:#4B5563;font-weight:600;margin-top:6px;line-height:1.5;white-space:pre-wrap;', g.lines.join('\n')));
+      if (g.offerLink) {
+        const a = elt('a', 'display:inline-block;font-size:11px;font-weight:800;color:' + ACC + ';margin-top:6px;text-decoration:none;', 'Оферта →');
+        a.href = g.offerLink; a.target = '_blank'; a.rel = 'noopener';
+        card.appendChild(a);
+      }
+      if (g.important) card.appendChild(elt('div', 'font-size:10.5px;color:#B45309;font-weight:700;margin-top:6px;line-height:1.4;', g.important));
+      return card;
+    }
+
+    let guarMapPromise = null;
+    function showGuarantee(courseName) {
+      guarBox.innerHTML = '';
+      if (!courseName) return;
+      guarBox.appendChild(elt('div', 'font-size:11px;color:#9CA3AF;font-weight:600;', 'Проверяю гарантию трудоустройства…'));
+      if (!guarMapPromise) guarMapPromise = loadGuarMap();
+      guarMapPromise.then(function (map) {
+        const g = matchGuarantee(map, courseName);
+        guarBox.innerHTML = '';
+        if (g) guarBox.appendChild(guarCard(g));
+      }).catch(function (e) {
+        guarBox.innerHTML = '';
+        guarBox.appendChild(elt('div', 'font-size:10.5px;color:#B45309;font-weight:700;',
+          (e && e.message === 'NOAUTH')
+            ? '🙀 Google не пустил на таблицу гарантий.'
+            : '🙀 Не получилось прочитать таблицу гарантий (' + (e && e.message || 'ошибка') + ').'));
+      });
     }
 
     loadDocMap().then(function (map) {
@@ -6374,7 +6472,7 @@
             row.onmouseenter = function () { row.style.background = '#F0F9FF'; };
             row.onmouseleave = function () { row.style.background = 'transparent'; };
             row.onclick = function () {
-              showItem(it, null);
+              showItem(it, null, it.course);
               search.value = '';
               listBox.style.display = 'none';
             };
@@ -6389,9 +6487,9 @@
       const crs = readCourse();
       const m = matchDocCourse(map, crs);
       if (m) {
-        showItem(m.item, m.exact ? '' : '🙀 сопоставила по близости — проверь курс');
+        showItem(m.item, m.exact ? '' : '🙀 сопоставила по близости — проверь курс', crs);
       } else {
-        showItem(null);
+        showItem(null, null, crs);
         if (crs) {
           status.style.display = ''; status.style.color = '#B45309';
           status.textContent = 'В карточке курс «' + crs + '» — в таблице не нашла, найди через поиск.';
@@ -6400,7 +6498,7 @@
     }).catch(function (e) {
       status.style.color = '#B45309';
       status.textContent = (e && e.message === 'NOAUTH')
-        ? '🙀 Google не пустил. Открой таблицу «Академ.часы в курсах» в соседней вкладке, войди в аккаунт и открой панель заново.'
+        ? '🙀 Google не пустил. Открой таблицу курсов в соседней вкладке, войди в аккаунт и открой панель заново.'
         : '🙀 Не получилось прочитать таблицу (' + (e && e.message || 'ошибка') + ').';
     });
   }

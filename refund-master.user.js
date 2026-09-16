@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.34.7
+// @version      1.35.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -1598,6 +1598,10 @@
       copy(SHEET_URL + '&range=' + n + ':' + n, 'Ссылка на строку ' + n + ' в буфере ✓ Вставь в заметку OmniDesk');
     };
     colL.appendChild(rowLinkBtn);
+
+    const openTableBtn = el('button', S.btnAlt, '📊 Открыть таблицу возвратов');
+    openTableBtn.onclick = () => { window.open(SHEET_URL, '_blank', 'noopener'); };
+    colL.appendChild(openTableBtn);
 
     // 5) Калькулятор — только если куплено после 05.06
     calcBlock = mkBlock(colL, 'Калькулятор возврата (куплено после 05.06)');
