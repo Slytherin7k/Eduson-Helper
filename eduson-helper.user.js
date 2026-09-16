@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.20.3
+// @version      1.21.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -125,7 +125,7 @@
 
   /* ================================================ */
 
-  const VER = '1.20.3';
+  const VER = '1.21.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3489,7 +3489,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.20.3'; // синхр. с Хэлпером
+  const VER = '1.21.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -6335,6 +6335,21 @@
   function lessonsFromPlan(html) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     const byId = {};
+    // Страница плана разбита на разделы <section class="content-with-nav__section"> с
+    // заголовком <h2 class="content-with-nav__title">; нужно для батч-завершения раздела
+    // целиком (вкладка «Прогресс 80» — Наталья: «иногда нужно подтянуть больше 50 уроков»).
+    const sectionOf = {};
+    doc.querySelectorAll('.content-with-nav__section').forEach(function (sec) {
+      const h2 = sec.querySelector('.content-with-nav__title');
+      const secName = h2 ? (h2.textContent || '').replace(/\s+/g, ' ').trim() : '';
+      if (!secName) return;
+      sec.querySelectorAll('a[href*="/ru/courses/"]').forEach(function (a) {
+        const href = a.getAttribute('href') || '';
+        if (/\/lectures\//.test(href)) return;
+        const m = href.match(/\/ru\/courses\/(\d+)(?:[/?#]|$)/);
+        if (m && !sectionOf[m[1]]) sectionOf[m[1]] = secName;
+      });
+    });
     doc.querySelectorAll('a[href*="/ru/courses/"]').forEach(function (a) {
       const href = a.getAttribute('href') || '';
       if (/\/lectures\//.test(href)) return;                       // это ссылка на вложенную лекцию
@@ -6344,7 +6359,7 @@
       if (!name || name.length < 3 || LECT_BTN.test(name)) return;
       if (!byId[m[1]] || byId[m[1]].length < name.length) byId[m[1]] = name;
     });
-    return Object.keys(byId).map(function (id) { return { id: id, name: byId[id] }; });
+    return Object.keys(byId).map(function (id) { return { id: id, name: byId[id], section: sectionOf[id] || '' }; });
   }
   // страница урока /ru/courses/<id> → вложенные лекции [{path,name}]
   function lecturesFromCourse(html) {
@@ -7465,11 +7480,52 @@
 
       // курсы ВЫБРАННОЙ программы (источник для совпадений «нет в списке»); в сам список не идут
       let stuCourses = [];
+      // разделы курса (для батч-завершения блоками — Наталья: иногда нужно подтянуть
+      // прогресс сразу очень большому числу уроков, бывало больше 50 за раз).
+      let stuSections = [];
       const setStu = function (lessons) {
         stuCourses = (lessons || []).filter(function (l) { return !seen[l.id]; })
           .map(function (l) { return { id: l.id, n: l.name, stu: true }; });
+        const bySec = {}, order = [];
+        (lessons || []).forEach(function (l) {
+          const sec = l.section || 'Без раздела';
+          if (!bySec[sec]) { bySec[sec] = []; order.push(sec); }
+          bySec[sec].push({ id: l.id, n: l.name });
+        });
+        stuSections = order.map(function (nm) { return { name: nm, items: bySec[nm] }; });
         drawList();
+        drawSections();
       };
+
+      // Батч по разделам: отмечаешь один или несколько разделов курса — завершаются
+      // ВСЕ уроки внутри них одним запуском (последовательно, чтобы не словить 500 от админки).
+      const secTitle = elt('div', S.or, '…или отметь разделы курса — завершатся все уроки внутри:');
+      const secBox = elt('div', S.list);
+      const secGo = elt('div', S.go, 'Завершить отмеченные разделы');
+      secTitle.style.display = secBox.style.display = secGo.style.display = 'none';
+      main.appendChild(secTitle); main.appendChild(secBox); main.appendChild(secGo);
+      const drawSections = function () {
+        const has = stuSections.length > 1 || (stuSections.length === 1 && stuSections[0].name !== 'Без раздела');
+        secTitle.style.display = secBox.style.display = secGo.style.display = has ? '' : 'none';
+        secBox.innerHTML = '';
+        stuSections.forEach(function (sec, i) {
+          const row = elt('label', S.row + 'display:flex;align-items:center;gap:7px;cursor:pointer;');
+          const cb = elt('input', ''); cb.type = 'checkbox'; cb.dataset.idx = String(i);
+          row.appendChild(cb);
+          row.appendChild(document.createTextNode(sec.name + ' (' + sec.items.length + ')'));
+          secBox.appendChild(row);
+        });
+      };
+      secGo.onclick = function () {
+        const idxs = Array.prototype.slice.call(secBox.querySelectorAll('input:checked')).map(function (c) { return Number(c.dataset.idx); });
+        if (!idxs.length) { toast('Отметь хотя бы один раздел'); return; }
+        const items = [];
+        idxs.forEach(function (i) { items.push.apply(items, stuSections[i].items); });
+        if (!window.confirm('Завершить ' + items.length + ' урок(ов) из ' + idxs.length + ' раздел(ов) для «' + student + '»?')) return;
+        secGo.style.pointerEvents = 'none'; secGo.style.opacity = '.6';
+        completeSeq(log, items, acctUid);
+      };
+
       loadLessons().then(function (d) {
         if (d.planKey && !_planLessons[d.planKey]) _planLessons[d.planKey] = d.lessons || [];
         setStu(d.lessons);
