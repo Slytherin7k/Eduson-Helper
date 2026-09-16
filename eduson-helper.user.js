@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.19.0
+// @version      1.20.1
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -85,6 +85,8 @@
     [/excel.*премиум/i, 'Excel Премиум', 12],
     [/excel.*тариф.*максимум/i, 'Excel Максимум', 12],
     [/excel.*максимум/i, 'Excel Максимум', 12],
+    [/excel.*тариф.*мастер/i, 'Excel Мастер (+макросы, надстройки, дашборды)', 12],
+    [/excel.*мастер/i, 'Excel Мастер (+макросы, надстройки, дашборды)', 12],
 
     // Собственник
     [/собственник/i, 'Собственник', 24],
@@ -123,7 +125,7 @@
 
   /* ================================================ */
 
-  const VER = '1.19.0';
+  const VER = '1.20.1';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -1038,6 +1040,10 @@
     let bestCourse = '', bestCourseScore = 0;
     (fields || []).forEach(f => {
       const n = (f.field_name || '').toLowerCase();
+      // служебные поля-дубли вида «Телефон контакта (тест)» — не настоящие данные клиента,
+      // но попадают под тот же regex, что и «Телефон»; иногда как раз их и подхватывало
+      // (кейс 653-396488: вписался обрезанный «+928025588» вместо «+992928025588»).
+      if (/\(тест\)/.test(n)) return;
       const values = amoFieldValues(f);
       if (!values.length) return;
       if (contactInfo !== false) {
@@ -1087,6 +1093,7 @@
   function mergeContactExtras(contact, data) {
     (((contact || {}).custom_fields_values) || []).forEach(function (f) {
       const n = (f.field_name || '').toLowerCase();
+      if (/\(тест\)/.test(n)) return; // см. readAmoFields — служебные поля-дубли пропускаем
       const values = amoFieldValues(f);
       if (!values.length) return;
       if (/телефон|phone/.test(n)) {
@@ -1538,6 +1545,7 @@
             const cEmails = [], cPhones = [];
             (c.custom_fields_values || []).forEach(f => {
               const n = (f.field_name || '').toLowerCase();
+              if (/\(тест\)/.test(n)) return; // см. readAmoFields — служебные поля-дубли пропускаем
               const vals = amoFieldValues(f);
               if (/e-?mail|почта/.test(n)) vals.forEach(v => cEmails.push(v));
               if (/телефон|phone/.test(n)) vals.forEach(v => cPhones.push(v));
@@ -1568,6 +1576,7 @@
     c._hintEmails = []; c._hintPhones = [];
     (c.custom_fields_values || []).forEach(function (f) {
       const n = (f.field_name || '').toLowerCase();
+      if (/\(тест\)/.test(n)) return; // см. readAmoFields — служебные поля-дубли пропускаем
       const vals = amoFieldValues(f);
       if (!vals.length) return;
       if (/e-?mail|почта/.test(n)) {
@@ -2244,15 +2253,19 @@
       return o.textContent.trim();
     };
 
-    const opt = pickCourseOption(sel, courseName);
-    if (opt) return applyOpt(opt);
-
-    // Пробуем найти по маппингу с другим названием
+    // Сначала — куратором выверенный маппинг (COURSE_MAPPING): для курсов, где название в
+    // амо и в омнике расходятся сильнее обычного, он точнее нечёткого подбора ниже (тот
+    // иногда предпочитает вариант с бОльшим случайным пересечением слов вместо верного тарифа —
+    // так было с «Excel и Google-таблицы: тариф Мастер», подбор уводил в «…для управления финансами»).
     const omniName = findOmniCourseName(courseName);
     if (omniName !== courseName) {
-      const opt2 = pickCourseOption(sel, omniName);
-      if (opt2) return applyOpt(opt2);
+      const wantN = normCourse(omniName);
+      const mapped = [].slice.call(sel.options).find(function (o) { return normCourse(o.textContent) === wantN; });
+      if (mapped) return applyOpt(mapped);
     }
+
+    const opt = pickCourseOption(sel, courseName);
+    if (opt) return applyOpt(opt);
 
     // Последняя попытка: «рыхлое» сравнение по основам слов — ловит склонения
     // («Управление командой» → «Управление командами») и т.п.
@@ -3476,7 +3489,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.19.0'; // синхр. с Хэлпером
+  const VER = '1.20.1'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -6481,10 +6494,23 @@
       });
     });
   }
+  // Порядок выдачи при поиске курса для выдачи (вкладка «Добавить курс»): в админке на одно
+  // «чистое» название курса приходятся десятки корпоративных копий (курс + компания-заказчик,
+  // одна на юрлицо), демоверсий и архивных — они забивают выдачу, а нужный «чистый» курс тонет
+  // среди них. Сортируем: 0 чистое название → 1 с тарифом → 2 юрлицо (ИП/ООО/…, либо
+  // «Курс. Компания») → 3 демоверсия → 4 архив → остальное как есть.
+  function courseVariantRank(name) {
+    const s = String(name || '');
+    if (/архив/i.test(s)) return 4;
+    if (/демо/i.test(s)) return 3;
+    if (/\b(ооо|ип|зао|оао|пао|ао)\b/i.test(s) || /\.\s+\S/.test(s)) return 2;
+    if (/тариф/i.test(s)) return 1;
+    return 0;
+  }
   // Список курсов админки — это server-side DataTables: настоящие строки отдаёт JSON-эндпоинт
   // (обычный GET страницы приходит без строк). Дёргаем его напрямую, с X-Requested-With (gmFetch).
   async function adminCompanySearch(q) {
-    const u = EDU_ADMIN + '/admin/companies?language=ru&draw=1&start=0&length=30'
+    const u = EDU_ADMIN + '/admin/companies?language=ru&draw=1&start=0&length=100'
       + '&columns%5B0%5D%5Bdata%5D=name&columns%5B0%5D%5Bname%5D=name&columns%5B0%5D%5Bsearchable%5D=true'
       + '&order%5B0%5D%5Bcolumn%5D=1&order%5B0%5D%5Bdir%5D=desc'
       + '&search%5Bvalue%5D=&search%5Bregex%5D=false&_=' + Date.now()
@@ -6498,6 +6524,7 @@
       const name = cell.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
       if (m && name && !out.some(function (x) { return x.id === m[1]; })) out.push({ id: m[1], name: name, users: r.users_count });
     });
+    out.sort(function (a, b) { return courseVariantRank(a.name) - courseVariantRank(b.name); });
     return out.slice(0, 40);
   }
   async function adminSuperCourses(superId) {
