@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.34.5
+// @version      1.34.6
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -35,7 +35,7 @@
   const SHEET_CSV_URL = 'https://docs.google.com/spreadsheets/d/' + SHEET_ID +
     '/gviz/tq?tqx=out:csv&gid=' + SHEET_GID;
   const CALC_URL = 'https://docs.google.com/spreadsheets/d/11GNvwRy-fJwL2zg1KZbGouXzy5XXvJBlKXvtCHdgFfg/edit';
-  const CUTOFF_DATE = new Date(2026, 6, 29); // 29.07.2026 — с этой даты сумму считают в калькуляторе
+  const CUTOFF_DATE = new Date(2026, 5, 5); // 05.06.2026 — с этой даты сумму считают в калькуляторе
 
   // Таблица длительности программ (курс → академ.часы + срок в днях). Публичная, gviz-CSV.
   // Столбцы: A Наименование программы | B Кол-во академ. часов | C Срок освоения, дней | D Тип диплома.
@@ -84,7 +84,7 @@
   const F_OPERATOR = 1623777;     // «Оператор Рассрочки»
 
   // Дата смены оферты (= начало расчёта через калькулятор). Название сценария «До ДД.ММ.ГГГГ».
-  const OFFER_DATE_STR = '29.07.2026';
+  const OFFER_DATE_STR = '05.06.2026';
 
   // Сценарии кейса. Палитра всей панели меняется по сценарию (см. THEMES).
   //  before — куплено до смены оферты (серая тема, без калькулятора)
@@ -1599,8 +1599,8 @@
     };
     colL.appendChild(rowLinkBtn);
 
-    // 5) Калькулятор — только если куплено после 29.07
-    calcBlock = mkBlock(colL, 'Калькулятор возврата (куплено после 29.07)');
+    // 5) Калькулятор — только если куплено после 05.06
+    calcBlock = mkBlock(colL, 'Калькулятор возврата (куплено после 05.06)');
     calcBlock.style.display = 'none';
     const bCalcOpen = el('button', S.btnAlt, '📗 Открыть калькулятор (своя вкладка)');
     bCalcOpen.onclick = () => { try { window.open(CALC_URL, '_blank'); } catch (e) { copy(CALC_URL, 'Ссылка на калькулятор в буфере ✓'); } };
@@ -2176,7 +2176,7 @@
   }
 
   if (location.hostname.endsWith('omnidesk.ru')) {
-    console.log(TAG, 'запущен, версия ' + '1.34.5');
+    console.log(TAG, 'запущен, версия ' + '1.34.6');
     keepSynced(function () {
       removeLauncher();
       ensureMenuItem();
