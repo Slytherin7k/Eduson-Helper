@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.22.0
+// @version      1.22.2
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -125,7 +125,7 @@
 
   /* ================================================ */
 
-  const VER = '1.22.0';
+  const VER = '1.22.2';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3489,7 +3489,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.22.0'; // синхр. с Хэлпером
+  const VER = '1.22.2'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -6465,7 +6465,7 @@
     const bar = elt('div', 'display:flex;gap:6px;margin-bottom:9px;');
     const inner = elt('div', '');
     const tCss = 'flex:1;text-align:center;cursor:pointer;font-weight:800;font-size:10.5px;padding:6px 3px;border-radius:8px;border:1.5px solid ' + ACC_BD + ';color:' + ACC + ';white-space:nowrap;';
-    const defs = [['Урок', renderLesson, 'lesson'], ['Прогресс 80', renderProgress80, 'progress'], ['Блок', renderProgressBlock, 'block'], ['Добавить курс', renderAddCourse, 'add']];
+    const defs = [['Урок', renderLesson, 'lesson'], ['Прогресс 80', renderProgress80, 'progress'], ['ПрогрессБлок', renderProgressBlock, 'block'], ['Добавить курс', renderAddCourse, 'add']];
     const btns = defs.map(function (d) {
       const b = elt('div', tCss, d[0]);
       b.onclick = function () {
@@ -7655,7 +7655,7 @@
     const main = elt('div', '');
     body.appendChild(main);
 
-    let uid = '', token = '', student = '', acctUid = '';
+    let uid = '', token = '', student = '', acctUid = '', subs = [];
 
     function doComplete(logEl, id, name, targetUid) {
       const tu = targetUid || acctUid || uid;
@@ -7681,7 +7681,7 @@
       step();
     }
 
-    resolveStudentAccount().then(function (a) { uid = a.uid; acctUid = a.uid; return fetchAdminMeta(a.uid); }).then(function (meta) {
+    resolveStudentAccount().then(function (a) { uid = a.uid; acctUid = a.uid; subs = a.subs || []; return fetchAdminMeta(a.uid); }).then(function (meta) {
       bar.done(); setTimeout(function () { if (bar.el.parentNode) bar.el.remove(); }, 400);
       status.style.display = 'none';
       token = meta.token; student = meta.studentName || readUser().name || '?';
@@ -7696,7 +7696,14 @@
 
     function buildUI() {
       main.appendChild(elt('div', 'font-size:12.5px;font-weight:800;color:#111827;margin-bottom:1px;', 'Студент: ' + student));
-      main.appendChild(elt('div', 'font-size:10px;color:#9CA3AF;font-weight:700;margin-bottom:8px;', 'ID в админке ' + uid + ' · проверь, что это тот студент'));
+      const sidEl = elt('div', 'font-size:10px;color:#9CA3AF;font-weight:700;margin-bottom:8px;', 'ID в админке ' + uid + ' · проверь, что это тот студент');
+      main.appendChild(sidEl);
+      const setSid = function () { sidEl.textContent = 'ID в админке ' + (acctUid || uid) + ' · проверь, что это тот студент'; };
+
+      // выбор программы студента — так же, как в «Прогресс 80»: несколько аккаунтов
+      // (осн. + бонусные) или несколько учебных планов на одном аккаунте.
+      const planWrap = elt('div', 'margin:2px 0 8px;');
+      main.appendChild(planWrap);
 
       const note = elt('div', 'font-size:11px;color:#9CA3AF;font-weight:700;', 'Загружаю разделы курса…');
       const secBox = elt('div', 'margin-top:5px;max-height:230px;overflow-y:auto;border:1px solid #EEF2F5;border-radius:9px;display:none;');
@@ -7720,6 +7727,16 @@
           secBox.appendChild(row);
         });
       };
+      const applyLessons = function (lessons) {
+        const bySec = {}, order = [];
+        (lessons || []).forEach(function (l) {
+          const sec = l.section || 'Без раздела';
+          if (!bySec[sec]) { bySec[sec] = []; order.push(sec); }
+          bySec[sec].push({ id: l.id, n: l.name });
+        });
+        stuSections = order.map(function (nm) { return { name: nm, items: bySec[nm] }; });
+        drawSections();
+      };
       secGo.onclick = function () {
         const idxs = Array.prototype.slice.call(secBox.querySelectorAll('input:checked')).map(function (c) { return Number(c.dataset.idx); });
         if (!idxs.length) { toast('Отметь хотя бы один раздел'); return; }
@@ -7731,14 +7748,53 @@
       };
 
       loadLessons().then(function (d) {
-        const bySec = {}, order = [];
-        (d.lessons || []).forEach(function (l) {
-          const sec = l.section || 'Без раздела';
-          if (!bySec[sec]) { bySec[sec] = []; order.push(sec); }
-          bySec[sec].push({ id: l.id, n: l.name });
-        });
-        stuSections = order.map(function (nm) { return { name: nm, items: bySec[nm] }; });
-        drawSections();
+        if (d.planKey && !_planLessons[d.planKey]) _planLessons[d.planKey] = d.lessons || [];
+        applyLessons(d.lessons);
+        if ((d.subs || []).length) subs = d.subs;
+        const dsubs = subs || [];
+        const plans = d.plans || [];
+        const pnote = elt('div', 'font-size:9.5px;color:#9CA3AF;font-weight:700;margin-top:2px;', '');
+
+        if (dsubs.length > 1) {
+          // несколько программ = РАЗНЫХ аккаунтов (осн. + бонусные). Переключаем аккаунт —
+          // меняются и разделы, и куда уходит «завершить курс».
+          planWrap.appendChild(elt('div', fieldLabel, 'Программа студента'));
+          const sel = elt('select', inputCss + 'padding:6px 8px;');
+          dsubs.forEach(function (s) {
+            const o = elt('option', '', s.company || ('аккаунт ' + s.uid)); o.value = s.uid;
+            if (s.uid === d.uid) o.selected = true;
+            sel.appendChild(o);
+          });
+          pnote.textContent = d.planName ? ('курс: ' + d.planName) : '';
+          sel.onchange = function () {
+            const su = sel.value; acctUid = su; setSid();
+            if (su === d.uid) { applyLessons(_planLessons[d.planKey] || d.lessons); pnote.textContent = d.planName ? ('курс: ' + d.planName) : ''; return; }
+            if (_acctLessons[su]) { applyLessons(_acctLessons[su].lessons); pnote.textContent = 'курс: ' + _acctLessons[su].planName; return; }
+            pnote.textContent = 'загружаю курсы этой программы… (может занять до минуты)';
+            accountLessons(su, readCourse()).then(function (r) { pnote.textContent = 'курс: ' + r.planName; applyLessons(r.lessons); })
+              .catch(function (e) { pnote.textContent = 'не вышло: ' + ((e && e.message) || 'ошибка'); });
+          };
+          planWrap.appendChild(sel); planWrap.appendChild(pnote);
+        } else if (plans.length > 1) {
+          // один аккаунт, но несколько учебных планов — переключаем план
+          planWrap.appendChild(elt('div', fieldLabel, 'Программа студента'));
+          const sel = elt('select', inputCss + 'padding:6px 8px;');
+          plans.forEach(function (p) {
+            const o = elt('option', '', p.name); o.value = p.url;
+            if (p.url === d.planKey) o.selected = true;
+            sel.appendChild(o);
+          });
+          sel.onchange = function () {
+            const u2 = sel.value;
+            if (_planLessons[u2]) { applyLessons(_planLessons[u2]); pnote.textContent = ''; return; }
+            pnote.textContent = 'загружаю курсы программы…';
+            lessonsForPlan(u2).then(function (ls) { pnote.textContent = ''; applyLessons(ls); })
+              .catch(function () { pnote.textContent = 'не вышло загрузить эту программу'; });
+          };
+          planWrap.appendChild(sel); planWrap.appendChild(pnote);
+        } else if (d.planName) {
+          planWrap.appendChild(elt('div', 'font-size:9.5px;color:#9CA3AF;font-weight:700;', 'Программа студента: ' + d.planName));
+        }
       }).catch(function () { note.textContent = 'Не получилось загрузить программу студента — попробуй открыть панель заново.'; });
     }
   }
