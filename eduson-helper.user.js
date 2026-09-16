@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.21.1
+// @version      1.21.2
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -125,7 +125,7 @@
 
   /* ================================================ */
 
-  const VER = '1.21.1';
+  const VER = '1.21.2';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3489,7 +3489,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.21.1'; // синхр. с Хэлпером
+  const VER = '1.21.2'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4274,6 +4274,12 @@
   }
 
   // Держим панель в пределах экрана и подгоняем высоту под свободное место снизу.
+  // Минимальная полезная высота панели. Раньше top ограничивался только «vh-44» (чтобы
+  // не пропала шапка), а maxHeight снизу — «не меньше 160» — если top оказывался в нижних
+  // ~170px экрана, эти два ограничения конфликтовали и низ панели вылезал за монитор
+  // (особенно заметно на длинных вкладках вроде «Прогресс 80» с разделами + растущим логом).
+  // Теперь top дополнительно ограничен так, чтобы под панелью всегда было место под PANEL_MIN_H.
+  const PANEL_MIN_H = 160;
   function clampPanel(box) {
     const w = box.offsetWidth || 336;
     const vw = window.innerWidth, vh = window.innerHeight;
@@ -4285,11 +4291,11 @@
     left = Math.max(6, Math.min(left, vw - w - 6));
     let top = parseFloat(box.style.top);
     if (!isFinite(top)) top = 64;
-    top = Math.max(6, Math.min(top, vh - 44));
+    top = Math.max(6, Math.min(top, vh - PANEL_MIN_H - 12));
     box.style.left = left + 'px';
     box.style.top = top + 'px';
     box.style.right = 'auto';
-    box.style.maxHeight = Math.max(160, vh - top - 12) + 'px';
+    box.style.maxHeight = Math.max(PANEL_MIN_H, vh - top - 12) + 'px';
   }
 
   // Панель можно таскать за шапку; позиция запоминается (curatorPanelPos).
@@ -4307,9 +4313,9 @@
       const w = box.offsetWidth || 336;
       let nx = ox + (e.clientX - sx), ny = oy + (e.clientY - sy);
       nx = Math.max(6, Math.min(nx, window.innerWidth - w - 6));
-      ny = Math.max(6, Math.min(ny, window.innerHeight - 44));
+      ny = Math.max(6, Math.min(ny, window.innerHeight - PANEL_MIN_H - 12));
       box.style.left = nx + 'px'; box.style.top = ny + 'px'; box.style.right = 'auto';
-      box.style.maxHeight = Math.max(160, window.innerHeight - ny - 12) + 'px';
+      box.style.maxHeight = Math.max(PANEL_MIN_H, window.innerHeight - ny - 12) + 'px';
     });
     document.addEventListener('mouseup', function () {
       if (!drag) return;
@@ -7422,7 +7428,7 @@
       row: 'padding:6px 10px;border-bottom:1px solid #F3F4F6;cursor:pointer;font-size:11px;font-weight:700;color:#111827;line-height:1.3;',
       back: 'font-size:10.5px;font-weight:800;color:' + ACC + ';cursor:pointer;margin:2px 0 4px;',
       go: 'margin-top:9px;text-align:center;cursor:pointer;font-weight:800;font-size:11.5px;padding:8px 0;border-radius:8px;background:#16A34A;color:#fff;',
-      log: 'margin-top:8px;font-size:10.5px;font-weight:700;line-height:1.6;white-space:pre-wrap;',
+      log: 'margin-top:8px;font-size:10.5px;font-weight:700;line-height:1.6;white-space:pre-wrap;max-height:150px;overflow-y:auto;',
       more: 'font-size:10px;font-weight:800;color:#9CA3AF;cursor:pointer;margin-top:9px;'
     };
 
@@ -7501,21 +7507,27 @@
       // ВСЕ уроки внутри них одним запуском (последовательно, чтобы не словить 500 от админки).
       // Спрятано за кнопкой-раскрывашкой (как «вставить ссылку» ниже) — панель и так длинная,
       // а этот блок нужен далеко не в каждом обращении.
-      const secToggle = elt('div', S.more, '▸ Завершить разделы курса целиком');
+      // Кнопка видна СРАЗУ (не ждёт загрузки курса) — пока данных нет, показывает
+      // «загружаю» и не реагирует на клик; как только программа студента прогрузится,
+      // сама переключается в обычный вид (или в «разделов нет», если курс плоский).
+      const secToggle = elt('div', S.more, '⏳ Загружаю разделы курса…');
       const secBody = elt('div', 'display:none;margin-top:5px;');
       const secBox = elt('div', S.list);
       const secGo = elt('div', S.go, 'Завершить отмеченные разделы');
       secBody.appendChild(secBox); secBody.appendChild(secGo);
+      let secHas = false;
       secToggle.onclick = function () {
+        if (!secHas) return;
         const open = secBody.style.display !== 'none';
         secBody.style.display = open ? 'none' : 'block';
         secToggle.textContent = (open ? '▸' : '▾') + ' Завершить разделы курса целиком';
       };
-      secToggle.style.display = 'none';
       main.appendChild(secToggle); main.appendChild(secBody);
       const drawSections = function () {
-        const has = stuSections.length > 1 || (stuSections.length === 1 && stuSections[0].name !== 'Без раздела');
-        secToggle.style.display = has ? '' : 'none';
+        secHas = stuSections.length > 1 || (stuSections.length === 1 && stuSections[0].name !== 'Без раздела');
+        secToggle.textContent = secHas ? '▸ Завершить разделы курса целиком' : 'В этом курсе разделов не нашла';
+        secToggle.style.opacity = secHas ? '' : '.55';
+        secToggle.style.cursor = secHas ? 'pointer' : 'default';
         secBox.innerHTML = '';
         stuSections.forEach(function (sec, i) {
           const row = elt('label', S.row + 'display:flex;align-items:center;gap:7px;cursor:pointer;');
