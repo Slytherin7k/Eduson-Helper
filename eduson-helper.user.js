@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.25.1
+// @version      1.25.3
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -3834,7 +3834,7 @@
       ]
     },
     {
-      title: '"Без Telegram — пинговать через Машу или Юлю"',
+      title: 'Пинговать через Машу или Юлю',
       highlight: true,
       note: 'Тега нет — пиши Маше (@maria_startceva) или Юле (@yilya_pronyaeva)',
       rows: [
@@ -5044,6 +5044,18 @@
       setTeamsNote();
     });
 
+    function withClickableTags(host, text) {
+      // @тег внутри текста — кликабельный (копирует тег). host — куда добавлять части.
+      String(text).split(/(@[A-Za-z0-9_]+)/).forEach(function (part) {
+        if (/^@[A-Za-z0-9_]+$/.test(part)) {
+          const a = elt('span', 'font:500 11px IBM Plex Mono,' + FONT + ';color:' + ACC_DEEP + ';cursor:pointer;text-decoration:underline;', part);
+          a.onclick = function (e) { e.stopPropagation(); copyText(part); toast('Скопирован тег ' + part); };
+          host.appendChild(a);
+        } else if (part) {
+          host.appendChild(document.createTextNode(part));
+        }
+      });
+    }
     function tagRow(row, indent) {
       // Две строки: имя (+ примечание) сверху, тег снизу — ничего не сливается и не едет.
       const it = elt('div', 'padding:6px 8px 6px ' + (indent || 8) + 'px;border-radius:8px;cursor:pointer;');
@@ -5053,17 +5065,8 @@
       else meta.appendChild(elt('span', 'font-size:11px;color:#9CA3AF;font-weight:600;', 'тега нет'));
       if (row.email) meta.appendChild(elt('span', 'font:500 11px IBM Plex Mono,' + FONT + ';color:#9CA3AF;', row.email));
       if (row.note) {
-        // @тег внутри примечания — тоже кликабельный (копирует тег)
         const noteEl = elt('span', 'font-size:11px;color:#9CA3AF;font-weight:600;');
-        String(row.note).split(/(@[A-Za-z0-9_]+)/).forEach(function (part) {
-          if (/^@[A-Za-z0-9_]+$/.test(part)) {
-            const a = elt('span', 'font:500 11px IBM Plex Mono,' + FONT + ';color:' + ACC_DEEP + ';cursor:pointer;text-decoration:underline;', part);
-            a.onclick = function (e) { e.stopPropagation(); copyText(part); toast('Скопирован тег ' + part); };
-            noteEl.appendChild(a);
-          } else if (part) {
-            noteEl.appendChild(document.createTextNode(part));
-          }
-        });
+        withClickableTags(noteEl, row.note);
         meta.appendChild(noteEl);
       }
       it.appendChild(meta);
@@ -5133,7 +5136,11 @@
             const wrap = elt('div', x.g.highlight ? 'margin:8px 6px 4px;background:#FAEEDA;border:1px solid #F0DBA8;border-radius:10px;padding:2px 2px 6px;' : 'margin:6px 0 0;');
             wrap.appendChild(elt('div', 'padding:6px 8px 2px;font-size:10.5px;font-weight:800;letter-spacing:.03em;color:' + (x.g.highlight ? '#854F0B' : '#6B7280') + ';', x.g.title));
             x.rows.forEach(function (r) { wrap.appendChild(tagRow(r, 10)); });
-            if (x.g.note) wrap.appendChild(elt('div', 'font-size:10.5px;color:#854F0B;font-weight:600;padding:2px 8px 2px;', x.g.note));
+            if (x.g.note) {
+              const noteLine = elt('div', 'font-size:10.5px;color:#854F0B;font-weight:600;padding:2px 8px 2px;');
+              withClickableTags(noteLine, x.g.note);
+              wrap.appendChild(noteLine);
+            }
             box._cont.appendChild(wrap);
           });
           host.appendChild(box);
