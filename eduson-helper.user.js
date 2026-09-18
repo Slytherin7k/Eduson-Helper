@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.25.0
+// @version      1.25.1
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -3834,7 +3834,7 @@
       ]
     },
     {
-      title: 'Группа "Без Telegram — пинговать через Машу или Юлю"',
+      title: '"Без Telegram — пинговать через Машу или Юлю"',
       highlight: true,
       note: 'Тега нет — пиши Маше (@maria_startceva) или Юле (@yilya_pronyaeva)',
       rows: [
