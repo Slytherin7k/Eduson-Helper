@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.36.0
+// @version      1.36.1
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -1886,13 +1886,16 @@
     // Список типов и «нужно ли заявление» тянем из гугл-таблицы «Заявления на возврат».
     const PAYTYPE_PLACEHOLDER = '— выбери —';
     const payTypeUnset = () => !clean(T.payTypeSel) || T.payTypeSel === PAYTYPE_PLACEHOLDER;
+    // В выпадающем списке и в заголовке Асаны — «Рассрочка/Полная» ПЕРВЫМ словом перед типом
+    // (для этого и заводили колонку B в таблице «Заявления на возврат»).
+    const payTypeLabel = r => (r.kind ? r.kind + ' ' + r.type : r.type);
     payTypeBlock = mkBlock(colR, '💳 Тип оплаты и заявление', true);
     payTypeBlock.style.display = T.result === 'Возврат' ? 'block' : 'none';
     const payTypeNames = [];
     const zayavBox = el('div', 'margin-top:8px;');
     const renderZayav = () => {
       zayavBox.innerHTML = '';
-      const row = _payTypeRows && _payTypeRows.find(r => r.type === T.payTypeSel);
+      const row = _payTypeRows && _payTypeRows.find(r => payTypeLabel(r) === T.payTypeSel);
       if (payTypeUnset()) {
         zayavBox.appendChild(el('div', 'font-size:10.5px;color:#9CA3AF;', 'Выбери тип оплаты — покажу, нужно ли заявление.'));
         return;
@@ -1917,7 +1920,7 @@
     fetchPayTypeRows().then(rows => {
       payTypeNames.length = 0;
       payTypeNames.push(PAYTYPE_PLACEHOLDER);
-      rows.forEach(r => payTypeNames.push(r.type));
+      rows.forEach(r => payTypeNames.push(payTypeLabel(r)));
       if (inputs.payTypeSel && inputs.payTypeSel._fill) inputs.payTypeSel._fill(T.payTypeSel);
       renderZayav();
     }).catch(() => { renderZayav(); });
