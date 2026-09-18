@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.35.0
+// @version      1.36.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -368,6 +368,28 @@
   }
   function fetchCourseDuration(courseName) {
     return fetchDurationRows().then(rows => pickDuration(courseName, rows));
+  }
+
+  // Таблица «Заявления на возврат» (тип оплаты → нужно ли заявление). Публичная, gviz-CSV.
+  // Столбцы: A Тип оплаты | B Рассрочка/Полная | C Нужно заявление? | D Комментарий | E Файл с заявлением.
+  const PAYTYPE_SHEET_ID = '1_teJgVR7pcCIqgFKLvdXxLDvur7r74c_MlK4daY_-Ng';
+  const PAYTYPE_CSV_URL = 'https://docs.google.com/spreadsheets/d/' + PAYTYPE_SHEET_ID +
+    '/gviz/tq?tqx=out:csv&gid=0';
+  let _payTypeRows = null;
+  function fetchPayTypeRows() {
+    if (_payTypeRows) return Promise.resolve(_payTypeRows);
+    return gmFetchText(PAYTYPE_CSV_URL + '&_cb=' + Date.now()).then(text => {
+      if (looksLikeLoginPage(text)) throw new Error('нужен вход в Google');
+      const rows = parseCsvRows(text).slice(1)
+        .map(r => ({
+          type: (r[0] || '').trim(), kind: (r[1] || '').trim(), zayav: (r[2] || '').trim(),
+          comment: (r[3] || '').trim(), file: (r[4] || '').trim(),
+        }))
+        .filter(r => r.type);
+      if (!rows.length) throw new Error('таблица типов оплаты пустая');
+      _payTypeRows = rows;
+      return rows;
+    });
   }
 
   function fmtTs(ts) {
@@ -1029,6 +1051,7 @@
       rgTag: pick('rgTag', GM_getValue('rm_rg') || ''),
       deals: [], dealId: pick('dealId', ''),
       calcHours: pick('calcHours', ''), calcDays: pick('calcDays', ''),
+      payTypeSel: pick('payTypeSel', ''),
       scenOverride: '',   // сценарий при каждом открытии — «авто»; ручной выбор не запоминаем
     };
     // калькулятор: если по кейсу уже сохранены ак.ч./дни — считаем, что куратор их проверил,
@@ -1042,7 +1065,7 @@
       clearTimeout(saveT);
       saveT = setTimeout(() => {
         const keep = {};
-        ['curator', 'status', 'claimDate', 'progress', 'reason', 'clientComment', 'result', 'agreedSum', 'rowNumber', 'rgTag', 'dealId', 'calcHours', 'calcDays']
+        ['curator', 'status', 'claimDate', 'progress', 'reason', 'clientComment', 'result', 'agreedSum', 'rowNumber', 'rgTag', 'dealId', 'calcHours', 'calcDays', 'payTypeSel']
           .forEach(k => { keep[k] = T[k]; });
         try { GM_setValue(CASE_KEY, JSON.stringify(keep)); } catch (e) { /* ignore */ }
       }, 300);
@@ -1233,7 +1256,7 @@
     };
 
     /* ---- сценарий: текст + видимость блоков ---- */
-    let tableBlock = null, calcBlock = null, rgBlock = null, tgBlock = null, tgHdr = null, rowLinkBtn = null, negBox = null;
+    let tableBlock = null, calcBlock = null, rgBlock = null, tgBlock = null, tgHdr = null, rowLinkBtn = null, negBox = null, payTypeBlock = null;
     let sumWrap = null, errBox = null;
     const dateWarn = el('div', S.warn);
     const show = (elm, v) => { if (elm) elm.style.display = v ? 'block' : 'none'; };
@@ -1318,6 +1341,7 @@
       scenText.textContent = L.join('\n');
 
       show(rgBlock, scen === 'le3');
+      show(payTypeBlock, T.result === 'Возврат');
       show(tableBlock, true);   // строка в таблице возвратов — нужна ВСЕГДА
       // калькулятор — для «после новой оферты» сценариев (в т.ч. выбранных вручную), не для ресейла/детских/старой оферты
       show(calcBlock, scen === 'gt3' || scen === 'le3' || scen === 'postUnknown');
@@ -1858,8 +1882,49 @@
     };
     tgBlock.appendChild(bTG);
 
+    // 3.5) Тип оплаты и заявление — видно только при результате «Возврат» (см. show(payTypeBlock, ...) выше).
+    // Список типов и «нужно ли заявление» тянем из гугл-таблицы «Заявления на возврат».
+    const PAYTYPE_PLACEHOLDER = '— выбери —';
+    const payTypeUnset = () => !clean(T.payTypeSel) || T.payTypeSel === PAYTYPE_PLACEHOLDER;
+    payTypeBlock = mkBlock(colR, '💳 Тип оплаты и заявление', true);
+    payTypeBlock.style.display = T.result === 'Возврат' ? 'block' : 'none';
+    const payTypeNames = [];
+    const zayavBox = el('div', 'margin-top:8px;');
+    const renderZayav = () => {
+      zayavBox.innerHTML = '';
+      const row = _payTypeRows && _payTypeRows.find(r => r.type === T.payTypeSel);
+      if (payTypeUnset()) {
+        zayavBox.appendChild(el('div', 'font-size:10.5px;color:#9CA3AF;', 'Выбери тип оплаты — покажу, нужно ли заявление.'));
+        return;
+      }
+      if (!row) {
+        zayavBox.appendChild(el('div', 'font-size:10.5px;color:#9CA3AF;', _payTypeRows ? 'Такого типа нет в таблице.' : 'Загружаю таблицу…'));
+        return;
+      }
+      const needsIt = /^да/i.test(row.zayav);
+      const need = el('div', 'font-size:12.5px;font-weight:800;color:' + (needsIt ? '#DC2626' : '#15803D') + ';', 'Заявление: ' + (row.zayav || '—'));
+      zayavBox.appendChild(need);
+      if (row.comment) zayavBox.appendChild(el('div', 'font-size:10.5px;color:#6B7280;margin-top:4px;white-space:pre-wrap;line-height:1.4;', row.comment));
+      if (row.file) {
+        const a = el('a', 'font-size:11px;font-weight:700;color:' + ACC + ';display:inline-block;margin-top:6px;', '📎 Файл с заявлением');
+        a.href = row.file; a.target = '_blank'; a.rel = 'noopener';
+        zayavBox.appendChild(a);
+      }
+    };
+    mkField(payTypeBlock, 'payTypeSel', 'Тип оплаты', 'man', { list: payTypeNames, onChange: renderZayav });
+    payTypeBlock.appendChild(zayavBox);
+    renderZayav();
+    fetchPayTypeRows().then(rows => {
+      payTypeNames.length = 0;
+      payTypeNames.push(PAYTYPE_PLACEHOLDER);
+      rows.forEach(r => payTypeNames.push(r.type));
+      if (inputs.payTypeSel && inputs.payTypeSel._fill) inputs.payTypeSel._fill(T.payTypeSel);
+      renderZayav();
+    }).catch(() => { renderZayav(); });
+
     // 4) Карточка Асаны
     const payForTitle = () => {
+      if (!payTypeUnset()) return clean(T.payTypeSel);
       const pt = clean(T.payType);
       return /полн/i.test(pt) ? 'Полная (' + B('укажи банк') + ')' : pt;
     };
