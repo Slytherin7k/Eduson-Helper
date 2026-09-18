@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.24.0
+// @version      1.25.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -3803,14 +3803,47 @@
 
   const DZ_DEFAULT = { name: 'Мария Старцева', tag: '@maria_startceva' };
   const DZ_REVIEWERS = [
-    { name: 'Юлия Проняева', tag: '@yilya_pronyaeva' },
-    { name: 'Вадим Романенко', tag: '@vadim_romanenk0' },
-    { name: 'Нина Пилипенко', tag: '@Chosi88' },
-    { name: 'Даниил Тюрин', tag: '@TurinDE' },
-    { name: 'Надя Шелест', tag: '@Nadya_Zhu' },
-    { name: 'Ника Ожаровская', tag: '@nikaozharovskaya' },
-    { name: 'Валерия Каторкина', tag: '@valeria_katt' },
-    { name: 'Екатерина', tag: '@rrinaa' }
+    { name: 'Юлия Проняева', tag: '@yilya_pronyaeva' }
+  ];
+
+  // Проверяющие ДЗ курса «Графический дизайнер» — 17.09.2026, от Натальи.
+  // Разбиты по тому, КУДА пинговать (свой чат/группа), а не всё в одну кучу.
+  // «Без Telegram» — тега нет, пингуем Машу или Юлю вручную (см. note группы).
+  const DZ_GD_GROUPS = [
+    {
+      title: 'Группа "Проверка ДЗ: Графический дизайнер"',
+      rows: [
+        { name: 'Надежда Шелест', tag: '@Nadya_Zhu', email: 'nadya18zh@gmail.com' },
+        { name: 'Ника Ожаровская', tag: '@nikaozharovskaya', email: 'nika.soboleva.11@gmail.com' }
+      ]
+    },
+    {
+      title: 'Группа "Eduson Дизайн — чат с экспертом"',
+      rows: [
+        { name: 'Екатерина Козлова', tag: '@ekozlove', email: 'koza-design@yandex.ru' }
+      ]
+    },
+    {
+      title: 'Группа "Academy | Проверка домашних заданий"',
+      rows: [
+        { name: 'Даниил Тюрин', tag: '@TurinDE', email: 'd.tiurin@eduson.tv' },
+        { name: 'Вадим Романенко', tag: '@vadim_romanenk0', email: 'v.romanenko@eduson.tv' },
+        { name: 'Нина Валикова (Пилипенко)', tag: '@Chosi88', email: 'n.pilipenko@eduson.tv' },
+        { name: 'Валерия Каторкина', tag: '@valeria_katt', email: 'V.katorkina@eduson.tv' },
+        { name: 'Екатерина Шершнева', tag: '@rrinaa', email: 'e.shershneva@eduson.tv' }
+      ]
+    },
+    {
+      title: 'Группа "Без Telegram — пинговать через Машу или Юлю"',
+      highlight: true,
+      note: 'Тега нет — пиши Маше (@maria_startceva) или Юле (@yilya_pronyaeva)',
+      rows: [
+        { name: 'Светлана Аксенова', email: '9817642218@inbox.ru' },
+        { name: 'Анастасия Анпилогова', email: 'chudesign@mail.ru' },
+        { name: 'Катерина Пережогина', email: '9870332516@mail.ru' },
+        { name: 'Полина Морозова', email: 'pellochkaaa@yandex.ru' }
+      ]
+    }
   ];
 
   const DIPLOMA_OWNER = { name: 'Антон Трепко', tag: '@anteneshe' };
@@ -4145,8 +4178,13 @@
   // Кого предложить в выборе тега.
   function suggestTags(ping, cluster) {
     if (ping.suggest === 'dz') {
+      const gd = [];
+      DZ_GD_GROUPS.forEach(function (g) {
+        g.rows.forEach(function (d) { if (d.tag) gd.push({ label: d.name, tag: d.tag }); });
+      });
       return [{ label: DZ_DEFAULT.name, tag: DZ_DEFAULT.tag }]
-        .concat(DZ_REVIEWERS.map(function (d) { return { label: d.name, tag: d.tag }; }));
+        .concat(DZ_REVIEWERS.map(function (d) { return { label: d.name, tag: d.tag }; }))
+        .concat(gd);
     }
     if (ping.suggest === 'diploma') {
       return [{ label: DIPLOMA_OWNER.name + ' — ответственный по дипломам', tag: DIPLOMA_OWNER.tag }];
@@ -4967,7 +5005,8 @@
       { title: 'Продакты по кластерам', rows: prod },
       { title: 'Лиды контента', rows: leads },
       { title: 'Проверяющие ДЗ', rows: [{ name: DZ_DEFAULT.name, tag: DZ_DEFAULT.tag, note: 'по умолчанию' }]
-        .concat(DZ_REVIEWERS.map(function (d) { return { name: d.name, tag: d.tag, note: '' }; })) },
+        .concat(DZ_REVIEWERS.map(function (d) { return { name: d.name, tag: d.tag, note: '' }; })),
+        groups: DZ_GD_GROUPS },
       { title: 'Эскалация', rows: ESCALATIONS.map(function (e) { return { name: e.name, tag: e.tag, note: e.note }; }) },
       { title: 'Директора департаментов', rows: DIRECTORS.map(function (d) { return { name: d.name, tag: d.tag, note: d.note }; }) },
       { title: 'Команды продаж (МОП)', teams: teams }
@@ -4975,7 +5014,7 @@
   }
   function matchRow(row, terms) {
     if (!terms.length) return true;
-    const hay = (row.name + ' ' + row.tag + ' ' + (row.note || '') + ' ' + (row.kw || '')).toLowerCase().replace(/ё/g, 'е');
+    const hay = (row.name + ' ' + (row.tag || '') + ' ' + (row.note || '') + ' ' + (row.kw || '') + ' ' + (row.email || '')).toLowerCase().replace(/ё/g, 'е');
     return terms.every(function (t) { return hay.indexOf(t) !== -1; });
   }
 
@@ -5012,6 +5051,7 @@
       const meta = elt('div', 'display:flex;flex-wrap:wrap;gap:4px 8px;margin-top:1px;align-items:baseline;');
       if (row.tag) meta.appendChild(elt('span', 'font:500 11.5px IBM Plex Mono,' + FONT + ';color:' + ACC_DEEP + ';', row.tag));
       else meta.appendChild(elt('span', 'font-size:11px;color:#9CA3AF;font-weight:600;', 'тега нет'));
+      if (row.email) meta.appendChild(elt('span', 'font:500 11px IBM Plex Mono,' + FONT + ';color:#9CA3AF;', row.email));
       if (row.note) {
         // @тег внутри примечания — тоже кликабельный (копирует тег)
         const noteEl = elt('span', 'font-size:11px;color:#9CA3AF;font-weight:600;');
@@ -5030,8 +5070,9 @@
       it.onmouseenter = function () { it.style.background = '#F0F9FF'; };
       it.onmouseleave = function () { it.style.background = 'transparent'; };
       it.onclick = function () {
-        if (!row.tag) { toast('У ' + row.name + ' тега нет'); return; }
-        copyText(row.tag); toast('Скопирован тег ' + row.tag);
+        if (row.tag) { copyText(row.tag); toast('Скопирован тег ' + row.tag); return; }
+        if (row.email) { copyText(row.email); toast('Скопирована почта ' + row.email); return; }
+        toast('У ' + row.name + ' нет ни тега, ни почты');
       };
       return it;
     }
@@ -5079,10 +5120,28 @@
           });
           host.appendChild(box);
           anyHit = true;
+        } else if (sec.groups) {
+          const rows = (sec.rows || []).filter(function (r) { return matchRow(r, terms); });
+          const groups = sec.groups.map(function (g) {
+            return { g: g, rows: g.rows.filter(function (r) { return matchRow(r, terms); }) };
+          }).filter(function (x) { return !searching || x.rows.length; });
+          if (searching && !rows.length && !groups.length) return;
+          const total = rows.length + groups.reduce(function (a, x) { return a + x.rows.length; }, 0);
+          const box = collapsible(sec.title, total, searching);
+          rows.forEach(function (r) { box._cont.appendChild(tagRow(r)); });
+          groups.forEach(function (x) {
+            const wrap = elt('div', x.g.highlight ? 'margin:8px 6px 4px;background:#FAEEDA;border:1px solid #F0DBA8;border-radius:10px;padding:2px 2px 6px;' : 'margin:6px 0 0;');
+            wrap.appendChild(elt('div', 'padding:6px 8px 2px;font-size:10.5px;font-weight:800;letter-spacing:.03em;color:' + (x.g.highlight ? '#854F0B' : '#6B7280') + ';', x.g.title));
+            x.rows.forEach(function (r) { wrap.appendChild(tagRow(r, 10)); });
+            if (x.g.note) wrap.appendChild(elt('div', 'font-size:10.5px;color:#854F0B;font-weight:600;padding:2px 8px 2px;', x.g.note));
+            box._cont.appendChild(wrap);
+          });
+          host.appendChild(box);
+          anyHit = true;
         } else {
           const rows = sec.rows.filter(function (r) { return matchRow(r, terms); });
           if (searching && !rows.length) return;
-          const box = collapsible(sec.title, rows.length, searching || sec.title === 'Продакты по кластерам');
+          const box = collapsible(sec.title, rows.length, searching);
           rows.forEach(function (r) { box._cont.appendChild(tagRow(r)); });
           host.appendChild(box);
           anyHit = true;
