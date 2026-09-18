@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.36.1
+// @version      1.36.2
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -959,7 +959,9 @@
       (rows || []).slice(0, 400).forEach(r => {
         const hay = (r.label + ' ' + (r.value || '')).toLowerCase().replace(/ё/g, 'е');
         if (f && hay.indexOf(f) === -1) return;
-        const it = el('div', 'padding:7px 10px;font:600 11.5px ' + FONT + ';color:#111827;cursor:pointer;border-bottom:1px solid #F3F4F6;line-height:1.3;', r.label);
+        const it = el('div', 'padding:7px 10px;font:600 11.5px ' + FONT + ';color:#111827;cursor:pointer;border-bottom:1px solid #F3F4F6;line-height:1.3;');
+        if (r.parts) r.parts.forEach(p => it.appendChild(el('span', p.muted ? 'color:#9CA3AF;font-weight:600;' : '', p.text)));
+        else it.textContent = r.label;
         it.onmouseenter = () => { it.style.background = '#F0F9FF'; };
         it.onmouseleave = () => { it.style.background = '#fff'; };
         it.onmousedown = (e) => {
@@ -1884,14 +1886,17 @@
 
     // 3.5) Тип оплаты и заявление — видно только при результате «Возврат» (см. show(payTypeBlock, ...) выше).
     // Список типов и «нужно ли заявление» тянем из гугл-таблицы «Заявления на возврат».
-    const PAYTYPE_PLACEHOLDER = '— выбери —';
-    const payTypeUnset = () => !clean(T.payTypeSel) || T.payTypeSel === PAYTYPE_PLACEHOLDER;
+    const payTypeUnset = () => !clean(T.payTypeSel);
     // В выпадающем списке и в заголовке Асаны — «Рассрочка/Полная» ПЕРВЫМ словом перед типом
-    // (для этого и заводили колонку B в таблице «Заявления на возврат»).
+    // (для этого и заводили колонку B в таблице «Заявления на возврат»); в списке это слово бледнее типа.
     const payTypeLabel = r => (r.kind ? r.kind + ' ' + r.type : r.type);
     payTypeBlock = mkBlock(colR, '💳 Тип оплаты и заявление', true);
     payTypeBlock.style.display = T.result === 'Возврат' ? 'block' : 'none';
-    const payTypeNames = [];
+    const payTypeLab = el('div', S.lab);
+    payTypeLab.appendChild(el('span', 'flex:1 1 auto;', 'Тип оплаты'));
+    payTypeBlock.appendChild(payTypeLab);
+    const payTypeCombo = combo([], 'выбери тип оплаты…', clean(T.payTypeSel));
+    payTypeBlock.appendChild(payTypeCombo.el);
     const zayavBox = el('div', 'margin-top:8px;');
     const renderZayav = () => {
       zayavBox.innerHTML = '';
@@ -1914,16 +1919,17 @@
         zayavBox.appendChild(a);
       }
     };
-    mkField(payTypeBlock, 'payTypeSel', 'Тип оплаты', 'man', { list: payTypeNames, onChange: renderZayav });
+    payTypeCombo.onPick(() => {
+      T.payTypeSel = payTypeCombo.value.trim(); saveCase(); renderZayav();
+    });
     payTypeBlock.appendChild(zayavBox);
     renderZayav();
     fetchPayTypeRows().then(rows => {
-      payTypeNames.length = 0;
-      payTypeNames.push(PAYTYPE_PLACEHOLDER);
-      rows.forEach(r => payTypeNames.push(payTypeLabel(r)));
-      if (inputs.payTypeSel && inputs.payTypeSel._fill) inputs.payTypeSel._fill(T.payTypeSel);
-      renderZayav();
-    }).catch(() => { renderZayav(); });
+      payTypeCombo.setRows(rows.map(r => ({
+        label: payTypeLabel(r), value: payTypeLabel(r),
+        parts: [{ text: r.kind + ' ', muted: true }, { text: r.type }],
+      })));
+    }).catch(() => { /* список не загрузился — куратор впишет тип вручную */ });
 
     // 4) Карточка Асаны
     const payForTitle = () => {
