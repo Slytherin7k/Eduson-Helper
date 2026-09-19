@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.28.1
+// @version      1.28.2
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -7163,7 +7163,8 @@
     body.appendChild(allBtn);
     body.appendChild(allBox);
     const pickedDirs = {};
-    let allOpen = false;
+    const PREVIEW_COURSES = 3;
+    let allOpen = false, listExpanded = false;
     const dirsOf = function (c) { return (c.groups && c.groups.length) ? c.groups : [NO_DIR]; };
     const courseKey = function (c) { return c.product_url || c.course_name; };
     function fitInfo() {
@@ -7216,16 +7217,28 @@
         listEl.innerHTML = '';
         const groups = pickedGroups(info);
         if (!groups.length) { listEl.appendChild(elt('div', 'font-size:11px;color:#9CA3AF;font-weight:600;', 'Отметь хотя бы одно направление.')); return; }
+        // Чтобы не занимать пол-экрана, показываем только 3 курса; «Показать ещё» раскрывает остальные.
+        const total = groups.reduce(function (a, g) { return a + g.items.length; }, 0);
+        let left = listExpanded ? Infinity : PREVIEW_COURSES;
         groups.forEach(function (g) {
+          const shown = g.items.slice(0, left);
+          if (!shown.length) return;
+          left -= shown.length;
           listEl.appendChild(elt('div', 'font-size:10px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:#6B7280;margin:8px 0 3px;', g.dir + ' (' + g.items.length + ')'));
-          g.items.forEach(function (c) {
+          shown.forEach(function (c) {
             const row = elt('div', 'display:flex;justify-content:space-between;gap:8px;font-size:12px;font-weight:700;color:#111827;padding:3px 2px;border-bottom:1px solid #F3F4F6;');
             row.appendChild(elt('span', 'min-width:0;', c.course_name));
             row.appendChild(elt('span', 'flex:0 0 auto;color:#6B7280;font-weight:600;', pcMoney(+c.price_from)));
             listEl.appendChild(row);
           });
         });
-        const cp = elt('div', 'margin-top:9px;text-align:center;background:#fff;color:' + ACC + ';border:1.5px solid ' + ACC_BD + ';font-weight:800;font-size:12px;padding:7px 0;border-radius:8px;cursor:pointer;', '📋 Скопировать список для студента');
+        if (total > PREVIEW_COURSES) {
+          const more = elt('div', 'margin-top:6px;text-align:center;color:' + ACC + ';font-weight:800;font-size:11.5px;padding:4px 0;cursor:pointer;',
+            listExpanded ? '▲ Свернуть' : '▼ Показать ещё (' + (total - PREVIEW_COURSES) + ')');
+          more.onclick = function () { listExpanded = !listExpanded; drawList(); };
+          listEl.appendChild(more);
+        }
+        const cp =elt('div', 'margin-top:9px;text-align:center;background:#fff;color:' + ACC + ';border:1.5px solid ' + ACC_BD + ';font-weight:800;font-size:12px;padding:7px 0;border-radius:8px;cursor:pointer;', '📋 Скопировать список для студента');
         cp.onclick = function () { copyText(studentMessage(info, groups)); toast('Список для студента скопирован'); };
         listEl.appendChild(cp);
       };
