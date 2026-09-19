@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.36.2
+// @version      1.37.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -1399,6 +1399,10 @@
     const dealSelect = el('select', S.input);
     dealSelect.style.cssText += 'font-weight:800;background:#fff;font-size:12.5px;padding:8px 10px;border:1.5px solid #EF4444;';
     dealPick.appendChild(dealSelect);
+    const dealChecksHdr = el('div', 'font-size:10.5px;font-weight:800;color:#7F1D1D;margin:9px 0 3px;', 'Апгрейд — отметь заявки, которые объединить:');
+    dealPick.appendChild(dealChecksHdr);
+    const dealChecks = el('div', 'display:flex;flex-direction:column;gap:4px;');
+    dealPick.appendChild(dealChecks);
     const bSumDeals = el('button', S.small, '➕ Это апгрейд — сложить суммы заявок');
     bSumDeals.style.cssText += 'background:#fff;color:#B91C1C;border:1.5px solid #EF4444;font-weight:800;margin-top:7px;';
     dealPick.appendChild(bSumDeals);
@@ -1466,6 +1470,45 @@
     // Грубая «база» названия курса — без слова «тариф …» и знаков, для сравнения «один курс или разные».
     const courseBase = s => String(s || '').toLowerCase().replace(/ё/g, 'е')
       .replace(/тариф.*$/, '').replace(/[^а-яa-z0-9]+/g, ' ').trim();
+    // Какие заявки объединяем (апгрейд). По умолчанию отмечены заявки того же курса, что выбран
+    // в списке (тарифы одного курса); куратор может отметить/снять любые. mergeTouched — если
+    // куратор уже сам менял галочки, при смене курса в списке их не сбрасываем.
+    let mergeIds = new Set(), mergeKey = '', mergeTouched = false;
+    const mergeDefault = () => {
+      const ds = T.deals || [];
+      const main = ds.find(d => d.id === dealSelect.value) || ds[0];
+      const base = main ? courseBase(main.course) : '';
+      const same = base ? ds.filter(d => courseBase(d.course) === base) : [];
+      return new Set(same.length >= 2 ? same.map(d => d.id) : []);
+    };
+    const mergeSelected = () => (T.deals || []).filter(d => mergeIds.has(d.id));
+    const updateMergeBtn = () => {
+      const sel = mergeSelected();
+      const total = sel.reduce((a, d) => a + dealAmt(d), 0);
+      bSumDeals.textContent = sel.length >= 2
+        ? '➕ Объединить ' + sel.length + ' заявки — сложить суммы (' + total.toLocaleString('ru-RU') + ' ₽)'
+        : '➕ Отметь минимум 2 заявки, чтобы объединить';
+    };
+    const renderDealChecks = () => {
+      dealChecks.innerHTML = '';
+      (T.deals || []).forEach(d => {
+        const amt = dealAmt(d);
+        const row = el('label', 'display:flex;align-items:flex-start;gap:7px;font-size:11px;font-weight:700;color:#111827;cursor:pointer;line-height:1.35;background:#fff;border:1px solid #FCA5A5;border-radius:9px;padding:5px 8px;');
+        const cb = el('input', 'margin:2px 0 0;flex:0 0 auto;cursor:pointer;');
+        cb.type = 'checkbox';
+        cb.checked = mergeIds.has(d.id);
+        cb.addEventListener('change', () => {
+          mergeTouched = true;
+          if (cb.checked) mergeIds.add(d.id); else mergeIds.delete(d.id);
+          updateMergeBtn();
+        });
+        row.appendChild(cb);
+        row.appendChild(el('span', 'flex:1 1 auto;min-width:0;', (d.course || 'курс?') + '  ·  ' +
+          (amt ? amt.toLocaleString('ru-RU') + ' ₽' : '—') + (d.purchaseDate ? '  ·  ' + d.purchaseDate : '')));
+        dealChecks.appendChild(row);
+      });
+      updateMergeBtn();
+    };
     const renderDealPick = () => {
       const ds = T.deals || [];
       if (ds.length < 2) { dealPick.style.display = 'none'; return; }
@@ -1478,34 +1521,41 @@
         const o = el('option', null, label); o.value = d.id; dealSelect.appendChild(o);
       });
       dealSelect.value = ds.some(d => d.id === T.dealId) ? T.dealId : ds[0].id;
-      const total = ds.reduce((a, d) => a + dealAmt(d), 0);
+      const key = ds.map(d => d.id).join(',');
+      if (key !== mergeKey) { mergeKey = key; mergeTouched = false; mergeIds = mergeDefault(); }
+      renderDealChecks();
       const oneCourse = new Set(ds.map(d => courseBase(d.course)).filter(Boolean)).size <= 1;
       dealHint.style.color = '#7F1D1D';
-      dealHint.textContent = (oneCourse
-        ? '🔼 Похоже на АПГРЕЙД одного курса (докупка тарифа). Тогда для таблицы суммы заявок СКЛАДЫВАЕМ — жми кнопку ниже.'
-        : 'Курсы РАЗНЫЕ — выбери в списке тот, на который просят возврат.') +
-        '\nЕсли всё же апгрейд одного курса — «сложить суммы» = ' + total.toLocaleString('ru-RU') + ' ₽.';
-      bSumDeals.textContent = '➕ Это апгрейд — сложить суммы (' + total.toLocaleString('ru-RU') + ' ₽)';
+      dealHint.textContent = oneCourse
+        ? '🔼 Похоже на АПГРЕЙД одного курса (докупка тарифа) — заявки отмечены галочками. Проверь и жми кнопку ниже: суммы сложатся.'
+        : 'Курсы РАЗНЫЕ — выбери в списке курс, на который просят возврат. Если часть заявок — апгрейд одного курса, отметь их галочками и объедини.';
     };
     dealSelect.addEventListener('change', () => {
       const d = (T.deals || []).find(x => x.id === dealSelect.value);
       if (!d) return;
       T.dealId = d.id; saveCase();
+      if (!mergeTouched) { mergeIds = mergeDefault(); renderDealChecks(); }
       applyDeal(d, { refetch: true });
     });
-    // Апгрейд: берём самую дорогую заявку как основной курс, а «Сумму оплаты» = сумма всех заявок.
+    // Апгрейд: объединяем ОТМЕЧЕННЫЕ заявки — самая дорогая из них становится основным курсом,
+    // «Сумма оплаты» = сумма отмеченных.
     bSumDeals.onclick = () => {
-      const ds = T.deals || [];
-      if (ds.length < 2) return;
-      const total = ds.reduce((a, d) => a + dealAmt(d), 0);
-      const main = ds.slice().sort((a, b) => dealAmt(b) - dealAmt(a))[0];
+      const sel = mergeSelected();
+      if (sel.length < 2) {
+        dealHint.textContent = '⚠️ Отметь галочками минимум 2 заявки, которые нужно объединить.';
+        dealHint.style.color = '#B91C1C';
+        return;
+      }
+      const total = sel.reduce((a, d) => a + dealAmt(d), 0);
+      const main = sel.slice().sort((a, b) => dealAmt(b) - dealAmt(a))[0];
       T.dealId = main.id; saveCase();
+      dealSelect.value = main.id;
       applyDeal(main, { refetch: true });
       T.amount = String(total);
       if (inputs.amount) inputs.amount.value = T.amount;
       renderAmoCard(); saveCase();
-      dealHint.textContent = '✓ Сложены ' + ds.length + ' заявки = ' + total.toLocaleString('ru-RU') +
-        ' ₽ → в «Сумму оплаты». Основной курс — «' + (main.course || '?') + '». Проверь курс и сумму.';
+      dealHint.textContent = '✓ Объединены ' + sel.length + ' заявки (' + sel.map(d => d.course || 'курс?').join(' + ') + ') = ' +
+        total.toLocaleString('ru-RU') + ' ₽ → в «Сумму оплаты». Основной курс — «' + (main.course || '?') + '». Проверь курс и сумму.';
       dealHint.style.color = '#166534';
     };
 
@@ -2091,7 +2141,7 @@
         const manyCourses = (T.deals || []).length > 1;
         statusBox.style.fontWeight = manyCourses ? '800' : '';
         if (manyCourses) {
-          statusBox.textContent = '🚨 В АМО ' + T.deals.length + ' ЗАЯВКИ — в красном блоке «Данные из амо» реши: апгрейд одного курса (сложить суммы) или разные курсы (выбрать)' +
+          statusBox.textContent = '🚨 В АМО ' + T.deals.length + ' ЗАЯВКИ — в красном блоке «Данные из амо» реши: апгрейд (отметь заявки, которые объединить) или разные курсы (выбери нужный)' +
             (d.amoId ? ' · сделка ' + d.amoId : '');
           statusBox.style.color = '#B91C1C';
         } else if (!what.length) {
