@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.26.0
+// @version      1.27.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -17,6 +17,7 @@
 // @connect      amocrm.ru
 // @connect      eduson.tv
 // @connect      docs.google.com
+// @connect      assets.eduson.academy
 // @connect      app.notion.com
 // @connect      notion.com
 // @connect      notion.so
@@ -6977,10 +6978,10 @@
   /* ==================== ВКЛАДКА «КУРСЫ» — под-вкладки: Урок | Прогресс 80 | Добавить курс ==================== */
   var _coursesSub = 'lesson';
   function renderCourses(body) {
-    const bar = elt('div', 'display:flex;gap:6px;margin-bottom:9px;');
+    const bar = elt('div', 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:9px;');
     const inner = elt('div', '');
-    const tCss = 'flex:1;text-align:center;cursor:pointer;font-weight:800;font-size:10.5px;padding:6px 3px;border-radius:8px;border:1.5px solid ' + ACC_BD + ';color:' + ACC + ';white-space:nowrap;';
-    const defs = [['Урок', renderLesson, 'lesson'], ['Прогресс 80', renderProgress80, 'progress'], ['ПрогрессБлок', renderProgressBlock, 'block'], ['Добавить курс', renderAddCourse, 'add']];
+    const tCss = 'flex:1 1 auto;text-align:center;cursor:pointer;font-weight:800;font-size:10.5px;padding:6px 8px;border-radius:8px;border:1.5px solid ' + ACC_BD + ';color:' + ACC + ';white-space:nowrap;';
+    const defs = [['Урок', renderLesson, 'lesson'], ['Прогресс 80', renderProgress80, 'progress'], ['ПрогрессБлок', renderProgressBlock, 'block'], ['Добавить курс', renderAddCourse, 'add'], ['Подбор курса', renderPickCourse, 'pick']];
     const btns = defs.map(function (d) {
       const b = elt('div', tCss, d[0]);
       b.onclick = function () {
@@ -6995,8 +6996,217 @@
     btns.forEach(function (b) { bar.appendChild(b); });
     body.appendChild(bar);
     body.appendChild(inner);
-    const idx = { lesson: 0, progress: 1, block: 2, add: 3 }[_coursesSub] || 0;
+    const idx = { lesson: 0, progress: 1, block: 2, add: 3, pick: 4 }[_coursesSub] || 0;
     btns[idx].onclick();
+  }
+
+  /* ---------- под-вкладка «Подбор курса» (акция 1+1) ----------
+     Студент просит «подключите мне курс X»: сверяем цену курса с бюджетом из амо.
+     Цены — публичный каталог сайта assets.eduson.academy/prices_api/catalogue.json
+     (course_name, product_url, price_from = итог со скидкой, price_per_month_from × installment_period_months).
+     Бюджет — выигранные сделки амо с бюджетом > 0 (галочками выбираем, какие складывать:
+     доплаты / два курса сразу). */
+  const CATALOGUE_URL = 'https://assets.eduson.academy/prices_api/catalogue.json';
+  let _catalogCache = null;
+  async function loadCatalogue() {
+    if (_catalogCache) return _catalogCache;
+    const txt = await gmText(CATALOGUE_URL + '?_cb=' + Date.now());
+    let j;
+    try { j = JSON.parse(txt); } catch (e) { throw new Error('каталог цен не разобрался'); }
+    const list = ((j && j.courses) || []).filter(function (c) { return c && c.course_name && +c.price_from > 0; });
+    if (!list.length) throw new Error('каталог цен пустой');
+    _catalogCache = list;
+    return list;
+  }
+  function pcNorm(s) {
+    return String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9]+/g, ' ').trim();
+  }
+  // Ссылка/слаг → точное совпадение по product_url; иначе — поиск по названию (по основам слов,
+  // чтобы «ландшафтного дизайнера» находило «Ландшафтный дизайнер»).
+  function pcFind(list, q) {
+    q = String(q || '').trim();
+    if (!q) return [];
+    const m = q.match(/eduson\.academy\/([a-z0-9_\-]+)/i) || (/^[a-z0-9_\-]+$/i.test(q) ? [null, q] : null);
+    if (m) {
+      const slug = m[1].toLowerCase();
+      const byUrl = list.filter(function (c) { return String(c.product_url || '').toLowerCase().replace(/[?#].*$/, '').replace(/\/+$/, '').split('/').pop() === slug; });
+      if (byUrl.length || /eduson\.academy/i.test(q)) return byUrl;
+    }
+    const stems = pcNorm(q).split(' ').filter(Boolean).map(function (t) { return t.length > 5 ? t.slice(0, Math.max(5, t.length - 4)) : t; });
+    if (!stems.length) return [];
+    return list.map(function (c) {
+      const n = pcNorm(c.course_name);
+      if (!stems.every(function (s) { return n.indexOf(s) !== -1; })) return null;
+      return { c: c, score: (n === pcNorm(q) ? -1000 : 0) + n.length };
+    }).filter(Boolean).sort(function (a, b) { return a.score - b.score; }).slice(0, 10).map(function (x) { return x.c; });
+  }
+  function pcMoney(n) { return Math.round(n).toLocaleString('ru-RU') + ' ₽'; }
+  function pcDate(ts) {
+    if (!ts) return '';
+    const d = new Date(ts * 1000);
+    return String(d.getDate()).padStart(2, '0') + '.' + String(d.getMonth() + 1).padStart(2, '0') + '.' + d.getFullYear();
+  }
+  // Выигранные сделки клиента с бюджетом > 0 (свежие первыми).
+  async function pcLoadDeals() {
+    const ids = await amoAllDealIds();
+    if (!ids.length) return [];
+    const res = await Promise.all(ids.slice(0, 25).map(function (id) {
+      return gmFetch('https://eduson.amocrm.ru/api/v4/leads/' + id).catch(function (e) { return e && e.message === 'NOAUTH' ? { __noauth: true } : null; });
+    }));
+    if (res.some(function (r) { return r && r.__noauth; })) throw new Error('NOAUTH');
+    const out = [];
+    res.forEach(function (l) {
+      if (!l || !l.id || l.status_id !== 142 || !(+l.price > 0)) return;
+      const f = (l.custom_fields_values || []).find(function (x) { return /^(Продукт для шаблонов|Категория продукта)$/i.test(x.field_name || ''); });
+      const course = f && f.values && f.values[0] && String(f.values[0].value || '').trim();
+      out.push({ id: String(l.id), name: course || String(l.name || ('сделка ' + l.id)).replace(/\s+/g, ' ').trim(), price: +l.price, closedAt: l.closed_at || 0 });
+    });
+    out.sort(function (a, b) { return b.closedAt - a.closedAt; });
+    return out;
+  }
+
+  function renderPickCourse(body) {
+    body.appendChild(elt('div', 'font-weight:800;font-size:13px;margin-bottom:2px;', 'Подбор курса (акция 1+1)'));
+    body.appendChild(elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;line-height:1.4;', 'Цена курса из каталога сайта против бюджета студента из амо.'));
+
+    // ── бюджет ──
+    body.appendChild(elt('div', fieldLabel, 'Бюджет студента'));
+    const dealsBox = elt('div', 'display:flex;flex-direction:column;gap:4px;');
+    const dealsNote = elt('div', 'font-size:11px;color:#9CA3AF;font-weight:600;', 'Ищу оплаченные сделки в амо…');
+    body.appendChild(dealsNote);
+    body.appendChild(dealsBox);
+    const budgetInput = elt('input', inputCss + 'margin-top:6px;font-weight:800;font-size:14px;');
+    budgetInput.placeholder = 'бюджет, ₽ (можно вписать вручную)';
+    body.appendChild(budgetInput);
+
+    // ── курс ──
+    body.appendChild(elt('div', fieldLabel, 'Курс — ссылка с сайта или название'));
+    const q = elt('input', inputCss);
+    q.type = 'search';
+    q.placeholder = 'https://eduson.academy/… или «ландшафтный дизайнер»';
+    body.appendChild(q);
+    const listBox = elt('div', 'margin-top:4px;border:1px solid #EEF2F5;border-radius:9px;display:none;max-height:210px;overflow:auto;');
+    body.appendChild(listBox);
+    const result = elt('div', 'margin-top:9px;');
+    body.appendChild(result);
+    const statusEl = elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;margin-top:8px;', 'Загружаю каталог цен…');
+    body.appendChild(statusEl);
+
+    let catalog = null, chosen = null, deals = [];
+    const checked = {};
+    const budget = function () { return parseInt(String(budgetInput.value || '').replace(/\D/g, ''), 10) || 0; };
+
+    function showResult() {
+      result.innerHTML = '';
+      if (!chosen) return;
+      const c = chosen, price = +c.price_from, per = +c.price_per_month_from, months = +c.installment_period_months;
+      const card = elt('div', 'border:1px solid ' + ACC_BD + ';background:#F0F9FF;border-radius:12px;padding:10px 12px;');
+      card.appendChild(elt('div', 'font-size:11px;color:#6B7280;font-weight:700;line-height:1.35;', [c.type, c.duration].filter(Boolean).join(' · ')));
+      card.appendChild(elt('div', 'font-weight:900;font-size:15px;color:' + ACC_DEEP + ';margin-top:2px;', c.course_name));
+      card.appendChild(elt('div', 'font-weight:900;font-size:20px;color:#111827;margin-top:6px;', pcMoney(price)));
+      if (per > 0 && months > 0) card.appendChild(elt('div', 'font-size:11px;color:#6B7280;font-weight:700;margin-top:1px;', pcMoney(per) + ' × ' + months + ' мес.'));
+      const b = budget();
+      if (!b) {
+        card.appendChild(elt('div', 'font-size:12px;color:#B45309;font-weight:800;margin-top:8px;', 'Впиши бюджет студента выше — сравню.'));
+      } else {
+        const diff = b - price;
+        const ok = diff >= 0;
+        card.appendChild(elt('div', 'font-size:14px;font-weight:900;margin-top:8px;color:' + (ok ? '#166534' : '#B91C1C') + ';',
+          ok ? ('✅ Подходит — останется ' + pcMoney(diff)) : ('❌ Не хватает ' + pcMoney(-diff))));
+        card.appendChild(elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;margin-top:2px;', 'Бюджет ' + pcMoney(b) + ' − курс ' + pcMoney(price)));
+      }
+      if (c.product_url) {
+        const btn = elt('div', 'display:inline-block;margin-top:9px;background:#fff;color:' + ACC + ';border:1.5px solid ' + ACC_BD + ';font-weight:800;font-size:11px;padding:5px 10px;border-radius:8px;cursor:pointer;', '📋 Скопировать ссылку');
+        btn.onclick = function () { copyText(c.product_url); toast('Ссылка на курс скопирована'); };
+        card.appendChild(btn);
+      }
+      result.appendChild(card);
+    }
+
+    function drawList(found) {
+      listBox.innerHTML = '';
+      if (found.length <= 1) { listBox.style.display = 'none'; return; }
+      listBox.style.display = 'block';
+      found.forEach(function (c) {
+        const row = elt('div', 'padding:6px 9px;cursor:pointer;border-bottom:1px solid #F3F4F6;font-size:12px;font-weight:700;color:#111827;');
+        row.appendChild(document.createTextNode(c.course_name));
+        row.appendChild(elt('span', 'color:#9CA3AF;font-weight:600;margin-left:6px;', pcMoney(+c.price_from)));
+        row.onmouseenter = function () { row.style.background = '#F0F9FF'; };
+        row.onmouseleave = function () { row.style.background = 'transparent'; };
+        row.onclick = function () { chosen = c; listBox.style.display = 'none'; showResult(); };
+        listBox.appendChild(row);
+      });
+    }
+
+    function onQuery() {
+      if (!catalog) return;
+      const val = q.value.trim();
+      chosen = null;
+      if (!val) { listBox.style.display = 'none'; result.innerHTML = ''; return; }
+      const found = pcFind(catalog, val);
+      if (!found.length) {
+        listBox.style.display = 'none';
+        result.innerHTML = '';
+        result.appendChild(elt('div', 'font-size:12px;color:#B45309;font-weight:800;', /eduson\.academy/i.test(val)
+          ? 'Этого курса нет в каталоге цен. Возможно, страница закрытая — цену посмотри на сайте.'
+          : 'Не нашла такой курс. Попробуй другое слово из названия или вставь ссылку.'));
+        return;
+      }
+      if (found.length === 1) { chosen = found[0]; listBox.style.display = 'none'; showResult(); return; }
+      result.innerHTML = '';
+      drawList(found);
+    }
+    q.addEventListener('input', onQuery);
+    budgetInput.addEventListener('input', showResult);
+
+    function renderDeals() {
+      dealsBox.innerHTML = '';
+      deals.forEach(function (d) {
+        const row = elt('label', 'display:flex;align-items:flex-start;gap:7px;font-size:11.5px;font-weight:700;color:#111827;cursor:pointer;line-height:1.35;background:#fff;border:1px solid #E5E7EB;border-radius:9px;padding:5px 8px;');
+        const cb = elt('input', 'margin:2px 0 0;flex:0 0 auto;cursor:pointer;');
+        cb.type = 'checkbox';
+        cb.checked = !!checked[d.id];
+        cb.addEventListener('change', function () { checked[d.id] = cb.checked; syncBudget(); });
+        row.appendChild(cb);
+        row.appendChild(elt('span', 'flex:1 1 auto;min-width:0;', d.name + '  ·  ' + pcMoney(d.price) + (d.closedAt ? '  ·  ' + pcDate(d.closedAt) : '')));
+        dealsBox.appendChild(row);
+      });
+    }
+    function syncBudget() {
+      const sum = deals.reduce(function (a, d) { return a + (checked[d.id] ? d.price : 0); }, 0);
+      budgetInput.value = sum ? String(Math.round(sum)) : '';
+      showResult();
+    }
+
+    loadCatalogue().then(function (list) {
+      catalog = list;
+      statusEl.textContent = 'В каталоге ' + list.length + ' курсов.';
+      onQuery();
+    }).catch(function (e) {
+      statusEl.style.color = '#B45309';
+      statusEl.textContent = '🙀 Не получилось загрузить каталог цен (' + ((e && e.message) || 'сеть') + '). Обнови вкладку или посмотри цену на сайте.';
+    });
+
+    pcLoadDeals().then(function (list) {
+      deals = list;
+      if (!deals.length) {
+        dealsNote.textContent = 'Оплаченных сделок в амо не нашла — впиши бюджет вручную.';
+        return;
+      }
+      dealsNote.textContent = deals.length > 1
+        ? 'Найдено сделок: ' + deals.length + '. Отметь те, что складываем в бюджет (доплата, второй курс):'
+        : 'Оплаченная сделка:';
+      // по умолчанию: самая свежая + те, что закрыты в пределах месяца от неё (доплаты / второй курс сразу)
+      const newest = deals[0].closedAt;
+      deals.forEach(function (d) { checked[d.id] = !newest || !d.closedAt || (newest - d.closedAt) <= 31 * 86400; });
+      renderDeals();
+      syncBudget();
+    }).catch(function (e) {
+      dealsNote.style.color = '#B45309';
+      dealsNote.textContent = (e && e.message === 'NOAUTH')
+        ? '🙀 amo не пустило — открой eduson.amocrm.ru в соседней вкладке, войди и открой вкладку снова. Бюджет можно вписать вручную.'
+        : '🙀 Сделки не прочитались — впиши бюджет вручную.';
+    });
   }
 
   /* ---------- под-вкладка «Добавить курс» ---------- */
