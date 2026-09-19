@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.28.0
+// @version      1.28.1
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -7206,6 +7206,10 @@
       if (!info.b) { allBox.appendChild(elt('div', 'font-size:11.5px;color:#B45309;font-weight:800;', 'Впиши бюджет студента выше — покажу, что подходит.')); return; }
       if (!info.fit.length) { allBox.appendChild(elt('div', 'font-size:11.5px;color:#B91C1C;font-weight:800;', 'В рамках ' + pcMoney(info.b) + ' курсов не нашла.')); return; }
       allBox.appendChild(elt('div', 'font-size:11.5px;font-weight:800;color:#1F2937;', 'Подходит курсов: ' + info.fit.length + ' из ' + catalog.length + '. Отметь направления для списка:'));
+      const selAll = elt('div', 'display:inline-block;margin-top:6px;background:#fff;color:' + ACC + ';border:1.5px solid ' + ACC_BD + ';font-weight:800;font-size:11px;padding:4px 10px;border-radius:8px;cursor:pointer;', 'Выбрать все');
+      allBox.appendChild(selAll);
+      const cbs = [];
+      const syncSelAll = function () { selAll.textContent = info.dirs.every(function (d) { return pickedDirs[d]; }) ? 'Снять все' : 'Выбрать все'; };
       const dirsBox = elt('div', 'display:flex;flex-direction:column;gap:4px;margin-top:6px;');
       const listEl = elt('div', 'margin-top:8px;');
       const drawList = function () {
@@ -7230,14 +7234,23 @@
         const cb = elt('input', 'margin:0;flex:0 0 auto;cursor:pointer;');
         cb.type = 'checkbox';
         cb.checked = !!pickedDirs[d];
-        cb.addEventListener('change', function () { pickedDirs[d] = cb.checked; drawList(); });
+        cb.addEventListener('change', function () { pickedDirs[d] = cb.checked; syncSelAll(); drawList(); });
+        cbs.push(cb);
         row.appendChild(cb);
         row.appendChild(elt('span', 'flex:1 1 auto;', d));
         row.appendChild(elt('span', 'flex:0 0 auto;color:#9CA3AF;font-weight:600;', String(info.count[d])));
         dirsBox.appendChild(row);
       });
+      selAll.onclick = function () {
+        const on = !info.dirs.every(function (d) { return pickedDirs[d]; });
+        info.dirs.forEach(function (d) { pickedDirs[d] = on; });
+        cbs.forEach(function (cb) { cb.checked = on; });
+        syncSelAll();
+        drawList();
+      };
       allBox.appendChild(dirsBox);
       allBox.appendChild(listEl);
+      syncSelAll();
       drawList();
     }
     allBtn.onclick = function () { allOpen = !allOpen; renderAll(); };
