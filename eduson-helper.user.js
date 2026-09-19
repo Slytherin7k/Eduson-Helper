@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.28.2
+// @version      1.28.3
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -7164,7 +7164,7 @@
     body.appendChild(allBox);
     const pickedDirs = {};
     const PREVIEW_COURSES = 3;
-    let allOpen = false, listExpanded = false;
+    let allOpen = false, listExpanded = false, dirsOpen = false;
     const dirsOf = function (c) { return (c.groups && c.groups.length) ? c.groups : [NO_DIR]; };
     const courseKey = function (c) { return c.product_url || c.course_name; };
     function fitInfo() {
@@ -7206,17 +7206,30 @@
       const info = fitInfo();
       if (!info.b) { allBox.appendChild(elt('div', 'font-size:11.5px;color:#B45309;font-weight:800;', 'Впиши бюджет студента выше — покажу, что подходит.')); return; }
       if (!info.fit.length) { allBox.appendChild(elt('div', 'font-size:11.5px;color:#B91C1C;font-weight:800;', 'В рамках ' + pcMoney(info.b) + ' курсов не нашла.')); return; }
-      allBox.appendChild(elt('div', 'font-size:11.5px;font-weight:800;color:#1F2937;', 'Подходит курсов: ' + info.fit.length + ' из ' + catalog.length + '. Отметь направления для списка:'));
-      const selAll = elt('div', 'display:inline-block;margin-top:6px;background:#fff;color:' + ACC + ';border:1.5px solid ' + ACC_BD + ';font-weight:800;font-size:11px;padding:4px 10px;border-radius:8px;cursor:pointer;', 'Выбрать все');
-      allBox.appendChild(selAll);
+      allBox.appendChild(elt('div', 'font-size:11.5px;font-weight:800;color:#1F2937;', 'Подходит курсов: ' + info.fit.length + ' из ' + catalog.length + '.'));
+      // Направления спрятаны за кнопкой — раскрываются по клику.
+      const dirsToggle = elt('div', 'margin-top:6px;background:#fff;color:' + ACC + ';border:1.5px solid ' + ACC_BD + ';font-weight:800;font-size:12px;padding:7px 10px;border-radius:8px;cursor:pointer;', '');
+      const dirsWrap = elt('div', 'margin-top:6px;display:' + (dirsOpen ? 'block' : 'none') + ';');
+      allBox.appendChild(dirsToggle);
+      allBox.appendChild(dirsWrap);
+      const selAll = elt('div', 'display:inline-block;background:#fff;color:' + ACC + ';border:1.5px solid ' + ACC_BD + ';font-weight:800;font-size:11px;padding:4px 10px;border-radius:8px;cursor:pointer;', 'Выбрать все');
+      dirsWrap.appendChild(selAll);
       const cbs = [];
-      const syncSelAll = function () { selAll.textContent = info.dirs.every(function (d) { return pickedDirs[d]; }) ? 'Снять все' : 'Выбрать все'; };
+      const updateToggle = function () {
+        const n = info.dirs.filter(function (d) { return pickedDirs[d]; }).length;
+        dirsToggle.textContent = (dirsOpen ? '▲ ' : '▼ ') + 'Направления' + (n ? ' — выбрано ' + n : '') + ' (' + info.dirs.length + ')';
+      };
+      dirsToggle.onclick = function () { dirsOpen = !dirsOpen; dirsWrap.style.display = dirsOpen ? 'block' : 'none'; updateToggle(); };
+      const syncSelAll = function () {
+        selAll.textContent = info.dirs.every(function (d) { return pickedDirs[d]; }) ? 'Снять все' : 'Выбрать все';
+        updateToggle();
+      };
       const dirsBox = elt('div', 'display:flex;flex-direction:column;gap:4px;margin-top:6px;');
       const listEl = elt('div', 'margin-top:8px;');
       const drawList = function () {
         listEl.innerHTML = '';
         const groups = pickedGroups(info);
-        if (!groups.length) { listEl.appendChild(elt('div', 'font-size:11px;color:#9CA3AF;font-weight:600;', 'Отметь хотя бы одно направление.')); return; }
+        if (!groups.length) { listEl.appendChild(elt('div', 'font-size:11px;color:#9CA3AF;font-weight:600;', 'Раскрой «Направления» и отметь нужные.')); return; }
         // Чтобы не занимать пол-экрана, показываем только 3 курса; «Показать ещё» раскрывает остальные.
         const total = groups.reduce(function (a, g) { return a + g.items.length; }, 0);
         let left = listExpanded ? Infinity : PREVIEW_COURSES;
@@ -7261,7 +7274,7 @@
         syncSelAll();
         drawList();
       };
-      allBox.appendChild(dirsBox);
+      dirsWrap.appendChild(dirsBox);
       allBox.appendChild(listEl);
       syncSelAll();
       drawList();
