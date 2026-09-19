@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.28.3
+// @version      1.28.4
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -7162,7 +7162,7 @@
     const allBox = elt('div', 'margin-top:8px;display:none;');
     body.appendChild(allBtn);
     body.appendChild(allBox);
-    const pickedDirs = {};
+    const pickedDirs = {}, seenDirs = {};
     const PREVIEW_COURSES = 3;
     let allOpen = false, listExpanded = false, dirsOpen = false;
     const dirsOf = function (c) { return (c.groups && c.groups.length) ? c.groups : [NO_DIR]; };
@@ -7206,6 +7206,8 @@
       const info = fitInfo();
       if (!info.b) { allBox.appendChild(elt('div', 'font-size:11.5px;color:#B45309;font-weight:800;', 'Впиши бюджет студента выше — покажу, что подходит.')); return; }
       if (!info.fit.length) { allBox.appendChild(elt('div', 'font-size:11.5px;color:#B91C1C;font-weight:800;', 'В рамках ' + pcMoney(info.b) + ' курсов не нашла.')); return; }
+      // Все направления отмечены по умолчанию; если куратор что-то снял — это запоминается, отмечаются только новые.
+      info.dirs.forEach(function (d) { if (!seenDirs[d]) { seenDirs[d] = true; pickedDirs[d] = true; } });
       allBox.appendChild(elt('div', 'font-size:11.5px;font-weight:800;color:#1F2937;', 'Подходит курсов: ' + info.fit.length + ' из ' + catalog.length + '.'));
       // Направления спрятаны за кнопкой — раскрываются по клику.
       const dirsToggle = elt('div', 'margin-top:6px;background:#fff;color:' + ACC + ';border:1.5px solid ' + ACC_BD + ';font-weight:800;font-size:12px;padding:7px 10px;border-radius:8px;cursor:pointer;', '');
