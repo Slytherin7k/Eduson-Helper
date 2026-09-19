@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.25.3
+// @version      1.26.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -3458,6 +3458,113 @@
     document.documentElement.appendChild(box);
     setTimeout(function () { box.remove(); }, ms || 9000);
   }
+  /* ---------- уведомление «поддержка закончилась» ---------- */
+  // Дата обращения = самое раннее сообщение студента в обращении (json-messages);
+  // если не получилось достать — сегодняшняя дата. Поддержка закончилась, если дата
+  // окончания в поле «ДАТА ПОДДЕРЖКИ» РАНЬШЕ даты обращения (13.05 обращение, 12.05 поддержка).
+  let _supCase = '', _supReq = null, _supLoading = false, _supShownKey = '';
+  function parseDMY(s) {
+    const m = String(s || '').match(/(\d{1,2})\.(\d{1,2})\.(\d{4})/);
+    return m ? new Date(+m[3], +m[2] - 1, +m[1]) : null;
+  }
+  function fmtDMY(d) {
+    return String(d.getDate()).padStart(2, '0') + '.' + String(d.getMonth() + 1).padStart(2, '0') + '.' + d.getFullYear();
+  }
+  function omniRecordId() {
+    for (let i = 0; i < document.scripts.length; i++) {
+      const mm = (document.scripts[i].textContent || '').match(/json-messages\/(\d+)/);
+      if (mm) return mm[1];
+    }
+    const mm = document.documentElement.innerHTML.match(/json-messages\/(\d+)/);
+    return mm ? mm[1] : '';
+  }
+  function closeSupportAlert() {
+    const old = document.getElementById('eduson-support-alert');
+    if (old) old.remove();
+  }
+  function showSupportAlert(supDate, reqDate) {
+    closeSupportAlert();
+    if (!document.getElementById('eduson-support-alert-css')) {
+      const st = document.createElement('style');
+      st.id = 'eduson-support-alert-css';
+      st.textContent = '@keyframes edSupPulse{0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,.75),0 24px 70px rgba(0,0,0,.45)}50%{box-shadow:0 0 0 22px rgba(220,38,38,0),0 24px 70px rgba(0,0,0,.45)}}' +
+        '@keyframes edSupPop{0%{transform:scale(.6);opacity:0}70%{transform:scale(1.05);opacity:1}100%{transform:scale(1)}}';
+      document.head.appendChild(st);
+    }
+    const days = Math.max(1, Math.round((reqDate - supDate) / 86400000));
+    const back = document.createElement('div');
+    back.id = 'eduson-support-alert';
+    back.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(127,29,29,.62);display:flex;align-items:center;justify-content:center;padding:20px;font-family:' + HP_FONT + ';';
+    const card = document.createElement('div');
+    card.style.cssText = 'background:#fff;border:8px solid #DC2626;border-radius:28px;max-width:560px;width:100%;padding:28px 30px 26px;text-align:center;animation:edSupPop .35s ease-out,edSupPulse 1.4s ease-in-out .35s infinite;';
+    const ic = document.createElement('div');
+    ic.style.cssText = 'font-size:64px;line-height:1;margin-bottom:10px;';
+    ic.textContent = '🚨';
+    const t = document.createElement('div');
+    t.style.cssText = 'font-size:30px;font-weight:900;color:#B91C1C;line-height:1.15;letter-spacing:.3px;';
+    t.textContent = 'У СТУДЕНТА ЗАКОНЧИЛАСЬ ПОДДЕРЖКА';
+    const d1 = document.createElement('div');
+    d1.style.cssText = 'font-size:18px;font-weight:800;color:#111827;margin-top:16px;line-height:1.5;';
+    d1.textContent = 'Поддержка была до ' + fmtDMY(supDate);
+    const d2 = document.createElement('div');
+    d2.style.cssText = 'font-size:18px;font-weight:800;color:#111827;line-height:1.5;';
+    d2.textContent = 'Обращение: ' + fmtDMY(reqDate) + ' (позже на ' + days + ' дн.)';
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.style.cssText = 'margin-top:22px;background:#DC2626;color:#fff;border:none;border-radius:18px;padding:13px 40px;font-size:17px;font-weight:800;cursor:pointer;font-family:inherit;';
+    b.textContent = 'Понятно';
+    b.onclick = closeSupportAlert;
+    card.appendChild(ic); card.appendChild(t); card.appendChild(d1); card.appendChild(d2); card.appendChild(b);
+    back.appendChild(card);
+    back.onclick = function (e) { if (e.target === back) closeSupportAlert(); };
+    document.documentElement.appendChild(back);
+    const onKey = function (e) {
+      if (e.key === 'Escape') { closeSupportAlert(); document.removeEventListener('keydown', onKey, true); }
+    };
+    document.addEventListener('keydown', onKey, true);
+  }
+  function loadRequestDate(caseKey) {
+    _supLoading = true;
+    const done = function (d) {
+      _supLoading = false;
+      if (_supCase !== caseKey) return;
+      _supReq = d || new Date(new Date().setHours(0, 0, 0, 0));
+      try { checkSupportAlert(); } catch (e) {}
+    };
+    const rid = omniRecordId();
+    if (!rid) { done(null); return; }
+    fetch('/staff/json-messages/' + rid, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        const ms = (j && j.messages) || [];
+        const client = ms.filter(function (x) { return !x.staff_fullname && !x.b_note; });
+        const pool = client.length ? client : ms;
+        let best = null;
+        pool.forEach(function (x) {
+          const d = parseDMY(x.received_at);
+          const ts = +x.create_tstamp || 0;
+          if (d && (!best || (ts && ts < best.ts))) best = { d: d, ts: ts || Infinity };
+        });
+        done(best ? best.d : null);
+      })
+      .catch(function () { done(null); });
+  }
+  function checkSupportAlert() {
+    if (!IS_OMNI) return;
+    const m = location.pathname.match(/\/staff\/cases\/chat\/(\d+-\d+)/);
+    if (!m) { if (_supCase) { _supCase = ''; _supReq = null; _supShownKey = ''; closeSupportAlert(); } return; }
+    if (m[1] !== _supCase) { _supCase = m[1]; _supReq = null; _supLoading = false; _supShownKey = ''; closeSupportAlert(); }
+    const f = document.querySelector(OMNI_FIELDS.support);
+    const sup = parseDMY(f && (f.value || f.textContent));
+    if (!sup) return;
+    if (!_supReq) { if (!_supLoading) loadRequestDate(_supCase); return; }
+    if (sup >= _supReq) return;
+    const key = _supCase + '|' + fmtDMY(sup) + '|' + fmtDMY(_supReq);
+    if (key === _supShownKey) return;
+    _supShownKey = key;
+    showSupportAlert(sup, _supReq);
+  }
+
   /* ---------- запуск ---------- */
   // Раньше здесь крутился setInterval каждые 1.5 с — постоянная фоновая нагрузка,
   // даже когда на странице ничего не менялось. Теперь реагируем на реальные
@@ -3480,7 +3587,7 @@
   }
   if (IS_AMO || IS_OMNI) {
     console.log(TAG, 'запущен на', location.host, 'версия ' + VER);
-    keepSynced(function () { ensurePanel(); removeHelperBadge(); ensureHeaderButtons(); });
+    keepSynced(function () { ensurePanel(); removeHelperBadge(); ensureHeaderButtons(); checkSupportAlert(); });
   }
 
   /* ==================== МОДУЛЬ «Пинги и теги» (бывший Eduson Curator — Tools) ====================
