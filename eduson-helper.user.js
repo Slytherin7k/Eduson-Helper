@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.27.0
+// @version      1.28.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -7156,8 +7156,95 @@
       result.innerHTML = '';
       drawList(found);
     }
+    // ── все подходящие курсы: галочки ТОЛЬКО у направлений, курсы внутри — просто список ──
+    const NO_DIR = 'Другое';
+    const allBtn = elt('div', 'margin-top:12px;text-align:center;background:' + ACC + ';color:#fff;font-weight:800;font-size:12px;padding:8px 0;border-radius:8px;cursor:pointer;', '📚 Показать все подходящие курсы');
+    const allBox = elt('div', 'margin-top:8px;display:none;');
+    body.appendChild(allBtn);
+    body.appendChild(allBox);
+    const pickedDirs = {};
+    let allOpen = false;
+    const dirsOf = function (c) { return (c.groups && c.groups.length) ? c.groups : [NO_DIR]; };
+    const courseKey = function (c) { return c.product_url || c.course_name; };
+    function fitInfo() {
+      const b = budget();
+      const fit = (catalog && b) ? catalog.filter(function (c) { return +c.price_from <= b; }) : [];
+      const count = {};
+      fit.forEach(function (c) { dirsOf(c).forEach(function (d) { count[d] = (count[d] || 0) + 1; }); });
+      const dirs = Object.keys(count).sort(function (a, z) { return count[z] - count[a] || a.localeCompare(z, 'ru'); });
+      return { b: b, fit: fit, count: count, dirs: dirs };
+    }
+    // Отмеченные направления → [{dir, items}]; курс, входящий в несколько направлений, показываем один раз.
+    function pickedGroups(info) {
+      const used = {}, out = [];
+      info.dirs.forEach(function (d) {
+        if (!pickedDirs[d]) return;
+        const items = info.fit.filter(function (c) { return !used[courseKey(c)] && dirsOf(c).indexOf(d) !== -1; })
+          .sort(function (a, z) { return +a.price_from - +z.price_from; });
+        items.forEach(function (c) { used[courseKey(c)] = 1; });
+        if (items.length) out.push({ dir: d, items: items });
+      });
+      return out;
+    }
+    function studentMessage(info, groups) {
+      const lines = ['Здравствуйте! Подобрала для вас курсы, которые подходят по сумме вашей оплаты (до ' + pcMoney(info.b) + '):', ''];
+      groups.forEach(function (g) {
+        lines.push(g.dir);
+        g.items.forEach(function (c) { lines.push('• ' + c.course_name + ' — ' + pcMoney(+c.price_from) + (c.product_url ? '\n  ' + c.product_url : '')); });
+        lines.push('');
+      });
+      lines.push('Напишите, какой курс вам подходит, — мы его подключим.');
+      return lines.join('\n');
+    }
+    function renderAll() {
+      allBox.innerHTML = '';
+      allBox.style.display = allOpen ? 'block' : 'none';
+      allBtn.textContent = allOpen ? '📚 Скрыть список подходящих курсов' : '📚 Показать все подходящие курсы';
+      if (!allOpen) return;
+      if (!catalog) { allBox.appendChild(elt('div', 'font-size:11px;color:#9CA3AF;font-weight:600;', 'Каталог цен ещё грузится…')); return; }
+      const info = fitInfo();
+      if (!info.b) { allBox.appendChild(elt('div', 'font-size:11.5px;color:#B45309;font-weight:800;', 'Впиши бюджет студента выше — покажу, что подходит.')); return; }
+      if (!info.fit.length) { allBox.appendChild(elt('div', 'font-size:11.5px;color:#B91C1C;font-weight:800;', 'В рамках ' + pcMoney(info.b) + ' курсов не нашла.')); return; }
+      allBox.appendChild(elt('div', 'font-size:11.5px;font-weight:800;color:#1F2937;', 'Подходит курсов: ' + info.fit.length + ' из ' + catalog.length + '. Отметь направления для списка:'));
+      const dirsBox = elt('div', 'display:flex;flex-direction:column;gap:4px;margin-top:6px;');
+      const listEl = elt('div', 'margin-top:8px;');
+      const drawList = function () {
+        listEl.innerHTML = '';
+        const groups = pickedGroups(info);
+        if (!groups.length) { listEl.appendChild(elt('div', 'font-size:11px;color:#9CA3AF;font-weight:600;', 'Отметь хотя бы одно направление.')); return; }
+        groups.forEach(function (g) {
+          listEl.appendChild(elt('div', 'font-size:10px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:#6B7280;margin:8px 0 3px;', g.dir + ' (' + g.items.length + ')'));
+          g.items.forEach(function (c) {
+            const row = elt('div', 'display:flex;justify-content:space-between;gap:8px;font-size:12px;font-weight:700;color:#111827;padding:3px 2px;border-bottom:1px solid #F3F4F6;');
+            row.appendChild(elt('span', 'min-width:0;', c.course_name));
+            row.appendChild(elt('span', 'flex:0 0 auto;color:#6B7280;font-weight:600;', pcMoney(+c.price_from)));
+            listEl.appendChild(row);
+          });
+        });
+        const cp = elt('div', 'margin-top:9px;text-align:center;background:#fff;color:' + ACC + ';border:1.5px solid ' + ACC_BD + ';font-weight:800;font-size:12px;padding:7px 0;border-radius:8px;cursor:pointer;', '📋 Скопировать список для студента');
+        cp.onclick = function () { copyText(studentMessage(info, groups)); toast('Список для студента скопирован'); };
+        listEl.appendChild(cp);
+      };
+      info.dirs.forEach(function (d) {
+        const row = elt('label', 'display:flex;align-items:center;gap:7px;font-size:12px;font-weight:700;color:#111827;cursor:pointer;background:#fff;border:1px solid #E5E7EB;border-radius:9px;padding:5px 8px;');
+        const cb = elt('input', 'margin:0;flex:0 0 auto;cursor:pointer;');
+        cb.type = 'checkbox';
+        cb.checked = !!pickedDirs[d];
+        cb.addEventListener('change', function () { pickedDirs[d] = cb.checked; drawList(); });
+        row.appendChild(cb);
+        row.appendChild(elt('span', 'flex:1 1 auto;', d));
+        row.appendChild(elt('span', 'flex:0 0 auto;color:#9CA3AF;font-weight:600;', String(info.count[d])));
+        dirsBox.appendChild(row);
+      });
+      allBox.appendChild(dirsBox);
+      allBox.appendChild(listEl);
+      drawList();
+    }
+    allBtn.onclick = function () { allOpen = !allOpen; renderAll(); };
+    const refreshAll = function () { if (allOpen) renderAll(); };
+
     q.addEventListener('input', onQuery);
-    budgetInput.addEventListener('input', showResult);
+    budgetInput.addEventListener('input', function () { showResult(); refreshAll(); });
 
     function renderDeals() {
       dealsBox.innerHTML = '';
@@ -7176,12 +7263,14 @@
       const sum = deals.reduce(function (a, d) { return a + (checked[d.id] ? d.price : 0); }, 0);
       budgetInput.value = sum ? String(Math.round(sum)) : '';
       showResult();
+      refreshAll();
     }
 
     loadCatalogue().then(function (list) {
       catalog = list;
       statusEl.textContent = 'В каталоге ' + list.length + ' курсов.';
       onQuery();
+      refreshAll();
     }).catch(function (e) {
       statusEl.style.color = '#B45309';
       statusEl.textContent = '🙀 Не получилось загрузить каталог цен (' + ((e && e.message) || 'сеть') + '). Обнови вкладку или посмотри цену на сайте.';
