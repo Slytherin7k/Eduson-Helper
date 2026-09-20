@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.29.0
+// @version      1.29.1
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -7802,8 +7802,10 @@
   /* ---------- под-вкладка «Новый аккаунт» (акция 1+1: подарочный курс другому человеку) ----------
      Клиент дарит курс другому и присылает его ФИО / почту / телефон. Заводим обычного пользователя
      платформы — то же, что «Add new user» в админке (www.eduson.tv/admin/users/new): ФИО, почта,
-     телефон, пароль 123456, язык «Русский», Company = курс. Суперюзер НЕ создаём: у получателя один
-     курс; купит ещё — суперюзера заведёт «Добавить курс» (привяжет этого же пользователя). */
+     телефон, пароль 123456, язык «Русский», Company = курс. ⚠️ Одного пользователя мало (v1.29.0: вход
+     зацикливался — «слишком много перенаправлений» на academy-<курс>.eduson.tv): регистрация по
+     подарочной ссылке даёт ещё СУПЕРЮЗЕРА с ПУСТЫМ Amo Contact ID и привязывает к нему пользователя
+     (эталон — юзер 899442 / супер 799434). Поэтому цепочка: пользователь → пустой суперюзер → привязка. */
   const NEWACC_PASSWORD = '123456';
   // Форма админки → пары имя→значение так, как отправил бы браузер (токен, скрытые поля, значения по умолчанию).
   function adminFormParams(html, mustHaveField) {
@@ -7860,6 +7862,23 @@
     return { id: '', flash: 'админка не создала пользователя, причину не показала' };
   }
 
+  // Суперюзер БЕЗ Amo Contact ID — как его заводит регистрация по подарочной ссылке (у получателя нет контакта в амо).
+  // ⚠️ адрес не берём из поиска по пустому q — он вернул бы чужого суперюзера; id только из ответа на создание.
+  async function adminCreateBlankSuperUser() {
+    const token = await adminCsrf();
+    const res = await gmPostFollow(EDU_ADMIN + '/admin/super_users?language=ru', {
+      authenticity_token: token, 'super_user[amo_contact_id]': '', commit: 'Create Super User'
+    });
+    if (res.status === 422 && /InvalidAuthenticityToken|CSRF/i.test(res.text)) throw new Error('CSRF');
+    if (res.status >= 500 || (res.status >= 400 && res.status !== 422)) throw new Error('админка ответила ' + res.status + ' при создании суперюзера');
+    const m = (res.finalUrl || '').match(/\/admin\/super_users\/(\d+)(?:[?#]|$)/);
+    if (m) return m[1];
+    const doc = new DOMParser().parseFromString(res.text || '', 'text/html');
+    const errs = [].slice.call(doc.querySelectorAll('.invalid-feedback, .help-block, .text-danger, #error_explanation li, .alert-danger'))
+      .map(function (e) { return txtNoTags(e.textContent); }).filter(function (t, i, a) { return t && a.indexOf(t) === i; });
+    throw new Error('админка не создала суперюзера без Amo Contact ID' + (errs.length ? (': ' + errs.join('; ').slice(0, 200)) : ''));
+  }
+
   function renderNewAccount(body) {
     const lab = function (t, hint) {
       const d = elt('div', 'margin:10px 0 4px;');
@@ -7871,7 +7890,7 @@
     const mk = function (type, ph) { const i = elt('input', inCss); i.type = type; if (ph) i.placeholder = ph; return i; };
 
     body.appendChild(elt('div', 'font-size:10.5px;color:#64748B;font-weight:700;line-height:1.4;',
-      'Регистрирует нового человека для подарочного курса (как «Add new user» в админке). Суперюзер не создаётся.'));
+      'Регистрирует нового человека для подарочного курса: аккаунт + пустой суперюзер (как при регистрации по ссылке).'));
 
     body.appendChild(lab('Фамилия', '— ФИО целиком можно вставить сюда, разложится само'));
     const lastI = mk('text', 'Иванова');
@@ -7946,7 +7965,9 @@
     const btn = elt('div', 'margin-top:10px;text-align:center;background:' + ACC + ';color:#fff;font-weight:800;font-size:12.5px;padding:10px 0;border-radius:8px;cursor:pointer;', 'Создать аккаунт');
     body.appendChild(btn); body.appendChild(status);
 
-    let busy = false, done = false;
+    // Шаги идут по порядку: аккаунт → суперюзер → привязка. Если что-то оборвалось, повторное нажатие
+    // «Достроить» продолжает с того места, а не заводит нового человека.
+    let busy = false, done = false, userId = '', superId = '', linked = false;
     btn.onclick = async function () {
       if (busy) return;
       if (done) { body.innerHTML = ''; renderNewAccount(body); return; } // «создать ещё один» — чистая форма
@@ -7960,44 +7981,67 @@
       if (!picked) { toast('Сначала выбери курс'); return; }
       d.companyId = picked.id;
 
+      const idleText = userId ? 'Достроить' : 'Создать аккаунт';
       busy = true; btn.style.opacity = '.55'; btn.textContent = 'Проверяю…'; status.style.color = '#6B7280'; status.textContent = '';
       try {
-        // не завести дубль: ищем уже существующие аккаунты по этой почте
-        const same = await adminFindUsersByQuery(d.email).catch(function (e) { if (e.message === 'NOAUTH') throw e; return []; });
-        if (same.length && !window.confirm('⚠️ В админке уже есть аккаунты по этой почте:\n\n'
-          + same.slice(0, 5).map(function (s) { return '#' + s.id + ' · ' + s.name + ' · ' + s.company; }).join('\n')
-          + '\n\nВсё равно создать новый?')) { busy = false; btn.style.opacity = '1'; btn.textContent = 'Создать аккаунт'; return; }
+        if (!userId) {
+          // не завести дубль: ищем уже существующие аккаунты по этой почте
+          const same = await adminFindUsersByQuery(d.email).catch(function (e) { if (e.message === 'NOAUTH') throw e; return []; });
+          if (same.length && !window.confirm('⚠️ В админке уже есть аккаунты по этой почте:\n\n'
+            + same.slice(0, 5).map(function (s) { return '#' + s.id + ' · ' + s.name + ' · ' + s.company; }).join('\n')
+            + '\n\nВсё равно создать новый?')) { busy = false; btn.style.opacity = '1'; btn.textContent = idleText; return; }
 
-        const fio = [d.last, d.first, d.middle].filter(Boolean).join(' ');
-        if (!window.confirm('Создать аккаунт?\n\n' + fio + '\nПочта: ' + d.email + '\nТелефон: ' + (d.phone || '—') + '\nПароль: ' + d.password
-          + '\nКурс: ' + picked.name + ' (Company ID ' + picked.id + ')\n\nСуперюзер не создаётся.')) { busy = false; btn.style.opacity = '1'; btn.textContent = 'Создать аккаунт'; return; }
+          const fio = [d.last, d.first, d.middle].filter(Boolean).join(' ');
+          if (!window.confirm('Создать аккаунт?\n\n' + fio + '\nПочта: ' + d.email + '\nТелефон: ' + (d.phone || '—') + '\nПароль: ' + d.password
+            + '\nКурс: ' + picked.name + ' (Company ID ' + picked.id + ')\n\nСоздам аккаунт, суперюзера (пустого, как при регистрации по ссылке) и привяжу одно к другому.')) { busy = false; btn.style.opacity = '1'; btn.textContent = idleText; return; }
 
-        btn.textContent = 'Создаю…'; status.textContent = 'Создаю аккаунт…';
-        const res = await adminCreateUser(d);
-        if (!res.id) {
-          status.style.color = '#B45309';
-          status.textContent = '🙀 Админка не создала аккаунт: ' + res.flash;
-          busy = false; btn.style.opacity = '1'; btn.textContent = 'Создать аккаунт';
-          return;
+          btn.textContent = 'Создаю…'; status.textContent = 'Создаю аккаунт…';
+          const res = await adminCreateUser(d);
+          if (!res.id) {
+            status.style.color = '#B45309';
+            status.textContent = '🙀 Админка не создала аккаунт: ' + res.flash;
+            busy = false; btn.style.opacity = '1'; btn.textContent = idleText;
+            return;
+          }
+          userId = res.id;
         }
-        let course = '';
-        try { const row = (await adminFindUsersByQuery(d.email)).find(function (r) { return r.id === res.id; }); course = row ? row.company : ''; } catch (e) {}
-        console.log('[eduson-helper] новый аккаунт:', { id: res.id, company: picked.id, course: course });
-        status.style.color = '#16A34A';
-        status.textContent = '😻 Аккаунт создан: #' + res.id + (course ? ('\nКурс в админке: ' + course) : '');
-        const a = elt('a', 'display:inline-block;margin-top:6px;font-size:11px;font-weight:800;color:' + ACC + ';text-decoration:none;', 'открыть карточку в админке →');
-        a.href = EDU_ADMIN + '/admin/users/' + res.id + '?language=ru'; a.target = '_blank'; a.rel = 'noopener';
-        status.appendChild(document.createElement('br')); status.appendChild(a);
+        btn.textContent = 'Создаю…';
+        if (!superId) {
+          status.textContent = 'Создаю суперюзера…';
+          superId = await adminCreateBlankSuperUser();
+        }
+        if (!linked) {
+          status.textContent = 'Привязываю аккаунт к суперюзеру…';
+          await adminAttachExistingUser(superId, userId);
+          linked = true;
+        }
+        // проверка: аккаунт действительно виден в суперюзере, курс на месте
+        let sub = null;
+        try { sub = (await adminSuperCourses(superId)).find(function (s) { return String(s.uid) === String(userId); }) || null; } catch (e) {}
+        console.log('[eduson-helper] новый аккаунт:', { userId: userId, superId: superId, company: picked.id, inSuper: !!sub, course: sub && sub.company });
+        if (!sub) {
+          status.style.color = '#B45309';
+          status.textContent = '🙀 Аккаунт #' + userId + ' и суперюзер #' + superId + ' созданы, но в суперюзере аккаунта не вижу. Проверь в админке.';
+        } else {
+          status.style.color = '#16A34A';
+          status.textContent = '😻 Готово: аккаунт #' + userId + ' в суперюзере #' + superId + (sub.company ? ('\nКурс: ' + sub.company) : '');
+        }
+        [['открыть аккаунт →', '/admin/users/' + userId], ['открыть суперюзера →', '/admin/super_users/' + superId]].forEach(function (l) {
+          const a = elt('a', 'display:inline-block;margin:6px 12px 0 0;font-size:11px;font-weight:800;color:' + ACC + ';text-decoration:none;', l[0]);
+          a.href = EDU_ADMIN + l[1] + '?language=ru'; a.target = '_blank'; a.rel = 'noopener';
+          status.appendChild(document.createElement('br')); status.appendChild(a);
+        });
         done = true; busy = false; btn.style.opacity = '1'; btn.style.background = '#fff'; btn.style.color = ACC; btn.style.border = '1.5px solid ' + ACC_BD;
         btn.textContent = 'Создать ещё один';
       } catch (e) {
         console.error('[eduson-helper] новый аккаунт:', e);
         status.style.color = '#DC2626';
         const msg = String(e.message || e);
-        status.textContent = msg === 'NOAUTH' ? '🙀 Админка не пустила. Открой www.eduson.tv/admin в соседней вкладке, войди, вернись.'
-          : msg === 'CSRF' ? '🙀 Токен админки протух. Обнови страницу OmniDesk (F5) и попробуй снова.'
-          : ('🙀 Не получилось: ' + msg + '\n\nПрежде чем повторять — проверь в админке, не создался ли аккаунт (поиск по почте).\nF12 → Console → пришли красные строки.');
-        busy = false; btn.style.opacity = '1'; btn.textContent = 'Создать аккаунт';
+        const partial = userId ? ('\n\nАккаунт #' + userId + ' уже создан' + (superId ? (', суперюзер #' + superId) : '') + ' — нажми «Достроить», лишнего не заведу.') : '\n\nПрежде чем повторять — проверь в админке, не создался ли аккаунт (поиск по почте).';
+        status.textContent = msg === 'NOAUTH' ? '🙀 Админка не пустила. Открой www.eduson.tv/admin в соседней вкладке, войди, вернись.' + partial
+          : msg === 'CSRF' ? '🙀 Токен админки протух. Обнови страницу OmniDesk (F5) и попробуй снова.' + partial
+          : ('🙀 Не получилось: ' + msg + partial + '\nF12 → Console → пришли красные строки.');
+        busy = false; btn.style.opacity = '1'; btn.textContent = userId ? 'Достроить' : 'Создать аккаунт';
       }
     };
   }
