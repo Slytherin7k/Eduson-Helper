@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.30.2
+// @version      1.30.3
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -2029,10 +2029,17 @@
   // (общий _admCache) на обе задачи. Курс/уроки прогревает свой модуль «Пинги и теги».
   const WARM_ON_LOAD = true; // фоновый прогрев данных при открытии чата (магнит/логин-линк). Выключить — false.
   let _warmedCase = '';
+  // Проверка «сайдбар уже подгрузился?» читает весь текст страницы (тяжело) — а вызывается на каждое
+  // изменение DOM. Поэтому: не чаще раза в 3 с и не более 10 попыток на чат (дальше — только клик магнита).
+  let _warmProbeCase = '', _warmProbeTries = 0, _warmProbeAt = 0;
   async function warmUp() {
     if (!WARM_ON_LOAD || !IS_OMNI) return;
     const cid = omniCaseId();
     if (!cid || cid === _warmedCase) return;
+    if (_warmProbeCase !== cid) { _warmProbeCase = cid; _warmProbeTries = 0; _warmProbeAt = 0; }
+    const nowMs = Date.now();
+    if (_warmProbeTries >= 10 || nowMs - _warmProbeAt < 3000) return;
+    _warmProbeAt = nowMs; _warmProbeTries++;
     const seed = grabContactSeed();
     if (!seed.emails.length && !seed.phones.length && !grabAmoIdFromPage()) return; // сайдбар ещё не подгрузился
     _warmedCase = cid;
@@ -3576,7 +3583,7 @@
     const kick = function () {
       if (pending) return;
       pending = true;
-      setTimeout(function () { pending = false; try { fn(); } catch (e) {} }, 200);
+      setTimeout(function () { pending = false; try { fn(); } catch (e) {} }, 500);
     };
     try {
       new MutationObserver(kick).observe(document.body || document.documentElement,
@@ -9034,7 +9041,7 @@
     const kick = function () {
       if (pending) return;
       pending = true;
-      setTimeout(function () { pending = false; try { fn(); } catch (e) {} }, 200);
+      setTimeout(function () { pending = false; try { fn(); } catch (e) {} }, 500);
     };
     try {
       new MutationObserver(kick).observe(document.body || document.documentElement,
