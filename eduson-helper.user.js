@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.29.1
+// @version      1.29.2
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -7864,8 +7864,24 @@
 
   // Суперюзер БЕЗ Amo Contact ID — как его заводит регистрация по подарочной ссылке (у получателя нет контакта в амо).
   // ⚠️ адрес не берём из поиска по пустому q — он вернул бы чужого суперюзера; id только из ответа на создание.
+  // Список суперюзеров (свежие сверху): [{id, amo, email}]
+  async function adminSuperListRows() {
+    const html = await gmText(EDU_ADMIN + '/admin/super_users?language=ru');
+    if (looksLikeAdminLogin(html)) throw new Error('NOAUTH');
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    return [].slice.call(doc.querySelectorAll('table tbody tr')).map(function (tr) {
+      const td = tr.querySelectorAll('td');
+      const a = tr.querySelector('a[href*="/admin/super_users/"]');
+      const m = a && (a.getAttribute('href') || '').match(/super_users\/(\d+)/);
+      return { id: m ? m[1] : (td[0] ? txtNoTags(td[0].textContent).replace(/\D/g, '') : ''), amo: td[1] ? txtNoTags(td[1].textContent) : '', email: td[2] ? txtNoTags(td[2].textContent) : '' };
+    }).filter(function (r) { return r.id; });
+  }
   async function adminCreateBlankSuperUser() {
     const token = await adminCsrf();
+    // Админка принимает пустой Amo Contact ID, но после создания ведёт НЕ на страницу суперюзера (id в адресе нет) —
+    // поэтому запоминаем список ДО и потом ищем появившегося нового пустого.
+    const before = {};
+    (await adminSuperListRows()).forEach(function (r) { before[r.id] = 1; });
     const res = await gmPostFollow(EDU_ADMIN + '/admin/super_users?language=ru', {
       authenticity_token: token, 'super_user[amo_contact_id]': '', commit: 'Create Super User'
     });
@@ -7873,6 +7889,9 @@
     if (res.status >= 500 || (res.status >= 400 && res.status !== 422)) throw new Error('админка ответила ' + res.status + ' при создании суперюзера');
     const m = (res.finalUrl || '').match(/\/admin\/super_users\/(\d+)(?:[?#]|$)/);
     if (m) return m[1];
+    const fresh = (await adminSuperListRows()).filter(function (r) { return !before[r.id] && !r.amo && !r.email; });
+    if (fresh.length === 1) return fresh[0].id;
+    if (fresh.length > 1) throw new Error('в админке появилось несколько новых пустых суперюзеров — не знаю, какой твой. Привяжи аккаунт вручную');
     const doc = new DOMParser().parseFromString(res.text || '', 'text/html');
     const errs = [].slice.call(doc.querySelectorAll('.invalid-feedback, .help-block, .text-danger, #error_explanation li, .alert-danger'))
       .map(function (e) { return txtNoTags(e.textContent); }).filter(function (t, i, a) { return t && a.indexOf(t) === i; });
