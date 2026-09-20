@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.30.1
+// @version      1.30.2
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -6981,7 +6981,7 @@
     const bar = elt('div', 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:9px;');
     const inner = elt('div', '');
     const tCss = 'flex:1 1 auto;text-align:center;cursor:pointer;font-weight:800;font-size:10.5px;padding:6px 8px;border-radius:8px;border:1.5px solid ' + ACC_BD + ';color:' + ACC + ';white-space:nowrap;';
-    const defs = [['Урок', renderLesson, 'lesson'], ['Прогресс 80', renderProgress80, 'progress'], ['ПрогрессБлок', renderProgressBlock, 'block'], ['Добавить курс', renderAddCourse, 'add'], ['Подбор курса', renderPickCourse, 'pick'], ['Новый аккаунт', renderNewAccount, 'newacc']];
+    const defs = [['Урок', renderLesson, 'lesson'], ['Прогресс 80', renderProgress80, 'progress'], ['ПрогрессБлок', renderProgressBlock, 'block'], ['Добавить курс', renderAddCourse, 'add'], ['Подбор курса/списка 1+1', renderPickCourse, 'pick'], ['Новый аккаунт', renderNewAccount, 'newacc']];
     const btns = defs.map(function (d) {
       const b = elt('div', tCss, d[0]);
       b.onclick = function () {
