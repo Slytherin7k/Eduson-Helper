@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.28.6
+// @version      1.29.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -6981,7 +6981,7 @@
     const bar = elt('div', 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:9px;');
     const inner = elt('div', '');
     const tCss = 'flex:1 1 auto;text-align:center;cursor:pointer;font-weight:800;font-size:10.5px;padding:6px 8px;border-radius:8px;border:1.5px solid ' + ACC_BD + ';color:' + ACC + ';white-space:nowrap;';
-    const defs = [['Урок', renderLesson, 'lesson'], ['Прогресс 80', renderProgress80, 'progress'], ['ПрогрессБлок', renderProgressBlock, 'block'], ['Добавить курс', renderAddCourse, 'add'], ['Подбор курса', renderPickCourse, 'pick']];
+    const defs = [['Урок', renderLesson, 'lesson'], ['Прогресс 80', renderProgress80, 'progress'], ['ПрогрессБлок', renderProgressBlock, 'block'], ['Добавить курс', renderAddCourse, 'add'], ['Подбор курса', renderPickCourse, 'pick'], ['Новый аккаунт', renderNewAccount, 'newacc']];
     const btns = defs.map(function (d) {
       const b = elt('div', tCss, d[0]);
       b.onclick = function () {
@@ -6996,7 +6996,7 @@
     btns.forEach(function (b) { bar.appendChild(b); });
     body.appendChild(bar);
     body.appendChild(inner);
-    const idx = { lesson: 0, progress: 1, block: 2, add: 3, pick: 4 }[_coursesSub] || 0;
+    const idx = { lesson: 0, progress: 1, block: 2, add: 3, pick: 4, newacc: 5 }[_coursesSub] || 0;
     btns[idx].onclick();
   }
 
@@ -7797,6 +7797,209 @@
         busy = false; btn.style.opacity = '1'; btn.textContent = 'Выдать курс';
       };
     }
+  }
+
+  /* ---------- под-вкладка «Новый аккаунт» (акция 1+1: подарочный курс другому человеку) ----------
+     Клиент дарит курс другому и присылает его ФИО / почту / телефон. Заводим обычного пользователя
+     платформы — то же, что «Add new user» в админке (www.eduson.tv/admin/users/new): ФИО, почта,
+     телефон, пароль 123456, язык «Русский», Company = курс. Суперюзер НЕ создаём: у получателя один
+     курс; купит ещё — суперюзера заведёт «Добавить курс» (привяжет этого же пользователя). */
+  const NEWACC_PASSWORD = '123456';
+  // Форма админки → пары имя→значение так, как отправил бы браузер (токен, скрытые поля, значения по умолчанию).
+  function adminFormParams(html, mustHaveField) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const form = [].slice.call(doc.forms).find(function (f) { return f.querySelector('[name="' + mustHaveField + '"]'); });
+    if (!form) throw new Error('не нашла форму в админке');
+    const params = {};
+    [].slice.call(form.elements).forEach(function (e) {
+      if (!e.name || e.disabled || e.type === 'submit' || e.type === 'button' || e.type === 'file') return;
+      if ((e.type === 'checkbox' || e.type === 'radio') && !e.checked) return;
+      params[e.name] = e.value;
+    });
+    const sub = form.querySelector('[type="submit"][name="commit"]');
+    if (sub) params.commit = sub.value;
+    return params;
+  }
+  // Поиск пользователей в админке (q ищет и по почте): [{id,name,company}]
+  async function adminFindUsersByQuery(q) {
+    const html = await gmText(EDU_ADMIN + '/admin/users?language=ru&q=' + encodeURIComponent(q));
+    if (looksLikeAdminLogin(html)) throw new Error('NOAUTH');
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    return [].slice.call(doc.querySelectorAll('table tbody tr')).map(function (tr) {
+      const a = tr.querySelector('a[href*="/admin/users/"]');
+      const m = a && (a.getAttribute('href') || '').match(/users\/(\d+)/);
+      const td = tr.querySelectorAll('td');
+      return { id: m ? m[1] : '', name: td[1] ? txtNoTags(td[1].textContent) : '', company: td[2] ? txtNoTags(td[2].textContent) : '' };
+    }).filter(function (r) { return r.id; });
+  }
+  async function adminCreateUser(d) {
+    const html = await gmTextSlow(EDU_ADMIN + '/admin/users/new?language=ru'); // тяжёлая: список из ~3800 курсов
+    if (looksLikeAdminLogin(html)) throw new Error('NOAUTH');
+    const params = adminFormParams(html, 'user[email]');
+    params['user[last_name]'] = d.last;
+    params['user[first_name]'] = d.first;
+    params['user[middle_name]'] = d.middle;
+    params['user[email]'] = d.email;
+    params['user[phone]'] = d.phone;
+    params['user[password]'] = d.password;
+    params['user[password_confirmation]'] = d.password;
+    params['user[language]'] = 'ru';
+    params['user[company_id]'] = d.companyId;
+    const res = await gmPostFollow(EDU_ADMIN + '/admin/users?language=ru', params);
+    if (res.status === 422 && /InvalidAuthenticityToken/i.test(res.text)) throw new Error('CSRF');
+    if (res.status >= 500) throw new Error('админка ответила ошибкой ' + res.status);
+    const m = (res.finalUrl || '').match(/\/admin\/users\/(\d+)(?:[?#]|$)/);
+    if (m) return { id: m[1], flash: '' };
+    // не перенаправила на карточку — форма вернулась с ошибками (или всё же создала: проверим поиском)
+    const doc = new DOMParser().parseFromString(res.text || '', 'text/html');
+    const errs = [].slice.call(doc.querySelectorAll('.invalid-feedback, .help-block, .text-danger, #error_explanation li, .alert-danger'))
+      .map(function (e) { return txtNoTags(e.textContent); }).filter(function (t, i, a) { return t && a.indexOf(t) === i; });
+    if (errs.length) return { id: '', flash: errs.join('; ').slice(0, 400) };
+    const found = await adminFindUsersByQuery(d.email).catch(function () { return []; });
+    if (found.length) return { id: found[0].id, flash: '' };
+    return { id: '', flash: 'админка не создала пользователя, причину не показала' };
+  }
+
+  function renderNewAccount(body) {
+    const lab = function (t, hint) {
+      const d = elt('div', 'margin:10px 0 4px;');
+      d.appendChild(elt('span', 'font-size:12px;font-weight:800;color:#1F2937;', t));
+      if (hint) d.appendChild(elt('span', 'font-size:10px;font-weight:600;color:#94A3B8;', '  ' + hint));
+      return d;
+    };
+    const inCss = 'width:100%;box-sizing:border-box;padding:8px 10px;border:1.5px solid #CBD5E1;border-radius:9px;font:600 12px ' + FONT + ';color:#111827;background:#fff;';
+    const mk = function (type, ph) { const i = elt('input', inCss); i.type = type; if (ph) i.placeholder = ph; return i; };
+
+    body.appendChild(elt('div', 'font-size:10.5px;color:#64748B;font-weight:700;line-height:1.4;',
+      'Регистрирует нового человека для подарочного курса (как «Add new user» в админке). Суперюзер не создаётся.'));
+
+    body.appendChild(lab('Фамилия', '— ФИО целиком можно вставить сюда, разложится само'));
+    const lastI = mk('text', 'Иванова');
+    body.appendChild(lastI);
+    body.appendChild(lab('Имя'));
+    const firstI = mk('text', 'Мария');
+    body.appendChild(firstI);
+    body.appendChild(lab('Отчество', '— если есть'));
+    const midI = mk('text', 'Сергеевна');
+    body.appendChild(midI);
+    lastI.addEventListener('paste', function (ev) {
+      const t = String((ev.clipboardData || window.clipboardData).getData('text') || '').trim().split(/\s+/);
+      if (t.length < 2) return;
+      ev.preventDefault();
+      lastI.value = t[0]; firstI.value = t[1]; midI.value = t.slice(2).join(' ');
+    });
+
+    body.appendChild(lab('Почта'));
+    const emailI = mk('email', 'name@mail.ru');
+    body.appendChild(emailI);
+    body.appendChild(lab('Телефон'));
+    const phoneI = mk('tel', '+7…');
+    body.appendChild(phoneI);
+    body.appendChild(lab('Пароль', '— как обычно 123456'));
+    const passI = mk('text');
+    passI.value = NEWACC_PASSWORD;
+    body.appendChild(passI);
+
+    // курс (Company) — поиск по названию, как во вкладке «Добавить курс»
+    body.appendChild(lab('Курс', '— название, ID или ссылка на компанию'));
+    const qInp = mk('search', 'название курса  ·  16023  ·  ссылка');
+    body.appendChild(qInp);
+    const hits = elt('div', 'margin-top:5px;max-height:160px;overflow:auto;border:1px solid #EEF2F5;border-radius:9px;display:none;');
+    body.appendChild(hits);
+    const chosen = elt('div', 'margin-top:6px;font-size:11px;font-weight:800;display:none;border-radius:9px;padding:8px 10px;background:#E0F2FE;color:#075985;');
+    body.appendChild(chosen);
+    let picked = null, qTimer = null;
+    function pick(it) {
+      picked = it;
+      chosen.style.display = 'block';
+      chosen.textContent = '✓ ' + it.name + '  ·  Company ID ' + it.id;
+      hits.style.display = 'none';
+    }
+    qInp.addEventListener('input', function () {
+      clearTimeout(qTimer);
+      const v = qInp.value.trim();
+      const idm = v.match(/\/admin\/companies\/(\d+)/) || (/^\d{2,7}$/.test(v) ? [null, v] : null);
+      if (idm) { hits.style.display = 'none'; pick({ id: idm[1], name: 'Company ID ' + idm[1] }); return; }
+      if (v.length < 3) { hits.style.display = 'none'; return; }
+      qTimer = setTimeout(function () {
+        hits.innerHTML = ''; hits.style.display = 'block';
+        hits.appendChild(elt('div', 'padding:8px 10px;font-size:11px;color:#9CA3AF;font-weight:700;', 'ищу…'));
+        adminCompanySearch(v).then(function (list) {
+          hits.innerHTML = '';
+          if (!list.length) { hits.appendChild(elt('div', 'padding:8px 10px;font-size:11px;color:#9CA3AF;font-weight:700;', 'ничего не нашла')); return; }
+          list.forEach(function (it) {
+            const row = elt('div', 'padding:7px 10px;cursor:pointer;border-bottom:1px solid #F3F4F6;font-size:11.5px;font-weight:700;color:#111827;');
+            row.textContent = it.name + '  · ' + it.id;
+            row.onmouseenter = function () { row.style.background = '#F0F9FF'; };
+            row.onmouseleave = function () { row.style.background = '#fff'; };
+            row.onclick = function () { pick(it); };
+            hits.appendChild(row);
+          });
+        }).catch(function (e) {
+          hits.innerHTML = '';
+          hits.appendChild(elt('div', 'padding:8px 10px;font-size:11px;color:#B45309;font-weight:700;', e.message === 'NOAUTH' ? 'нет входа в админку' : ('ошибка: ' + e.message)));
+        });
+      }, 400);
+    });
+
+    const status = elt('div', 'font-size:11px;font-weight:700;line-height:1.45;margin-top:12px;white-space:pre-wrap;');
+    const btn = elt('div', 'margin-top:10px;text-align:center;background:' + ACC + ';color:#fff;font-weight:800;font-size:12.5px;padding:10px 0;border-radius:8px;cursor:pointer;', 'Создать аккаунт');
+    body.appendChild(btn); body.appendChild(status);
+
+    let busy = false, done = false;
+    btn.onclick = async function () {
+      if (busy) return;
+      if (done) { body.innerHTML = ''; renderNewAccount(body); return; } // «создать ещё один» — чистая форма
+      const d = {
+        last: lastI.value.trim(), first: firstI.value.trim(), middle: midI.value.trim(),
+        email: emailI.value.trim().toLowerCase(), phone: phoneI.value.trim(), password: passI.value.trim()
+      };
+      if (!d.last || !d.first) { toast('Впиши фамилию и имя'); return; }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(d.email)) { toast('Проверь почту — она выглядит неполной'); emailI.focus(); return; }
+      if (!d.password) { toast('Впиши пароль'); return; }
+      if (!picked) { toast('Сначала выбери курс'); return; }
+      d.companyId = picked.id;
+
+      busy = true; btn.style.opacity = '.55'; btn.textContent = 'Проверяю…'; status.style.color = '#6B7280'; status.textContent = '';
+      try {
+        // не завести дубль: ищем уже существующие аккаунты по этой почте
+        const same = await adminFindUsersByQuery(d.email).catch(function (e) { if (e.message === 'NOAUTH') throw e; return []; });
+        if (same.length && !window.confirm('⚠️ В админке уже есть аккаунты по этой почте:\n\n'
+          + same.slice(0, 5).map(function (s) { return '#' + s.id + ' · ' + s.name + ' · ' + s.company; }).join('\n')
+          + '\n\nВсё равно создать новый?')) { busy = false; btn.style.opacity = '1'; btn.textContent = 'Создать аккаунт'; return; }
+
+        const fio = [d.last, d.first, d.middle].filter(Boolean).join(' ');
+        if (!window.confirm('Создать аккаунт?\n\n' + fio + '\nПочта: ' + d.email + '\nТелефон: ' + (d.phone || '—') + '\nПароль: ' + d.password
+          + '\nКурс: ' + picked.name + ' (Company ID ' + picked.id + ')\n\nСуперюзер не создаётся.')) { busy = false; btn.style.opacity = '1'; btn.textContent = 'Создать аккаунт'; return; }
+
+        btn.textContent = 'Создаю…'; status.textContent = 'Создаю аккаунт…';
+        const res = await adminCreateUser(d);
+        if (!res.id) {
+          status.style.color = '#B45309';
+          status.textContent = '🙀 Админка не создала аккаунт: ' + res.flash;
+          busy = false; btn.style.opacity = '1'; btn.textContent = 'Создать аккаунт';
+          return;
+        }
+        let course = '';
+        try { const row = (await adminFindUsersByQuery(d.email)).find(function (r) { return r.id === res.id; }); course = row ? row.company : ''; } catch (e) {}
+        console.log('[eduson-helper] новый аккаунт:', { id: res.id, company: picked.id, course: course });
+        status.style.color = '#16A34A';
+        status.textContent = '😻 Аккаунт создан: #' + res.id + (course ? ('\nКурс в админке: ' + course) : '');
+        const a = elt('a', 'display:inline-block;margin-top:6px;font-size:11px;font-weight:800;color:' + ACC + ';text-decoration:none;', 'открыть карточку в админке →');
+        a.href = EDU_ADMIN + '/admin/users/' + res.id + '?language=ru'; a.target = '_blank'; a.rel = 'noopener';
+        status.appendChild(document.createElement('br')); status.appendChild(a);
+        done = true; busy = false; btn.style.opacity = '1'; btn.style.background = '#fff'; btn.style.color = ACC; btn.style.border = '1.5px solid ' + ACC_BD;
+        btn.textContent = 'Создать ещё один';
+      } catch (e) {
+        console.error('[eduson-helper] новый аккаунт:', e);
+        status.style.color = '#DC2626';
+        const msg = String(e.message || e);
+        status.textContent = msg === 'NOAUTH' ? '🙀 Админка не пустила. Открой www.eduson.tv/admin в соседней вкладке, войди, вернись.'
+          : msg === 'CSRF' ? '🙀 Токен админки протух. Обнови страницу OmniDesk (F5) и попробуй снова.'
+          : ('🙀 Не получилось: ' + msg + '\n\nПрежде чем повторять — проверь в админке, не создался ли аккаунт (поиск по почте).\nF12 → Console → пришли красные строки.');
+        busy = false; btn.style.opacity = '1'; btn.textContent = 'Создать аккаунт';
+      }
+    };
   }
 
   function renderLesson(body) {
