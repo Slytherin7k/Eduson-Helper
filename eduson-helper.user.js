@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.30.0
+// @version      1.30.1
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -7827,7 +7827,8 @@
   }
   function adminFormErrors(html) {
     const doc = new DOMParser().parseFromString(html || '', 'text/html');
-    return [].slice.call(doc.querySelectorAll('.invalid-feedback, .help-block, .text-danger, #error_explanation li, .alert-danger'))
+    // ⚠️ `.text-danger` не берём: так же оформлена красная ссылка «Удалить пользователя» на карточке — это не ошибка
+    return [].slice.call(doc.querySelectorAll('.invalid-feedback, .help-block, #error_explanation li, .alert-danger'))
       .map(function (e) { return txtNoTags(e.textContent); }).filter(function (t, i, a) { return t && a.indexOf(t) === i; });
   }
   // Поиск пользователей в админке (q ищет и по почте): [{id,name,company}]
@@ -7877,7 +7878,11 @@
     const res = await gmPostFollow(action, f.params);
     if (res.status === 422 && /InvalidAuthenticityToken/i.test(res.text)) throw new Error('CSRF');
     if (res.status >= 500) throw new Error('админка ответила ошибкой ' + res.status + ' при смене курса');
-    return { errs: adminFormErrors(res.text) };
+    // Успех = админка перешла на карточку пользователя. Провал = вернула форму редактирования обратно.
+    const back = new DOMParser().parseFromString(res.text || '', 'text/html').querySelector('[name="user[email]"]');
+    if (!back) return { errs: [] };
+    const errs = adminFormErrors(res.text);
+    return { errs: errs.length ? errs : ['форма вернулась без сохранения'] };
   }
   // Аккаунт есть в списке курса (там показываются только состоящие в группе) — значит, группа выдана
   async function adminUserInCompanyGroup(companyId, email, uid) {
