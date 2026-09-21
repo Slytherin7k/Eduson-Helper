@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.33.0
+// @version      1.33.1
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -126,7 +126,7 @@
 
   /* ================================================ */
 
-  const VER = '1.33.0';
+  const VER = '1.33.1';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3647,7 +3647,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.33.0'; // синхр. с Хэлпером
+  const VER = '1.33.1'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4547,31 +4547,12 @@
   let hpPanelTab = '';   // какая вкладка панели открыта сейчас ('Пинги' / 'Теги' / …)
 
   function buildPanel() {
-    const p = elt('div', 'position:fixed;z-index:2147483646;box-sizing:border-box;width:min(384px,calc(100vw - 20px));min-width:336px;min-height:160px;max-height:82vh;overflow-x:hidden;overflow-y:auto;resize:both;' +
+    // Ширина фиксированная (384px с рамкой) — в неё помещаются все 6 вкладок в одну строку.
+    // Высота — по содержимому вкладки (ручного ресайза нет: оставался пустой низ).
+    const p = elt('div', 'position:fixed;z-index:2147483646;box-sizing:border-box;width:min(384px,calc(100vw - 20px));max-height:82vh;overflow-x:hidden;overflow-y:auto;' +
       'background:#fff;color:#1F2937;border:1px solid #E5E7EB;border-radius:14px;box-shadow:0 18px 48px rgba(15,23,42,.24);' +
       'font-family:' + FONT + ';padding:9px 11px;');
     p.id = PANEL_ID;
-
-    // Размер — как в Мастере-возврате: тянется за правый нижний угол, запоминается (curatorPanelSize).
-    // Сохраняем только когда куратор реально потянул угол, иначе «авто-высота» превратилась бы в фиксированную.
-    try {
-      const sz = JSON.parse(GM_getValue('curatorPanelSize') || 'null');
-      if (sz && sz.w >= 336) p.style.width = Math.min(sz.w, window.innerWidth - 20) + 'px';
-      if (sz && sz.h >= 160) p.style.height = Math.min(sz.h, window.innerHeight - 20) + 'px';
-    } catch (e) { /* размер по умолчанию */ }
-    let szDown = null;
-    p.addEventListener('mousedown', function (e) {
-      const r = p.getBoundingClientRect();
-      szDown = (e.clientX > r.right - 22 && e.clientY > r.bottom - 22) ? { w: p.offsetWidth, h: p.offsetHeight } : null;
-    });
-    const onSizeUp = function () {
-      if (!p.isConnected) { document.removeEventListener('mouseup', onSizeUp, true); return; }
-      if (!szDown) return;
-      const moved = p.offsetWidth !== szDown.w || p.offsetHeight !== szDown.h;
-      szDown = null;
-      if (moved) { try { GM_setValue('curatorPanelSize', JSON.stringify({ w: p.offsetWidth, h: p.offsetHeight })); } catch (e) {} }
-    };
-    document.addEventListener('mouseup', onSizeUp, true);
 
     // Не выпускаем нажатия клавиш из панели наружу — иначе горячие клавиши OmniDesk
     // (напр. русская «т» = физическая N = «новое обращение») срабатывают прямо во время
