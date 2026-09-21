@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.35.1
+// @version      1.35.2
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -126,7 +126,7 @@
 
   /* ================================================ */
 
-  const VER = '1.35.1';
+  const VER = '1.35.2';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3647,7 +3647,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.35.1'; // синхр. с Хэлпером
+  const VER = '1.35.2'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4528,6 +4528,7 @@
     if (p) p.remove();
     document.removeEventListener('mousedown', outsideClose, true);
     if (typeof setCatOpen === 'function') setCatOpen(false);
+    setTimeout(boardCheckNew, 800);   // панель закрыли — если ждёт новое (или своё) послание, покажем облачко
   }
   function outsideClose(e) {
     const p = document.getElementById(PANEL_ID);
@@ -4806,9 +4807,11 @@
      Чтобы послание было видно, не открывая панель: раз в минуту (пока вкладка на виду) тихо читаем табло;
      если висит послание, которое этот Хэлпер ещё не показывал, — слева внизу на ~15 с всплывает карточка
      (✕ закрывает, клик открывает панель, пока мышь на карточке — не гаснет). «Уже показывали» помним по
-     времени послания (GM boardSeenT) — не повторяется ни после перезагрузки, ни в других вкладках.
-     Своё послание не показываем (GM boardMineText). Если панель открыта — карточка не нужна. */
-  const BOARD_SEEN_KEY = 'boardSeenT', BOARD_MINE_KEY = 'boardMineText';
+     времени послания (GM boardBubbleT) — не повторяется ни после перезагрузки, ни в других вкладках.
+     Чужое послание, уже прочитанное в панели (GM boardSeenT), облачком не дублируем. СВОЁ послание облачко
+     показывает тоже (GM boardMineText нужен только чтобы узнать «своё»). Если панель открыта — ждём, пока
+     её закроют (closePanel сам запускает проверку). */
+  const BOARD_SEEN_KEY = 'boardSeenT', BOARD_MINE_KEY = 'boardMineText', BOARD_BUBBLE_KEY = 'boardBubbleT';
   const BOARD_POLL_MS = 60000, BOARD_CARD_MS = 15000;
   function boardGet(k) { try { return String(GM_getValue(k) || ''); } catch (e) { return ''; } }
   function boardSet(k, v) { try { GM_setValue(k, String(v)); } catch (e) {} }
@@ -4865,10 +4868,11 @@
     const act = _board.rows ? boardActive(_board.rows, Date.now() + (_board.skew || 0)) : null;
     if (!act) return;
     const key = String(act.t);
-    if (boardGet(BOARD_SEEN_KEY) === key) return;
-    boardSet(BOARD_SEEN_KEY, key);                        // помечаем сразу — чтобы не всплыло ещё и в другой вкладке
-    if (boardGet(BOARD_MINE_KEY) === act.text) return;    // своё послание не показываем
-    if (document.getElementById(PANEL_ID)) return;        // панель открыта — послание и так на виду
+    if (boardGet(BOARD_BUBBLE_KEY) === key) return;                                   // облачко на это послание уже было
+    const own = boardGet(BOARD_MINE_KEY) === act.text;                                // своё послание — облачко тоже показываем
+    if (!own && boardGet(BOARD_SEEN_KEY) === key) return;                             // чужое, но уже прочитано в панели
+    if (document.getElementById(PANEL_ID)) return;                                    // панель открыта — подождём, пока закроют
+    boardSet(BOARD_BUBBLE_KEY, key);   // помечаем сразу — чтобы не всплыло ещё и в другой вкладке
     showBoardCard(act);
   }
 
