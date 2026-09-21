@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.37.2
+// @version      1.37.3
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -126,7 +126,7 @@
 
   /* ================================================ */
 
-  const VER = '1.37.2';
+  const VER = '1.37.3';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3647,7 +3647,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.37.2'; // синхр. с Хэлпером
+  const VER = '1.37.3'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4671,7 +4671,7 @@
     function viewFree(inner) {
       // Вся фраза + конверт — строго в ОДНУ строку. Если шрифт на компьютере шире и не влезает,
       // уменьшаем размер шагами по 0,5px (не меньше 11px), пока не поместится.
-      const ttl = elt('div', SERIF + 'font-size:14.5px;line-height:1.45;white-space:nowrap;overflow:hidden;', 'Здесь могло бы быть ваше доброе слово');
+      const ttl = elt('div', SERIF + 'font-size:14.5px;line-height:1.45;white-space:nowrap;overflow:hidden;', 'Здесь еще никто не мурчал');
       ttl.appendChild(mkEnvelope());
       inner.appendChild(ttl);
       setTimeout(function () {
@@ -4684,7 +4684,7 @@
         inner.appendChild(elt('div', 'font-size:12px;margin:2px 0 0;color:' + INK2 + ';',
           loading ? 'Табло загружается…' : 'Табло сейчас не отвечает.'));
       } else {
-        const b = mkBtn('✎ Написать', false);
+        const b = mkBtn('✎ Помурчать', false);
         b.style.marginTop = '8px';
         b.onclick = function () { mode = 'write'; showOk = false; render(); };
         inner.appendChild(b);
