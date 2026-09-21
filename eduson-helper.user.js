@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.37.1
+// @version      1.37.2
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -126,7 +126,7 @@
 
   /* ================================================ */
 
-  const VER = '1.37.1';
+  const VER = '1.37.2';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3647,7 +3647,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.37.1'; // синхр. с Хэлпером
+  const VER = '1.37.2'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -9445,7 +9445,7 @@
   }
 
   // Падение конверта — отдельный fixed-слой поверх страницы (не обрезается шапкой и не прячется под чужими блоками):
-  // стартует ровно с места конверта в коробке (тот прячется по .hp-on), подскакивает вверх, затем падает вниз ~430px,
+  // стартует ровно с места конверта в коробке (тот прячется по .hp-on), подскакивает вверх, затем падает вниз ~287px (в 1,5 раза короче первой версии, 430px),
   // покачиваясь, и растворяется. Вернётся конверт сам — когда Хэлпер закроют (.hp-envin снова покажется).
   function dropEnvelope(btn) {
     const svg = btn.querySelector('svg.hp-catbox');
@@ -9459,7 +9459,7 @@
     el.style.cssText = 'position:fixed;z-index:2147483647;pointer-events:none;left:' + (cx - W / 2) + 'px;top:' + (cy - W / 2) + 'px;width:' + W + 'px;height:' + W + 'px;transform:rotate(-10deg);';
     el.innerHTML = '<svg viewBox="0 0 24 24" width="' + W + '" height="' + W + '" aria-hidden="true">' + ENV_SHAPE + '</svg>';
     document.body.appendChild(el);
-    const F = Math.max(120, Math.min(430, window.innerHeight - cy - 24));
+    const F = Math.max(80, Math.min(287, window.innerHeight - cy - 24));
     const kf = function (y, x, r, o, off, ease) { return { transform: 'translate(' + x + 'px,' + Math.round(y) + 'px) rotate(' + r + 'deg)', opacity: o, offset: off, easing: ease }; };
     try {
       const a = el.animate([
@@ -9468,10 +9468,10 @@
         kf(F * 0.30, 5, 2, 1, 0.5, 'linear'),
         kf(F * 0.72, -5, 18, 1, 0.82, 'linear'),
         kf(F, 6, 30, 0, 1)
-      ], { duration: 2100, fill: 'forwards' });
+      ], { duration: 1750, fill: 'forwards' });
       a.onfinish = function () { el.remove(); };
     } catch (e) { el.remove(); }
-    setTimeout(function () { if (el.parentNode) el.remove(); }, 2600);
+    setTimeout(function () { if (el.parentNode) el.remove(); }, 2300);
   }
 
   function makeCuratorBtn() {
