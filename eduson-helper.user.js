@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.35.0
+// @version      1.35.1
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -126,7 +126,7 @@
 
   /* ================================================ */
 
-  const VER = '1.35.0';
+  const VER = '1.35.1';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3647,7 +3647,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.35.0'; // синхр. с Хэлпером
+  const VER = '1.35.1'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4571,7 +4571,7 @@
   const _board = { rows: null, skew: 0, loadedAt: 0, err: false, mine: null, draft: '' };
 
   function boardLen(s) { return Array.from(String(s || '')).length; }
-  function boardClean(s) { return String(s || '').replace(/[ -]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+  function boardClean(s) { return Array.from(String(s || '').replace(/\s+/g, ' ')).filter(function (ch) { const c = ch.charCodeAt(0); return c > 31 && c !== 127; }).join('').trim(); }
   function boardCut(s) { return Array.from(s).slice(0, BOARD_MAX).join(''); }
 
   // Читает таблицу (gviz JSON, последние 100 строк). → {rows:[{t,text}] по возрастанию времени, skew}
@@ -4816,10 +4816,23 @@
   function showBoardCard(cur) {
     const old = document.getElementById('curator-board-card');
     if (old) old.remove();
-    const card = elt('div', 'position:fixed;left:14px;bottom:64px;z-index:2147483646;width:min(300px,calc(100vw - 28px));box-sizing:border-box;padding:10px 12px;' +
-      'border-radius:12px;background:#fff;border:1px solid #E5E7EB;border-left:4px solid ' + ACC + ';box-shadow:0 12px 36px rgba(15,23,42,.22);cursor:pointer;' +
-      'color:#0C447C;font-family:' + FONT + ';opacity:0;transform:translateY(8px);transition:opacity .35s ease,transform .35s ease;');
+    // Облачко рядом с котом: слева от кнопки Хэлпера в шапке обращения, «хвостик» смотрит на кота, сам кот выпрыгивает.
+    // Если кнопки нет (список обращений, чат не открыт) — то же облачко в правом верхнем углу, без хвостика.
+    const catBtn = document.getElementById('curator-tools-btn');
+    const cr = catBtn ? catBtn.getBoundingClientRect() : null;
+    const nearCat = !!(cr && cr.width && cr.left > 200 && cr.top >= 0 && cr.top < window.innerHeight);
+    const pos = nearCat
+      ? 'right:' + Math.round(document.documentElement.clientWidth - cr.left + 16) + 'px;top:' + Math.max(8, Math.round(cr.top - 8)) + 'px;'
+      : 'right:16px;top:70px;';
+    const card = elt('div', 'position:fixed;' + pos + 'z-index:2147483646;width:min(300px,calc(100vw - 32px));box-sizing:border-box;padding:9px 12px;' +
+      'border-radius:' + (nearCat ? '12px 4px 12px 12px' : '12px') + ';background:#EDF6FB;border:1px solid #C2E1F2;box-shadow:0 10px 28px rgba(12,68,124,.20);cursor:pointer;' +
+      'color:#0C447C;font-family:' + FONT + ';opacity:0;transform:translateX(10px);transition:opacity .35s ease,transform .35s ease;');
     card.id = 'curator-board-card';
+    if (nearCat) {
+      // хвостик облачка — повёрнутый квадрат с двумя рамками, смотрит вправо, на кота
+      card.appendChild(elt('div', 'position:absolute;right:-6px;top:22px;width:10px;height:10px;background:#EDF6FB;border-top:1px solid #C2E1F2;border-right:1px solid #C2E1F2;transform:rotate(45deg);'));
+      if (!document.getElementById(PANEL_ID)) setCatOpen(true);   // кот выпрыгивает поздороваться
+    }
     const head = elt('div', 'display:flex;align-items:center;justify-content:space-between;font-size:11.5px;font-weight:800;margin-bottom:4px;');
     const ttl = elt('span', 'display:flex;align-items:center;gap:5px;color:' + ACC + ';');
     ttl.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
@@ -4833,7 +4846,8 @@
     let hideT = 0;
     const close = function () {
       clearTimeout(hideT);
-      card.style.opacity = '0'; card.style.transform = 'translateY(8px)';
+      card.style.opacity = '0'; card.style.transform = 'translateX(10px)';
+      if (nearCat) setCatOpen(!!document.getElementById(PANEL_ID));   // кот прячется обратно (если панель не открыта)
       setTimeout(function () { card.remove(); }, 380);
     };
     const arm = function (ms) { clearTimeout(hideT); hideT = setTimeout(close, ms); };
@@ -4844,6 +4858,7 @@
     document.body.appendChild(card);
     setTimeout(function () { card.style.opacity = '1'; card.style.transform = 'none'; }, 30);
     arm(BOARD_CARD_MS);
+    return card;
   }
 
   function boardCheckNew() {
