@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.34.0
+// @version      1.34.1
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -126,7 +126,7 @@
 
   /* ================================================ */
 
-  const VER = '1.34.0';
+  const VER = '1.34.1';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3647,7 +3647,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.34.0'; // синхр. с Хэлпером
+  const VER = '1.34.1'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4633,7 +4633,7 @@
   function buildBoard() {
     const box = elt('div', 'margin-bottom:10px;');
     const SERIF = 'font-family:Georgia,"Times New Roman",serif;';
-    const INK = '#0B2447', INK2 = '#445874', INK3 = '#5A6D86';
+    const INK = '#0C447C', INK2 = '#44719C', INK3 = '#5B82A8';   // «Синий» (основной / подпись / время)
     let mode = 'view';      // 'view' | 'write'
     let sending = false, showOk = false;
     let phTimer = 0;
@@ -4653,6 +4653,14 @@
         BOARD_PAW.map(function (d0) { return '<path d="' + d0 + '"/>'; }).join('') + '</svg>';
       return d;
     };
+    // два следа лапки (вместо эмодзи 🐾, которое не перекрасить) — цвет Хэлпера
+    const mkPrints = function () {
+      const s = elt('span', 'display:inline-block;vertical-align:-3px;margin-left:6px;color:' + ACC + ';');
+      const one = BOARD_PAW.map(function (d0) { return '<path d="' + d0 + '"/>'; }).join('');
+      s.innerHTML = '<svg width="33" height="19" viewBox="0 0 46 26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        '<g transform="translate(0 1) rotate(-16 12 12)">' + one + '</g><g transform="translate(21 1) rotate(14 12 12)">' + one + '</g></svg>';
+      return s;
+    };
     const mkBtn = function (label, primary) {
       const b = elt('button', 'cursor:pointer;font:700 12px ' + FONT + ';padding:4px 12px;border-radius:8px;' +
         (primary ? 'background:' + ACC + ';color:#fff;border:1px solid ' + ACC + ';' : 'background:#fff;color:' + INK + ';border:1px solid #C2E1F2;'), label);
@@ -4661,7 +4669,12 @@
     };
 
     function viewFree(inner) {
-      inner.appendChild(elt('div', SERIF + 'font-size:14.5px;line-height:1.45;', 'Здесь могло бы быть ваше доброе слово 🐾'));
+      // следы лапок «приклеены» к последнему слову (не уезжают на отдельную строку)
+      const ttl = elt('div', SERIF + 'font-size:14.5px;line-height:1.45;', 'Здесь могло бы быть ваше доброе ');
+      const last = elt('span', 'white-space:nowrap;', 'слово');
+      last.appendChild(mkPrints());
+      ttl.appendChild(last);
+      inner.appendChild(ttl);
       const loading = !_board.rows && !_board.err;
       inner.appendChild(elt('div', 'font-size:12px;margin:2px 0 ' + (loading || _board.err ? '0' : '8px') + ';color:' + INK2 + ';',
         loading ? 'Табло загружается…' : _board.err ? 'Табло сейчас не отвечает.' : 'Табло свободно.'));
