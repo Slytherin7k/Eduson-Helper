@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.37.0
+// @version      1.37.1
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -126,7 +126,7 @@
 
   /* ================================================ */
 
-  const VER = '1.37.0';
+  const VER = '1.37.1';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3647,7 +3647,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.37.0'; // синхр. с Хэлпером
+  const VER = '1.37.1'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -9407,9 +9407,7 @@
     '<g class="hp-box">' +
     '<path d="M40 46 h120" stroke="#6B7280" stroke-width="6" stroke-linecap="round"/>' +
     '<rect x="108" y="92" width="42" height="11" rx="5.5" fill="#0284C7"/><rect x="108" y="111" width="42" height="11" rx="5.5" fill="#0284C7"/>' +
-    '</g>' +
-    envGroup('hp-envout') +     // тот же конверт БЕЗ обрезки — им играем «подскок и падение» поверх коробки
-    '</svg>';
+    '</g></svg>';
 
   const CATBOX_CSS =
     '#curator-tools-btn,#eduson-hdr-btns,#curator-hdr{overflow:visible !important}' +
@@ -9421,13 +9419,10 @@
     '#curator-tools-btn.hp-on .hp-cat{transform:translateY(15px)}' +
     '#curator-tools-btn.hp-on .hp-tail{transform:translate(-19px,-8px)}' +
     '#curator-tools-btn.hp-on .hp-wag{animation:hp-wag-kf 1.5s ease-in-out infinite}' +
-    '#curator-tools-btn .hp-envin,#curator-tools-btn .hp-envout{display:none}' +
+    '#curator-tools-btn .hp-envin{display:none}' +
     '#curator-tools-btn.hp-mail .hp-envin{display:block}' +
     '#curator-tools-btn.hp-mail .hp-envin .hp-an{animation:hp-env-back .8s ease-out}' +
-    '#curator-tools-btn.hp-mail:hover .hp-envin,#curator-tools-btn.hp-mail.hp-on .hp-envin{display:none}' +
-    '#curator-tools-btn.hp-mail:hover .hp-envout,#curator-tools-btn.hp-mail.hp-on .hp-envout{display:block}' +
-    '#curator-tools-btn.hp-mail:hover .hp-envout .hp-an,#curator-tools-btn.hp-mail.hp-on .hp-envout .hp-an{animation:hp-env-fall 1.6s ease-in-out forwards}' +
-    '@keyframes hp-env-fall{0%{transform:translate(0px,0px) rotate(0deg);opacity:1}20%{transform:translate(0px,-28px) rotate(-8deg);opacity:1}60%{transform:translate(4px,70px) rotate(12deg);opacity:1}100%{transform:translate(0px,205px) rotate(26deg);opacity:0}}' +
+    '#curator-tools-btn.hp-mail.hp-on .hp-envin{display:none}' +
     '@keyframes hp-env-back{0%{transform:translate(0px,45px);opacity:0}100%{transform:translate(0px,0px);opacity:1}}' +
     '@keyframes hp-wag-kf{0%,100%{transform:rotate(-6deg)}50%{transform:rotate(6deg)}}';
 
@@ -9443,7 +9438,40 @@
   // Синхронизировать «кот выпрыгнул / спрятался» с состоянием панели.
   function setCatOpen(on) {
     const b = document.getElementById('curator-tools-btn');
-    if (b) b.classList.toggle('hp-on', !!on);
+    if (!b) return;
+    const was = b.classList.contains('hp-on');
+    b.classList.toggle('hp-on', !!on);
+    if (on && !was && b.classList.contains('hp-mail')) dropEnvelope(b);   // нажали (открыли Хэлпер) — конверт падает
+  }
+
+  // Падение конверта — отдельный fixed-слой поверх страницы (не обрезается шапкой и не прячется под чужими блоками):
+  // стартует ровно с места конверта в коробке (тот прячется по .hp-on), подскакивает вверх, затем падает вниз ~430px,
+  // покачиваясь, и растворяется. Вернётся конверт сам — когда Хэлпер закроют (.hp-envin снова покажется).
+  function dropEnvelope(btn) {
+    const svg = btn.querySelector('svg.hp-catbox');
+    if (!svg) return;
+    const sr = svg.getBoundingClientRect();
+    if (!sr.width) return;
+    const k = sr.width / 200;                                   // px на единицу viewBox
+    const cx = sr.left + 80 * k, cy = sr.top + (42 + 128) * k;  // центр конверта в коробке (viewBox 0 -128 200 278)
+    const W = 24 * 4.8 * k;
+    const el = document.createElement('div');
+    el.style.cssText = 'position:fixed;z-index:2147483647;pointer-events:none;left:' + (cx - W / 2) + 'px;top:' + (cy - W / 2) + 'px;width:' + W + 'px;height:' + W + 'px;transform:rotate(-10deg);';
+    el.innerHTML = '<svg viewBox="0 0 24 24" width="' + W + '" height="' + W + '" aria-hidden="true">' + ENV_SHAPE + '</svg>';
+    document.body.appendChild(el);
+    const F = Math.max(120, Math.min(430, window.innerHeight - cy - 24));
+    const kf = function (y, x, r, o, off, ease) { return { transform: 'translate(' + x + 'px,' + Math.round(y) + 'px) rotate(' + r + 'deg)', opacity: o, offset: off, easing: ease }; };
+    try {
+      const a = el.animate([
+        kf(0, 0, -10, 1, 0, 'ease-out'),
+        kf(-16, 0, -18, 1, 0.13, 'cubic-bezier(.5,0,.85,.6)'),
+        kf(F * 0.30, 5, 2, 1, 0.5, 'linear'),
+        kf(F * 0.72, -5, 18, 1, 0.82, 'linear'),
+        kf(F, 6, 30, 0, 1)
+      ], { duration: 2100, fill: 'forwards' });
+      a.onfinish = function () { el.remove(); };
+    } catch (e) { el.remove(); }
+    setTimeout(function () { if (el.parentNode) el.remove(); }, 2600);
   }
 
   function makeCuratorBtn() {
