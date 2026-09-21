@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.36.0
+// @version      1.37.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -126,7 +126,7 @@
 
   /* ================================================ */
 
-  const VER = '1.36.0';
+  const VER = '1.37.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3647,7 +3647,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.36.0'; // синхр. с Хэлпером
+  const VER = '1.37.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -9379,6 +9379,14 @@
   // Кот в коробке. Рамку коробки рисует САМА кнопка (CSS border, 1:1 как у 🔑/🧲) — здесь только
   // «начинка»: линия-клапан + две синие полоски скотча, плюс спрятанные кот и хвост с бантом.
   // При открытии Хэлпера кот выпрыгивает, хвост поднимается и виляет.
+  // Конверт «Синий» (сплошной голубой, белая складка). Пока на табло есть послание (класс hp-mail на кнопке),
+  // он торчит из коробки слева от хвоста; когда кот выглядывает (наведение / открытая панель) — «подскок» и
+  // падение вниз, когда кот прячется — конверт возвращается. Всё на CSS-анимациях (CATBOX_CSS).
+  const ENV_SHAPE = '<path d="M3 7a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-10z" fill="#0284C7" stroke="#0284C7" stroke-width="2.4" stroke-linejoin="round"/>' +
+    '<path d="M3 7l9 6l9 -6" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
+  const envGroup = function (cls) {
+    return '<g class="' + cls + '" transform="translate(80 42)"><g class="hp-an"><g transform="rotate(-10) scale(4.8) translate(-12 -12)">' + ENV_SHAPE + '</g></g></g>';
+  };
   const BTN_SVG = '<svg class="hp-catbox" viewBox="0 -128 200 278" xmlns="http://www.w3.org/2000/svg" style="position:absolute;left:50%;bottom:-2px;transform:translateX(-50%);width:44px;height:65px;overflow:visible">' +
     '<defs><clipPath id="hpccl"><rect x="-260" y="-720" width="720" height="766"/></clipPath></defs>' +
     '<g clip-path="url(#hpccl)">' +
@@ -9394,11 +9402,14 @@
     '<circle cx="84" cy="-61" r="7" fill="#0284C7"/><circle cx="116" cy="-61" r="7" fill="#0284C7"/>' +
     '<path d="M94 -49 q6 -7 12 0 q4 9 -6 12 q-10 -3 -6 -12z" fill="#0284C7"/>' +
     '</g></g>' +
+    envGroup('hp-envin') +      // конверт ВНУТРИ clip-группы: обрезан по линии-клапану — «торчит из коробки»
     '</g>' +
     '<g class="hp-box">' +
     '<path d="M40 46 h120" stroke="#6B7280" stroke-width="6" stroke-linecap="round"/>' +
     '<rect x="108" y="92" width="42" height="11" rx="5.5" fill="#0284C7"/><rect x="108" y="111" width="42" height="11" rx="5.5" fill="#0284C7"/>' +
-    '</g></svg>';
+    '</g>' +
+    envGroup('hp-envout') +     // тот же конверт БЕЗ обрезки — им играем «подскок и падение» поверх коробки
+    '</svg>';
 
   const CATBOX_CSS =
     '#curator-tools-btn,#eduson-hdr-btns,#curator-hdr{overflow:visible !important}' +
@@ -9410,9 +9421,14 @@
     '#curator-tools-btn.hp-on .hp-cat{transform:translateY(15px)}' +
     '#curator-tools-btn.hp-on .hp-tail{transform:translate(-19px,-8px)}' +
     '#curator-tools-btn.hp-on .hp-wag{animation:hp-wag-kf 1.5s ease-in-out infinite}' +
-    '#curator-tools-btn .hp-letter{display:none;position:absolute;left:50%;bottom:3px;transform:translateX(-50%) rotate(-6deg);line-height:0;pointer-events:none;z-index:2}' +
-    '#curator-tools-btn.hp-mail .hp-letter{display:block}' +
-    '#curator-tools-btn.hp-mail .hp-box rect{display:none}' +
+    '#curator-tools-btn .hp-envin,#curator-tools-btn .hp-envout{display:none}' +
+    '#curator-tools-btn.hp-mail .hp-envin{display:block}' +
+    '#curator-tools-btn.hp-mail .hp-envin .hp-an{animation:hp-env-back .8s ease-out}' +
+    '#curator-tools-btn.hp-mail:hover .hp-envin,#curator-tools-btn.hp-mail.hp-on .hp-envin{display:none}' +
+    '#curator-tools-btn.hp-mail:hover .hp-envout,#curator-tools-btn.hp-mail.hp-on .hp-envout{display:block}' +
+    '#curator-tools-btn.hp-mail:hover .hp-envout .hp-an,#curator-tools-btn.hp-mail.hp-on .hp-envout .hp-an{animation:hp-env-fall 1.6s ease-in-out forwards}' +
+    '@keyframes hp-env-fall{0%{transform:translate(0px,0px) rotate(0deg);opacity:1}20%{transform:translate(0px,-28px) rotate(-8deg);opacity:1}60%{transform:translate(4px,70px) rotate(12deg);opacity:1}100%{transform:translate(0px,205px) rotate(26deg);opacity:0}}' +
+    '@keyframes hp-env-back{0%{transform:translate(0px,45px);opacity:0}100%{transform:translate(0px,0px);opacity:1}}' +
     '@keyframes hp-wag-kf{0%,100%{transform:rotate(-6deg)}50%{transform:rotate(6deg)}}';
 
   function catboxStyle() {
@@ -9441,12 +9457,6 @@
       'display:flex;align-items:center;justify-content:center;cursor:pointer;overflow:visible;' +
       'background:#fff;border:1.5px solid #5F6368;border-radius:6px;transition:background .15s;';
     btn.innerHTML = BTN_SVG;
-    // конверт «лежит в коробке»: показывается только когда на табло есть послание (класс hp-mail, см. CATBOX_CSS)
-    const letter = document.createElement('span');
-    letter.className = 'hp-letter';
-    letter.innerHTML = '<svg viewBox="0 0 24 24" width="21" height="15" fill="none" stroke="#0284C7" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" preserveAspectRatio="none" aria-hidden="true">' +
-      '<path fill="#DCEEF7" d="M3 7a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-10z"/><path d="M3 7l9 6l9 -6"/></svg>';
-    btn.appendChild(letter);
     btn.onmouseenter = function () { btn.style.background = '#EEF0F3'; };
     btn.onmouseleave = function () { btn.style.background = '#fff'; };
     btn.onclick = function (e) { e.stopPropagation(); togglePanel(); };
