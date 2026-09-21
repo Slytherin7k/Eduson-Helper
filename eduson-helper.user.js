@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.33.1
+// @version      1.34.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -126,7 +126,7 @@
 
   /* ================================================ */
 
-  const VER = '1.33.1';
+  const VER = '1.34.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3647,7 +3647,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.33.1'; // синхр. с Хэлпером
+  const VER = '1.34.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4544,6 +4544,243 @@
     if (typeof setCatOpen === 'function') setCatOpen(true);
   }
 
+  /* ==================== ТАБЛО ПОСЛАНИЙ ====================
+     Вместо «Здесь могла быть ваша реклама»: анонимное послание коллег, ОДНО на всех, висит 30 минут.
+     Хранилище — Google-таблица «Пожелания» (лист «Ответы на форму (1)», gid 2002619174, читается по ссылке
+     без входа). Писать в неё можно только через Google-форму (formResponse без входа — имя нигде не
+     сохраняется; в таблице только время + текст). Удалить плохое послание = удалить строку в таблице.
+     Кто занял табло, решает ЧТЕНИЕ: идём по строкам по времени, строка принимается, если пришла вне
+     30-минутного окна предыдущей принятой; остальные (успевшие в тот же момент) игнорируются. */
+  const BOARD_SHEET_ID = '1phloFO1G7WZXgvIKmiL4PI6dZbJw9U6ptxPgtDkD-mQ';
+  const BOARD_GID = '2002619174';
+  const BOARD_FORM_ID = '1FAIpQLSeA-trxA3EZc2wBXHZXFYizGApUEpxTIX-4Fxa7RxZZyjKEhg';
+  const BOARD_ENTRY = 'entry.942429302';
+  const BOARD_WINDOW_MS = 30 * 60 * 1000;
+  const BOARD_MAX = 130, BOARD_MIN = 3;
+  const BOARD_TZ_H = 3;   // часовой пояс таблицы: Москва (UTC+3, без перевода часов)
+  const BOARD_TICK_MS = 20000, BOARD_FRESH_MS = 55000;
+  const BOARD_HINTS = ['Поблагодари коллегу, который выручил сегодня…', 'Пожелай всем лёгкой смены и крепких нервов…',
+    'Поддержи того, у кого сегодня сложный день…', 'Расскажи, что порадовало тебя на этой неделе…'];
+  const BOARD_PAW = ['M14.7 13.5c-1.1 -2 -1.441 -2.5 -2.7 -2.5c-1.259 0 -1.736 .755 -2.836 2.747c-.942 1.703 -2.846 1.845 -3.321 3.291c-.097 .265 -.145 .677 -.143 .962c0 1.176 .787 2 1.8 2c1.259 0 3 -1 4.5 -1s3.241 1 4.5 1c1.013 0 1.8 -.823 1.8 -2c0 -.285 -.049 -.697 -.146 -.962c-.475 -1.451 -2.512 -1.835 -3.454 -3.538z',
+    'M20.188 8.082a1.039 1.039 0 0 0 -.406 -.082h-.015c-.735 .012 -1.56 .75 -1.993 1.866c-.519 1.335 -.28 2.7 .538 3.052c.129 .055 .267 .082 .406 .082c.739 0 1.575 -.742 2.011 -1.866c.516 -1.335 .273 -2.7 -.54 -3.052z',
+    'M9.474 9c.055 0 .109 0 .163 -.011c.944 -.128 1.533 -1.346 1.32 -2.722c-.203 -1.297 -1.047 -2.267 -1.932 -2.267c-.055 0 -.109 0 -.163 .011c-.944 .128 -1.533 1.346 -1.32 2.722c.204 1.293 1.048 2.267 1.933 2.267z',
+    'M16.456 6.733c.214 -1.376 -.375 -2.594 -1.32 -2.722a1.164 1.164 0 0 0 -.162 -.011c-.885 0 -1.728 .97 -1.93 2.267c-.214 1.376 .375 2.594 1.32 2.722c.054 .007 .108 .011 .162 .011c.885 0 1.73 -.974 1.93 -2.267z',
+    'M5.69 12.918c.816 -.352 1.054 -1.719 .536 -3.052c-.436 -1.124 -1.271 -1.866 -2.009 -1.866c-.14 0 -.277 .027 -.407 .082c-.816 .352 -1.054 1.719 -.536 3.052c.436 1.124 1.271 1.866 2.009 1.866c.14 0 .277 -.027 .407 -.082z'];
+
+  // общий кэш между открытиями панели: rows — строки таблицы, skew — серверное «сейчас» минус локальное
+  const _board = { rows: null, skew: 0, loadedAt: 0, err: false, mine: null, draft: '' };
+
+  function boardLen(s) { return Array.from(String(s || '')).length; }
+  function boardClean(s) { return String(s || '').replace(/[ -]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+  function boardCut(s) { return Array.from(s).slice(0, BOARD_MAX).join(''); }
+
+  // Читает таблицу (gviz JSON, последние 100 строк). → {rows:[{t,text}] по возрастанию времени, skew}
+  function boardLoad() {
+    const q = 'select A,B order by A desc limit 100';
+    const url = 'https://docs.google.com/spreadsheets/d/' + BOARD_SHEET_ID + '/gviz/tq?tqx=out:json&gid=' + BOARD_GID +
+      '&tq=' + encodeURIComponent(q) + '&_=' + Date.now();
+    return new Promise(function (resolve, reject) {
+      GM_xmlhttpRequest({
+        method: 'GET', url: url, timeout: 15000, anonymous: true,
+        onload: function (res) {
+          if (res.status !== 200) { reject(new Error('код ' + res.status)); return; }
+          const m = String(res.responseText || '').match(/setResponse\(([\s\S]*)\)\s*;?\s*$/);
+          let j = null;
+          try { j = JSON.parse(m && m[1]); } catch (e) { j = null; }
+          if (!j || j.status !== 'ok' || !j.table) { reject(new Error('таблица ответила не так')); return; }
+          const dh = /(?:^|\n)date:\s*(.+)/i.exec(res.responseHeaders || '');
+          const srv = dh ? Date.parse(dh[1].trim()) : NaN;
+          const rows = [];
+          (j.table.rows || []).forEach(function (r) {
+            const c = r.c || [];
+            const dm = c[0] && typeof c[0].v === 'string' && c[0].v.match(/^Date\((\d+),(\d+),(\d+),(\d+),(\d+),(\d+)\)$/);
+            const text = boardCut(boardClean(c[1] && c[1].v));
+            if (!dm || !text) return;
+            rows.push({ t: Date.UTC(+dm[1], +dm[2], +dm[3], +dm[4], +dm[5], +dm[6]) - BOARD_TZ_H * 3600000, text: text });
+          });
+          rows.sort(function (a, b) { return a.t - b.t; });
+          resolve({ rows: rows, skew: isFinite(srv) ? srv - Date.now() : 0 });
+        },
+        onerror: function () { reject(new Error('сеть')); },
+        ontimeout: function () { reject(new Error('долго не отвечает')); }
+      });
+    });
+  }
+
+  // Какое послание висит сейчас (или null): первая строка вне 30-минутного окна предыдущей принятой.
+  function boardActive(rows, now) {
+    let act = null;
+    rows.forEach(function (r) {
+      if (r.t > now + 60000) return;   // «из будущего» (часы) — не считаем
+      if (!act || r.t >= act.t + BOARD_WINDOW_MS) act = r;
+    });
+    return act && now < act.t + BOARD_WINDOW_MS ? act : null;
+  }
+
+  function boardSend(text) {
+    return new Promise(function (resolve) {
+      GM_xmlhttpRequest({
+        method: 'POST', url: 'https://docs.google.com/forms/d/e/' + BOARD_FORM_ID + '/formResponse', timeout: 15000, anonymous: true,
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+        data: BOARD_ENTRY + '=' + encodeURIComponent(text),
+        onload: function (res) { resolve(res.status >= 200 && res.status < 400); },
+        onerror: function () { resolve(false); },
+        ontimeout: function () { resolve(false); }
+      });
+    });
+  }
+
+  function buildBoard() {
+    const box = elt('div', 'margin-bottom:10px;');
+    const SERIF = 'font-family:Georgia,"Times New Roman",serif;';
+    const INK = '#0B2447', INK2 = '#445874', INK3 = '#5A6D86';
+    let mode = 'view';      // 'view' | 'write'
+    let sending = false, showOk = false;
+    let phTimer = 0;
+
+    const nowMs = function () { return Date.now() + (_board.skew || 0); };
+    const current = function () {
+      const act = _board.rows ? boardActive(_board.rows, nowMs()) : null;
+      if (act) return act;
+      // только что отправили, а таблица ещё не обновилась — показываем своё
+      if (_board.mine && nowMs() - _board.mine.t < 60000) return _board.mine;
+      return null;
+    };
+
+    const mkPaw = function () {
+      const d = elt('div', 'flex:none;width:30px;height:30px;border-radius:50%;background:#DCEEF7;color:' + ACC + ';display:flex;align-items:center;justify-content:center;');
+      d.innerHTML = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        BOARD_PAW.map(function (d0) { return '<path d="' + d0 + '"/>'; }).join('') + '</svg>';
+      return d;
+    };
+    const mkBtn = function (label, primary) {
+      const b = elt('button', 'cursor:pointer;font:700 12px ' + FONT + ';padding:4px 12px;border-radius:8px;' +
+        (primary ? 'background:' + ACC + ';color:#fff;border:1px solid ' + ACC + ';' : 'background:#fff;color:' + INK + ';border:1px solid #C2E1F2;'), label);
+      b.type = 'button';
+      return b;
+    };
+
+    function viewFree(inner) {
+      inner.appendChild(elt('div', SERIF + 'font-size:14.5px;line-height:1.45;', 'Здесь могло бы быть ваше доброе слово 🐾'));
+      const loading = !_board.rows && !_board.err;
+      inner.appendChild(elt('div', 'font-size:12px;margin:2px 0 ' + (loading || _board.err ? '0' : '8px') + ';color:' + INK2 + ';',
+        loading ? 'Табло загружается…' : _board.err ? 'Табло сейчас не отвечает.' : 'Табло свободно.'));
+      if (!loading && !_board.err) {
+        const b = mkBtn('✎ Написать', false);
+        b.onclick = function () { mode = 'write'; showOk = false; render(); };
+        inner.appendChild(b);
+      }
+    }
+
+    function viewMsg(inner, cur) {
+      if (showOk) inner.appendChild(elt('div', 'font-size:12px;font-weight:800;color:#15803D;margin-bottom:5px;', '✓ Готово, послание на табло'));
+      inner.appendChild(elt('div', SERIF + 'font-size:14.5px;line-height:1.5;font-style:italic;', cur.text));
+      inner.appendChild(elt('div', 'text-align:right;font-size:12px;margin-top:4px;color:' + INK2 + ';', '— твой коллега'));
+      const leftMs = Math.max(0, Math.min(BOARD_WINDOW_MS, cur.t + BOARD_WINDOW_MS - nowMs()));
+      const mins = Math.max(1, Math.ceil(leftMs / 60000));
+      const meta = elt('div', 'display:flex;align-items:center;gap:8px;margin-top:8px;font-size:11px;color:' + INK3 + ';');
+      meta.appendChild(elt('span', 'white-space:nowrap;', 'следующее послание — через ' + mins + ' мин'));
+      const track = elt('div', 'flex:1;min-width:20px;height:3px;border-radius:2px;background:#CFE3EE;');
+      track.appendChild(elt('div', 'height:100%;border-radius:2px;background:' + ACC + ';width:' + Math.round(leftMs / BOARD_WINDOW_MS * 100) + '%;'));
+      meta.appendChild(track);
+      inner.appendChild(meta);
+    }
+
+    function writeUI(inner) {
+      const ta = elt('textarea', 'width:100%;box-sizing:border-box;min-height:58px;resize:none;padding:8px 10px;border:1px solid #C2E1F2;border-radius:9px;font:600 13px/1.4 ' + FONT + ';color:' + INK + ';background:#fff;outline:none;');
+      ta.rows = 2;
+      ta.placeholder = BOARD_HINTS[0];
+      ta.value = _board.draft || '';
+      const err = elt('div', 'font-size:12px;color:#B91C1C;min-height:16px;margin-top:2px;');
+      const cnt = elt('span', 'font-size:12px;flex:1;color:' + INK2 + ';');
+      const upd = function () {
+        let a = Array.from(ta.value);
+        if (a.length > BOARD_MAX) { a = a.slice(0, BOARD_MAX); ta.value = a.join(''); }
+        cnt.textContent = 'осталось ' + (BOARD_MAX - a.length);
+        _board.draft = ta.value;
+      };
+      ta.oninput = function () { upd(); err.textContent = ''; };
+      upd();
+      let hi = 0;
+      clearInterval(phTimer);
+      phTimer = setInterval(function () {
+        if (!document.body.contains(ta)) { clearInterval(phTimer); return; }
+        if (!ta.value) { hi = (hi + 1) % BOARD_HINTS.length; ta.placeholder = BOARD_HINTS[hi]; }
+      }, 2800);
+
+      const cancel = mkBtn('Отмена', false);
+      cancel.onclick = function () { if (sending) return; mode = 'view'; render(); };
+      const send = mkBtn('Отправить', true);
+      send.onclick = async function () {
+        if (sending) return;
+        const v = boardCut(boardClean(ta.value));
+        if (boardLen(v) < BOARD_MIN) { err.textContent = 'Напиши хотя бы пару слов'; return; }
+        sending = true; send.textContent = 'Отправляю…'; send.style.opacity = '.7';
+        try {
+          // перед отправкой — свежая проверка: вдруг табло только что заняли
+          const d = await boardLoad();
+          _board.rows = d.rows; _board.skew = d.skew; _board.loadedAt = Date.now(); _board.err = false;
+          const busy = boardActive(d.rows, nowMs());
+          if (busy) {
+            sending = false; mode = 'view'; render();
+            toast('Табло только что заняли. Твой текст сохранён — напишешь, когда оно освободится.', 5000);
+            return;
+          }
+          const ok = await boardSend(v);
+          if (!ok) throw new Error('send');
+          _board.mine = { t: nowMs(), text: v };
+          _board.draft = '';
+          sending = false; showOk = true; mode = 'view'; render();
+          setTimeout(function () { showOk = false; if (mode === 'view') render(); }, 25000);
+          setTimeout(refresh, 5000);
+          setTimeout(refresh, 15000);
+        } catch (e) {
+          sending = false; send.textContent = 'Отправить'; send.style.opacity = '1';
+          err.textContent = 'Не получилось отправить. Проверь интернет и попробуй ещё раз.';
+        }
+      };
+      const acts = elt('div', 'display:flex;align-items:center;gap:8px;');
+      acts.appendChild(cnt); acts.appendChild(cancel); acts.appendChild(send);
+      inner.appendChild(ta); inner.appendChild(err); inner.appendChild(acts);
+      inner.appendChild(elt('div', 'font-size:11px;margin-top:6px;color:' + INK3 + ';', 'Анонимно: имя нигде не сохраняется'));
+    }
+
+    function render() {
+      clearInterval(phTimer);
+      box.innerHTML = '';
+      const inner = elt('div', 'flex:1;min-width:0;box-sizing:border-box;padding:9px 12px;border-radius:4px 12px 12px 12px;background:#EDF6FB;border:1px solid #C2E1F2;color:' + INK + ';');
+      const cur = current();
+      if (mode === 'write') writeUI(inner);
+      else if (cur) viewMsg(inner, cur);
+      else viewFree(inner);
+      const row = elt('div', 'display:flex;gap:10px;align-items:flex-start;');
+      row.appendChild(mkPaw());
+      row.appendChild(inner);
+      box.appendChild(row);
+    }
+
+    function refresh() {
+      if (!document.body.contains(box)) return Promise.resolve();
+      return boardLoad().then(function (d) {
+        _board.rows = d.rows; _board.skew = d.skew; _board.loadedAt = Date.now(); _board.err = false;
+        // своё послание уже видно в таблице — «временное» больше не нужно
+        if (_board.mine && d.rows.some(function (r) { return r.text === _board.mine.text; })) _board.mine = null;
+      }).catch(function () { _board.err = true; }).then(function () {
+        if (mode === 'view' && document.body.contains(box)) render();
+      });
+    }
+
+    render();
+    // панель ещё не в документе (её добавят сразу после сборки) — грузим на следующем такте
+    if (Date.now() - _board.loadedAt > BOARD_FRESH_MS) setTimeout(refresh, 0);
+    const tick = setInterval(function () {
+      if (!document.body.contains(box)) { clearInterval(tick); clearInterval(phTimer); return; }
+      if (Date.now() - _board.loadedAt > BOARD_FRESH_MS) refresh();
+      else if (mode === 'view') render();
+    }, BOARD_TICK_MS);
+    return box;
+  }
+
   let hpPanelTab = '';   // какая вкладка панели открыта сейчас ('Пинги' / 'Теги' / …)
 
   function buildPanel() {
@@ -4576,7 +4813,6 @@
     const head = elt('div', 'display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;cursor:move;user-select:none;');
     const ttl = elt('div', 'font-weight:800;font-size:11.5px;color:' + ACC + ';letter-spacing:.1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;');
     ttl.appendChild(elt('span', '', '⠿ Хэлпер'));
-    ttl.appendChild(elt('span', 'font-weight:700;color:#9CA3AF;', '  ·  Здесь могла быть ваша реклама😎'));
     head.appendChild(ttl);
     const x = elt('span', 'cursor:pointer;color:#9CA3AF;font-size:15px;line-height:1;padding:2px 4px;', '✕');
     x.dataset.hpClose = '1';
@@ -4584,6 +4820,7 @@
     head.appendChild(x);
     p.appendChild(head);
     makePanelDraggable(p, head);
+    p.appendChild(buildBoard());   // табло анонимных посланий (вместо «Здесь могла быть ваша реклама»)
 
     // вкладки — все 6 в одну строку
     const tabs = elt('div', 'display:flex;gap:4px;margin-bottom:8px;');
