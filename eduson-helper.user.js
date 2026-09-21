@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.32.0
+// @version      1.33.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -126,7 +126,7 @@
 
   /* ================================================ */
 
-  const VER = '1.23.0';
+  const VER = '1.33.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3647,7 +3647,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.23.0'; // синхр. с Хэлпером
+  const VER = '1.33.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4547,10 +4547,31 @@
   let hpPanelTab = '';   // какая вкладка панели открыта сейчас ('Пинги' / 'Теги' / …)
 
   function buildPanel() {
-    const p = elt('div', 'position:fixed;z-index:2147483646;width:min(360px,calc(100vw - 20px));max-height:82vh;overflow-x:hidden;overflow-y:auto;' +
+    const p = elt('div', 'position:fixed;z-index:2147483646;box-sizing:border-box;width:min(384px,calc(100vw - 20px));min-width:336px;min-height:160px;max-height:82vh;overflow-x:hidden;overflow-y:auto;resize:both;' +
       'background:#fff;color:#1F2937;border:1px solid #E5E7EB;border-radius:14px;box-shadow:0 18px 48px rgba(15,23,42,.24);' +
       'font-family:' + FONT + ';padding:9px 11px;');
     p.id = PANEL_ID;
+
+    // Размер — как в Мастере-возврате: тянется за правый нижний угол, запоминается (curatorPanelSize).
+    // Сохраняем только когда куратор реально потянул угол, иначе «авто-высота» превратилась бы в фиксированную.
+    try {
+      const sz = JSON.parse(GM_getValue('curatorPanelSize') || 'null');
+      if (sz && sz.w >= 336) p.style.width = Math.min(sz.w, window.innerWidth - 20) + 'px';
+      if (sz && sz.h >= 160) p.style.height = Math.min(sz.h, window.innerHeight - 20) + 'px';
+    } catch (e) { /* размер по умолчанию */ }
+    let szDown = null;
+    p.addEventListener('mousedown', function (e) {
+      const r = p.getBoundingClientRect();
+      szDown = (e.clientX > r.right - 22 && e.clientY > r.bottom - 22) ? { w: p.offsetWidth, h: p.offsetHeight } : null;
+    });
+    const onSizeUp = function () {
+      if (!p.isConnected) { document.removeEventListener('mouseup', onSizeUp, true); return; }
+      if (!szDown) return;
+      const moved = p.offsetWidth !== szDown.w || p.offsetHeight !== szDown.h;
+      szDown = null;
+      if (moved) { try { GM_setValue('curatorPanelSize', JSON.stringify({ w: p.offsetWidth, h: p.offsetHeight })); } catch (e) {} }
+    };
+    document.addEventListener('mouseup', onSizeUp, true);
 
     // Не выпускаем нажатия клавиш из панели наружу — иначе горячие клавиши OmniDesk
     // (напр. русская «т» = физическая N = «новое обращение») срабатывают прямо во время
@@ -4566,7 +4587,7 @@
       p.style.left = pos.x + 'px';
       p.style.top = pos.y + 'px';
     } else {
-      p.style.left = Math.max(6, window.innerWidth - 378) + 'px';
+      p.style.left = Math.max(6, window.innerWidth - 402) + 'px';
       p.style.top = '64px';
     }
     setTimeout(function () { clampPanel(p); }, 0);
@@ -4583,11 +4604,11 @@
     p.appendChild(head);
     makePanelDraggable(p, head);
 
-    // вкладки — все 5 в одну строку
+    // вкладки — все 6 в одну строку
     const tabs = elt('div', 'display:flex;gap:4px;margin-bottom:8px;');
     const body = elt('div', '');
     const mkTab = function (label, fn) {
-      const b = elt('div', 'flex:1 1 0;min-width:0;text-align:center;cursor:pointer;font-weight:800;font-size:10px;padding:6px 2px;border-radius:8px;border:1.5px solid ' + ACC_BD + ';color:' + ACC + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;', label);
+      const b = elt('div', 'flex:1 1 auto;min-width:0;text-align:center;cursor:pointer;font-weight:800;font-size:10px;padding:6px 2px;border-radius:8px;border:1.5px solid ' + ACC_BD + ';color:' + ACC + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;', label);
       b.onclick = function () {
         Array.from(tabs.children).forEach(function (t) { t.style.background = '#fff'; t.style.color = ACC; });
         b.style.background = ACC; b.style.color = '#fff';
@@ -4603,11 +4624,13 @@
     const tPing = mkTab('Пинги', renderPings);
     const tQ = mkTab('Ноушен', renderQuestions);
     const tCourses = mkTab('Курсы', renderCourses);
+    const tProg = mkTab('Прогресс', renderProgressTab);
     const tDoc = mkTab('Документ', renderDoc);
     const tTag = mkTab('Теги', renderTags);
     tabs.appendChild(tPing);
     tabs.appendChild(tQ);
     tabs.appendChild(tCourses);
+    tabs.appendChild(tProg);
     tabs.appendChild(tDoc);
     tabs.appendChild(tTag);
     p.appendChild(tabs);
@@ -7047,19 +7070,18 @@
     return lessonCache;
   }
 
-  /* ==================== ВКЛАДКА «КУРСЫ» — под-вкладки: Урок | Прогресс 80 | Добавить курс ==================== */
-  var _coursesSub = 'lesson';
-  function renderCourses(body) {
+  /* ---------- ряд под-вкладок внутри вкладки панели (общий для «Курсы» и «Прогресс») ----------
+     defs = [[подпись, функция-отрисовка, ключ], …]; current — ключ открытой; onPick(ключ) — запомнить выбор. */
+  function renderSubTabs(body, defs, current, onPick) {
     const bar = elt('div', 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:9px;');
     const inner = elt('div', '');
     const tCss = 'flex:1 1 auto;text-align:center;cursor:pointer;font-weight:800;font-size:10.5px;padding:6px 8px;border-radius:8px;border:1.5px solid ' + ACC_BD + ';color:' + ACC + ';white-space:nowrap;';
-    const defs = [['Урок', renderLesson, 'lesson'], ['Прогресс 80', renderProgress80, 'progress'], ['ПрогрессБлок', renderProgressBlock, 'block'], ['Добавить курс', renderAddCourse, 'add'], ['Подбор курса/списка 1+1', renderPickCourse, 'pick'], ['Новый аккаунт', renderNewAccount, 'newacc']];
     const btns = defs.map(function (d) {
       const b = elt('div', tCss, d[0]);
       b.onclick = function () {
         btns.forEach(function (x) { x.style.background = '#fff'; x.style.color = ACC; });
         b.style.background = ACC; b.style.color = '#fff';
-        _coursesSub = d[2];
+        onPick(d[2]);
         inner.innerHTML = '';
         d[1](inner);
       };
@@ -7068,8 +7090,22 @@
     btns.forEach(function (b) { bar.appendChild(b); });
     body.appendChild(bar);
     body.appendChild(inner);
-    const idx = { lesson: 0, progress: 1, block: 2, add: 3, pick: 4, newacc: 5 }[_coursesSub] || 0;
-    btns[idx].onclick();
+    const idx = defs.findIndex(function (d) { return d[2] === current; });
+    btns[idx < 0 ? 0 : idx].onclick();
+  }
+
+  /* ==================== ВКЛАДКА «КУРСЫ» — под-вкладки: Урок | Добавить курс | Подбор 1+1/Замена | Новый аккаунт ==================== */
+  var _coursesSub = 'lesson';
+  function renderCourses(body) {
+    renderSubTabs(body, [['Урок', renderLesson, 'lesson'], ['Добавить курс', renderAddCourse, 'add'], ['Подбор 1+1/Замена', renderPickCourse, 'pick'], ['Новый аккаунт', renderNewAccount, 'newacc']],
+      _coursesSub, function (k) { _coursesSub = k; });
+  }
+
+  /* ==================== ВКЛАДКА «ПРОГРЕСС» — под-вкладки: Прогресс 80 | ПрогрессБлок ==================== */
+  var _progressSub = 'progress';
+  function renderProgressTab(body) {
+    renderSubTabs(body, [['Прогресс 80', renderProgress80, 'progress'], ['ПрогрессБлок', renderProgressBlock, 'block']],
+      _progressSub, function (k) { _progressSub = k; });
   }
 
   /* ---------- под-вкладка «Подбор курса» (акция 1+1) ----------
