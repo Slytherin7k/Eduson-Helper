@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.34.1
+// @version      1.34.2
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -126,7 +126,7 @@
 
   /* ================================================ */
 
-  const VER = '1.34.1';
+  const VER = '1.34.2';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3647,7 +3647,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.34.1'; // синхр. с Хэлпером
+  const VER = '1.34.2'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4653,12 +4653,12 @@
         BOARD_PAW.map(function (d0) { return '<path d="' + d0 + '"/>'; }).join('') + '</svg>';
       return d;
     };
-    // два следа лапки (вместо эмодзи 🐾, которое не перекрасить) — цвет Хэлпера
-    const mkPrints = function () {
-      const s = elt('span', 'display:inline-block;vertical-align:-3px;margin-left:6px;color:' + ACC + ';');
-      const one = BOARD_PAW.map(function (d0) { return '<path d="' + d0 + '"/>'; }).join('');
-      s.innerHTML = '<svg width="33" height="19" viewBox="0 0 46 26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-        '<g transform="translate(0 1) rotate(-16 12 12)">' + one + '</g><g transform="translate(21 1) rotate(14 12 12)">' + one + '</g></svg>';
+    // голубой конверт (Tabler «mail») после слова «слово»: контур — цвет Хэлпера, заливка — светло-голубая
+    const mkEnvelope = function () {
+      const s = elt('span', 'display:inline-block;vertical-align:-4px;margin-left:6px;color:' + ACC + ';');
+      s.innerHTML = '<svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        '<path fill="#DCEEF7" d="M3 7a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-10z"/>' +
+        '<path d="M3 7l9 6l9 -6"/></svg>';
       return s;
     };
     const mkBtn = function (label, primary) {
@@ -4669,17 +4669,23 @@
     };
 
     function viewFree(inner) {
-      // следы лапок «приклеены» к последнему слову (не уезжают на отдельную строку)
-      const ttl = elt('div', SERIF + 'font-size:14.5px;line-height:1.45;', 'Здесь могло бы быть ваше доброе ');
-      const last = elt('span', 'white-space:nowrap;', 'слово');
-      last.appendChild(mkPrints());
-      ttl.appendChild(last);
+      // Вся фраза + конверт — строго в ОДНУ строку. Если шрифт на компьютере шире и не влезает,
+      // уменьшаем размер шагами по 0,5px (не меньше 11px), пока не поместится.
+      const ttl = elt('div', SERIF + 'font-size:14.5px;line-height:1.45;white-space:nowrap;overflow:hidden;', 'Здесь могло бы быть ваше доброе слово');
+      ttl.appendChild(mkEnvelope());
       inner.appendChild(ttl);
+      setTimeout(function () {
+        if (!document.body.contains(ttl)) return;
+        let fs = 14.5;
+        while (ttl.scrollWidth > ttl.clientWidth + 1 && fs > 11) { fs -= 0.5; ttl.style.fontSize = fs + 'px'; }
+      }, 0);
       const loading = !_board.rows && !_board.err;
-      inner.appendChild(elt('div', 'font-size:12px;margin:2px 0 ' + (loading || _board.err ? '0' : '8px') + ';color:' + INK2 + ';',
-        loading ? 'Табло загружается…' : _board.err ? 'Табло сейчас не отвечает.' : 'Табло свободно.'));
-      if (!loading && !_board.err) {
+      if (loading || _board.err) {
+        inner.appendChild(elt('div', 'font-size:12px;margin:2px 0 0;color:' + INK2 + ';',
+          loading ? 'Табло загружается…' : 'Табло сейчас не отвечает.'));
+      } else {
         const b = mkBtn('✎ Написать', false);
+        b.style.marginTop = '8px';
         b.onclick = function () { mode = 'write'; showOk = false; render(); };
         inner.appendChild(b);
       }
