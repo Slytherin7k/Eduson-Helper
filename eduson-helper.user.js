@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.31.1
+// @version      1.32.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -6851,6 +6851,27 @@
 
   // uid обучающегося в академии по конкретному suid: /admin/users/<uid> → кабинет → stats → план
   // под courseHint → [{id,name}] верхнеуровневых курсов. Кэш по uid (страница юзера ~1.3 МБ — тяжёлая).
+  // «Пройдено N%» — из шапки страницы учебного плана (тот же способ, что в Возврат-мастере).
+  const _planPct = {};
+  function planPctFromHtml(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const v = doc.querySelector('.academy-plan-header .progress-scale__value, .academy-plan-header__progress-scale .progress-scale__value, .academy-plan-header__progress-scale');
+    let m = v && (v.textContent || '').match(/(\d{1,3})\s*%/);
+    if (!m) {
+      const bar = doc.querySelector('.academy-plan-header .progress-scale__bar, .academy-plan-header__progress-scale .progress-scale__bar');
+      const w = bar && (bar.getAttribute('style') || '').match(/width:\s*(\d{1,3})/);
+      if (w) m = [null, w[1]];
+    }
+    if (!m) m = String(html).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').match(/(\d{1,3})\s*%\s+\d+\s+курс/i);
+    return m ? String(Math.min(100, Math.max(0, +m[1]))) : '';
+  }
+  function planPct(planUrl) {
+    if (_planPct[planUrl] !== undefined) return Promise.resolve(_planPct[planUrl]);
+    return gmText(planUrl).then(function (html) {
+      if (looksLikeAdminLogin(html)) throw new Error('NOAUTH');
+      return (_planPct[planUrl] = planPctFromHtml(html));
+    });
+  }
   const _acctLessons = {};
   async function accountLessons(uid, courseHint) {
     if (_acctLessons[uid]) return _acctLessons[uid];
@@ -6864,6 +6885,7 @@
     if (!plans.length) throw new Error('нет учебных планов');
     const picked = pickPlan(plans, courseHint) || plans[0];
     const planHtml = await gmText(picked.url);
+    _planPct[picked.url] = planPctFromHtml(planHtml);
     const res = {
       planName: picked.name, lessons: lessonsFromPlan(planHtml), plans: plans,
       domain: (cabUrl.match(/^https?:\/\/[^/]+/) || [''])[0], planKey: picked.url
@@ -7128,14 +7150,27 @@
     const budgetInput = elt('input', inputCss + 'margin-top:6px;font-weight:800;font-size:14px;');
     budgetInput.placeholder = 'бюджет, ₽ (можно вписать вручную)';
     body.appendChild(budgetInput);
-    // замена курса: на новый курс идёт бюджет минус доля уже пройденного
-    body.appendChild(elt('div', fieldLabel, 'Пройдено, % — при замене курса'));
+    // замена курса: на новый курс идёт бюджет минус доля уже пройденного. Галочка нужна, чтобы обычный
+    // подбор (1+1) не трогать; процент подтягивается из кабинета студента только после включения.
+    const replCb = elt('input', 'margin:0;flex:0 0 auto;cursor:pointer;');
+    replCb.type = 'checkbox';
+    const replRow = elt('label', 'display:flex;align-items:center;gap:7px;margin-top:9px;font-size:12px;font-weight:800;color:#111827;cursor:pointer;');
+    replRow.appendChild(replCb);
+    replRow.appendChild(document.createTextNode('🔄 Замена курса — вычесть пройденное'));
+    body.appendChild(replRow);
+    const replBox = elt('div', 'display:none;');
+    body.appendChild(replBox);
+    replBox.appendChild(elt('div', fieldLabel, 'Пройдено, %'));
     const progInput = elt('input', inputCss + 'font-weight:800;font-size:14px;');
-    progInput.placeholder = 'например, 30 (пусто — обычный подбор)';
+    progInput.placeholder = 'например, 30';
     progInput.inputMode = 'numeric';
-    body.appendChild(progInput);
+    replBox.appendChild(progInput);
+    const planWrap = elt('div', 'margin-top:5px;');
+    replBox.appendChild(planWrap);
+    const progNote = elt('div', 'margin-top:4px;font-size:10.5px;font-weight:700;color:#9CA3AF;line-height:1.4;');
+    replBox.appendChild(progNote);
     const availLine = elt('div', 'margin-top:6px;font-size:12.5px;font-weight:800;color:#166534;line-height:1.4;display:none;');
-    body.appendChild(availLine);
+    replBox.appendChild(availLine);
 
     // ── курс ──
     body.appendChild(elt('div', fieldLabel, 'Курс — ссылка с сайта или название'));
@@ -7153,7 +7188,7 @@
     let catalog = null, chosen = null, deals = [];
     const checked = {};
     const rawBudget = function () { return parseInt(String(budgetInput.value || '').replace(/\D/g, ''), 10) || 0; };
-    const progress = function () { return Math.min(parseInt(String(progInput.value || '').replace(/\D/g, ''), 10) || 0, 100); };
+    const progress = function () { return replCb.checked ? Math.min(parseInt(String(progInput.value || '').replace(/\D/g, ''), 10) || 0, 100) : 0; };
     // бюджет для сравнений = бюджет из амо × (100 − % пройденного) / 100
     const budget = function () { return Math.round(rawBudget() * (100 - progress()) / 100); };
     function updateAvail() {
@@ -7161,6 +7196,53 @@
       availLine.style.display = raw && p ? 'block' : 'none';
       if (raw && p) availLine.textContent = '🧮 Доступно на замену: ' + pcMoney(budget()) + ' (бюджет ' + pcMoney(raw) + ' − ' + p + '% пройденного)';
     }
+    // Процент — из кабинета студента, как в Возврат-мастере: админка → кабинет → учебный план → шапка «Пройдено N%».
+    // Грузим лениво (при первом включении галочки): страницы админки и плана тяжёлые.
+    let acctAsked = false, typedByHand = false;
+    function applyPct(planUrl, planName) {
+      progNote.style.color = '#9CA3AF';
+      progNote.textContent = 'Смотрю процент в кабинете студента…';
+      planPct(planUrl).then(function (pct) {
+        if (pct === '') { progNote.style.color = '#B45309'; progNote.textContent = 'В кабинете процент не нашла — впиши руками.'; return; }
+        if (!typedByHand) { progInput.value = pct; onBudgetChange(); }
+        progNote.style.color = '#166534';
+        progNote.textContent = 'Из кабинета: «' + planName + '» — ' + pct + '% (можно поправить)';
+      }).catch(function (e) {
+        progNote.style.color = '#B45309';
+        progNote.textContent = (e && e.message === 'NOAUTH') ? 'Не пустило на www.eduson.tv — открой админку в соседней вкладке, войди и включи галочку заново. Или впиши % руками.'
+          : '🙀 Процент не подтянулся (' + ((e && e.message) || 'ошибка') + ') — впиши руками.';
+      });
+    }
+    function loadProgress() {
+      acctAsked = true;
+      progNote.style.color = '#9CA3AF';
+      progNote.textContent = 'Ищу студента в админке…';
+      resolveStudentAccount().then(function (a) { return accountLessons(a.uid, a.course); }).then(function (d) {
+        const plans = d.plans || [];
+        if (plans.length > 1) {          // у студента несколько программ — выбираем ту, по которой замена
+          const sel = elt('select', inputCss + 'font-size:11.5px;font-weight:700;');
+          plans.forEach(function (p) { const o = elt('option', '', p.name); o.value = p.url; if (p.url === d.planKey) o.selected = true; sel.appendChild(o); });
+          sel.onchange = function () {
+            const p = plans.find(function (x) { return x.url === sel.value; });
+            typedByHand = false;
+            if (p) applyPct(p.url, p.name);
+          };
+          planWrap.appendChild(sel);
+        }
+        applyPct(d.planKey, d.planName);
+      }).catch(function (e) {
+        acctAsked = false;
+        progNote.style.color = '#B45309';
+        progNote.textContent = (e && e.message === 'NOAUTH') ? 'Не пустило на www.eduson.tv — открой админку в соседней вкладке, войди и включи галочку заново. Или впиши % руками.'
+          : '🙀 ' + ((e && e.message) || 'Не получилось') + ' — впиши % руками.';
+      });
+    }
+    replCb.addEventListener('change', function () {
+      replBox.style.display = replCb.checked ? 'block' : 'none';
+      if (replCb.checked && !acctAsked) loadProgress();
+      onBudgetChange();
+    });
+    progInput.addEventListener('input', function () { typedByHand = true; });
 
     function showResult() {
       result.innerHTML = '';
