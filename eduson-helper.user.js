@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.31.0
+// @version      1.31.1
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -7128,6 +7128,14 @@
     const budgetInput = elt('input', inputCss + 'margin-top:6px;font-weight:800;font-size:14px;');
     budgetInput.placeholder = 'бюджет, ₽ (можно вписать вручную)';
     body.appendChild(budgetInput);
+    // замена курса: на новый курс идёт бюджет минус доля уже пройденного
+    body.appendChild(elt('div', fieldLabel, 'Пройдено, % — при замене курса'));
+    const progInput = elt('input', inputCss + 'font-weight:800;font-size:14px;');
+    progInput.placeholder = 'например, 30 (пусто — обычный подбор)';
+    progInput.inputMode = 'numeric';
+    body.appendChild(progInput);
+    const availLine = elt('div', 'margin-top:6px;font-size:12.5px;font-weight:800;color:#166534;line-height:1.4;display:none;');
+    body.appendChild(availLine);
 
     // ── курс ──
     body.appendChild(elt('div', fieldLabel, 'Курс — ссылка с сайта или название'));
@@ -7144,7 +7152,15 @@
 
     let catalog = null, chosen = null, deals = [];
     const checked = {};
-    const budget = function () { return parseInt(String(budgetInput.value || '').replace(/\D/g, ''), 10) || 0; };
+    const rawBudget = function () { return parseInt(String(budgetInput.value || '').replace(/\D/g, ''), 10) || 0; };
+    const progress = function () { return Math.min(parseInt(String(progInput.value || '').replace(/\D/g, ''), 10) || 0, 100); };
+    // бюджет для сравнений = бюджет из амо × (100 − % пройденного) / 100
+    const budget = function () { return Math.round(rawBudget() * (100 - progress()) / 100); };
+    function updateAvail() {
+      const raw = rawBudget(), p = progress();
+      availLine.style.display = raw && p ? 'block' : 'none';
+      if (raw && p) availLine.textContent = '🧮 Доступно на замену: ' + pcMoney(budget()) + ' (бюджет ' + pcMoney(raw) + ' − ' + p + '% пройденного)';
+    }
 
     function showResult() {
       result.innerHTML = '';
@@ -7156,14 +7172,14 @@
       card.appendChild(elt('div', 'font-weight:900;font-size:20px;color:#111827;margin-top:6px;', pcMoney(price)));
       if (per > 0 && months > 0) card.appendChild(elt('div', 'font-size:11px;color:#6B7280;font-weight:700;margin-top:1px;', pcMoney(per) + ' × ' + months + ' мес.'));
       const b = budget();
-      if (!b) {
+      if (!rawBudget()) {
         card.appendChild(elt('div', 'font-size:12px;color:#B45309;font-weight:800;margin-top:8px;', 'Впиши бюджет студента выше — сравню.'));
       } else {
         const diff = b - price;
         const ok = diff >= 0;
         card.appendChild(elt('div', 'font-size:14px;font-weight:900;margin-top:8px;color:' + (ok ? '#166534' : '#B91C1C') + ';',
           ok ? ('✅ Подходит — останется ' + pcMoney(diff)) : ('❌ Не хватает ' + pcMoney(-diff))));
-        card.appendChild(elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;margin-top:2px;', 'Бюджет ' + pcMoney(b) + ' − курс ' + pcMoney(price)));
+        card.appendChild(elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;margin-top:2px;', (progress() ? 'Доступно ' : 'Бюджет ') + pcMoney(b) + ' − курс ' + pcMoney(price)));
       }
       if (c.product_url) {
         const btn = elt('div', 'display:inline-block;margin-top:9px;background:#fff;color:' + ACC + ';border:1.5px solid ' + ACC_BD + ';font-weight:800;font-size:11px;padding:5px 10px;border-radius:8px;cursor:pointer;', '📋 Скопировать ссылку');
@@ -7219,11 +7235,12 @@
     const courseKey = function (c) { return c.product_url || c.course_name; };
     function fitInfo() {
       const b = budget();
-      const fit = (catalog && b) ? catalog.filter(function (c) { return +c.price_from <= b; }) : [];
+      const has = rawBudget() > 0;
+      const fit = (catalog && has) ? catalog.filter(function (c) { return +c.price_from <= b; }) : [];
       const count = {};
       fit.forEach(function (c) { dirsOf(c).forEach(function (d) { count[d] = (count[d] || 0) + 1; }); });
       const dirs = Object.keys(count).sort(function (a, z) { return count[z] - count[a] || a.localeCompare(z, 'ru'); });
-      return { b: b, fit: fit, count: count, dirs: dirs };
+      return { b: b, has: has, fit: fit, count: count, dirs: dirs };
     }
     // Отмеченные направления → [{dir, items}]; курс, входящий в несколько направлений, показываем один раз.
     function pickedGroups(info) {
@@ -7254,7 +7271,7 @@
       if (!allOpen) return;
       if (!catalog) { allBox.appendChild(elt('div', 'font-size:11px;color:#9CA3AF;font-weight:600;', 'Каталог цен ещё грузится…')); return; }
       const info = fitInfo();
-      if (!info.b) { allBox.appendChild(elt('div', 'font-size:11.5px;color:#B45309;font-weight:800;', 'Впиши бюджет студента выше — покажу, что подходит.')); return; }
+      if (!info.has) { allBox.appendChild(elt('div', 'font-size:11.5px;color:#B45309;font-weight:800;', 'Впиши бюджет студента выше — покажу, что подходит.')); return; }
       if (!info.fit.length) { allBox.appendChild(elt('div', 'font-size:11.5px;color:#B91C1C;font-weight:800;', 'В рамках ' + pcMoney(info.b) + ' курсов не нашла.')); return; }
       // Все направления отмечены по умолчанию; если куратор что-то снял — это запоминается, отмечаются только новые.
       info.dirs.forEach(function (d) { if (!seenDirs[d]) { seenDirs[d] = true; pickedDirs[d] = true; } });
@@ -7335,7 +7352,9 @@
     const refreshAll = function () { if (allOpen) renderAll(); };
 
     q.addEventListener('input', onQuery);
-    budgetInput.addEventListener('input', function () { showResult(); refreshAll(); });
+    const onBudgetChange = function () { updateAvail(); showResult(); refreshAll(); };
+    budgetInput.addEventListener('input', onBudgetChange);
+    progInput.addEventListener('input', onBudgetChange);
 
     function renderDeals() {
       dealsBox.innerHTML = '';
@@ -7353,8 +7372,7 @@
     function syncBudget() {
       const sum = deals.reduce(function (a, d) { return a + (checked[d.id] ? d.price : 0); }, 0);
       budgetInput.value = sum ? String(Math.round(sum)) : '';
-      showResult();
-      refreshAll();
+      onBudgetChange();
     }
 
     loadCatalogue().then(function (list) {
@@ -8712,8 +8730,8 @@
 
       const courseRow = function (x) {
         const r = elt('div', S.row);
-        if (x.stu) { const b = elt('span', 'float:right;font-size:8.5px;font-weight:800;color:#1D4ED8;background:#E7EEFE;border-radius:5px;padding:1px 5px;', 'нет в списке'); r.appendChild(b); }
-        else if (x.f >= 2) { const b = elt('span', 'float:right;font-size:8.5px;font-weight:800;color:#15803D;background:#E9F6EE;border-radius:5px;padding:1px 5px;', 'частый'); r.appendChild(b); }
+        // метки «нет в списке» больше нет (21.09, по просьбе Натальи) — остаётся только «частый»
+        if (x.f >= 2) { const b = elt('span', 'float:right;font-size:8.5px;font-weight:800;color:#15803D;background:#E9F6EE;border-radius:5px;padding:1px 5px;', 'частый'); r.appendChild(b); }
         r.appendChild(document.createTextNode(x.n));
         r.appendChild(elt('div', 'font-size:9.5px;color:#6B7280;font-weight:600;', x.id === '__gift' ? 'найду нужный' : String(x.id)));
         r.onclick = function () {
