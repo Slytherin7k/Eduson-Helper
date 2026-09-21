@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.34.2
+// @version      1.35.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -126,7 +126,7 @@
 
   /* ================================================ */
 
-  const VER = '1.34.2';
+  const VER = '1.35.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3647,7 +3647,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.34.2'; // синхр. с Хэлпером
+  const VER = '1.35.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4692,6 +4692,7 @@
     }
 
     function viewMsg(inner, cur) {
+      if (cur !== _board.mine) boardSet(BOARD_SEEN_KEY, cur.t);   // увидела в панели — карточка не понадобится
       if (showOk) inner.appendChild(elt('div', 'font-size:12px;font-weight:800;color:#15803D;margin-bottom:5px;', '✓ Готово, послание на табло'));
       inner.appendChild(elt('div', SERIF + 'font-size:14.5px;line-height:1.5;font-style:italic;', cur.text));
       inner.appendChild(elt('div', 'text-align:right;font-size:12px;margin-top:4px;color:' + INK2 + ';', '— твой коллега'));
@@ -4748,6 +4749,7 @@
           const ok = await boardSend(v);
           if (!ok) throw new Error('send');
           _board.mine = { t: nowMs(), text: v };
+          boardSet(BOARD_MINE_KEY, v);   // своё послание карточкой не показываем
           _board.draft = '';
           sending = false; showOk = true; mode = 'view'; render();
           setTimeout(function () { showOk = false; if (mode === 'view') render(); }, 25000);
@@ -4798,6 +4800,79 @@
       else if (mode === 'view') render();
     }, BOARD_TICK_MS);
     return box;
+  }
+
+  /* ---------- «Новое послание»: карточка в углу страницы ----------
+     Чтобы послание было видно, не открывая панель: раз в минуту (пока вкладка на виду) тихо читаем табло;
+     если висит послание, которое этот Хэлпер ещё не показывал, — слева внизу на ~15 с всплывает карточка
+     (✕ закрывает, клик открывает панель, пока мышь на карточке — не гаснет). «Уже показывали» помним по
+     времени послания (GM boardSeenT) — не повторяется ни после перезагрузки, ни в других вкладках.
+     Своё послание не показываем (GM boardMineText). Если панель открыта — карточка не нужна. */
+  const BOARD_SEEN_KEY = 'boardSeenT', BOARD_MINE_KEY = 'boardMineText';
+  const BOARD_POLL_MS = 60000, BOARD_CARD_MS = 15000;
+  function boardGet(k) { try { return String(GM_getValue(k) || ''); } catch (e) { return ''; } }
+  function boardSet(k, v) { try { GM_setValue(k, String(v)); } catch (e) {} }
+
+  function showBoardCard(cur) {
+    const old = document.getElementById('curator-board-card');
+    if (old) old.remove();
+    const card = elt('div', 'position:fixed;left:14px;bottom:64px;z-index:2147483646;width:min(300px,calc(100vw - 28px));box-sizing:border-box;padding:10px 12px;' +
+      'border-radius:12px;background:#fff;border:1px solid #E5E7EB;border-left:4px solid ' + ACC + ';box-shadow:0 12px 36px rgba(15,23,42,.22);cursor:pointer;' +
+      'color:#0C447C;font-family:' + FONT + ';opacity:0;transform:translateY(8px);transition:opacity .35s ease,transform .35s ease;');
+    card.id = 'curator-board-card';
+    const head = elt('div', 'display:flex;align-items:center;justify-content:space-between;font-size:11.5px;font-weight:800;margin-bottom:4px;');
+    const ttl = elt('span', 'display:flex;align-items:center;gap:5px;color:' + ACC + ';');
+    ttl.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<path fill="#DCEEF7" d="M3 7a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-10z"/><path d="M3 7l9 6l9 -6"/></svg>';
+    ttl.appendChild(document.createTextNode('Новое послание'));
+    const x = elt('span', 'cursor:pointer;color:#9CA3AF;font-size:14px;line-height:1;padding:0 2px;', '✕');
+    head.appendChild(ttl); head.appendChild(x);
+    card.appendChild(head);
+    card.appendChild(elt('div', 'font-family:Georgia,"Times New Roman",serif;font-style:italic;font-size:13.5px;line-height:1.45;', cur.text));
+    card.appendChild(elt('div', 'text-align:right;font-size:11px;margin-top:3px;color:#44719C;', '— твой коллега'));
+    let hideT = 0;
+    const close = function () {
+      clearTimeout(hideT);
+      card.style.opacity = '0'; card.style.transform = 'translateY(8px)';
+      setTimeout(function () { card.remove(); }, 380);
+    };
+    const arm = function (ms) { clearTimeout(hideT); hideT = setTimeout(close, ms); };
+    x.onclick = function (e) { e.stopPropagation(); close(); };
+    card.onclick = function () { close(); if (!document.getElementById(PANEL_ID)) togglePanel(); };
+    card.onmouseenter = function () { clearTimeout(hideT); };
+    card.onmouseleave = function () { arm(6000); };
+    document.body.appendChild(card);
+    setTimeout(function () { card.style.opacity = '1'; card.style.transform = 'none'; }, 30);
+    arm(BOARD_CARD_MS);
+  }
+
+  function boardCheckNew() {
+    const act = _board.rows ? boardActive(_board.rows, Date.now() + (_board.skew || 0)) : null;
+    if (!act) return;
+    const key = String(act.t);
+    if (boardGet(BOARD_SEEN_KEY) === key) return;
+    boardSet(BOARD_SEEN_KEY, key);                        // помечаем сразу — чтобы не всплыло ещё и в другой вкладке
+    if (boardGet(BOARD_MINE_KEY) === act.text) return;    // своё послание не показываем
+    if (document.getElementById(PANEL_ID)) return;        // панель открыта — послание и так на виду
+    showBoardCard(act);
+  }
+
+  function boardWatchOnce() {
+    if (document.hidden) return Promise.resolve();
+    return boardLoad().then(function (d) {
+      _board.rows = d.rows; _board.skew = d.skew; _board.loadedAt = Date.now(); _board.err = false;
+    }).catch(function () { /* тихо: в следующий раз */ }).then(boardCheckNew);
+  }
+
+  let _boardWatchOn = false;
+  function startBoardWatch() {
+    if (_boardWatchOn) return;
+    _boardWatchOn = true;
+    setTimeout(boardWatchOnce, 7000);
+    setInterval(boardWatchOnce, BOARD_POLL_MS);
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden && Date.now() - _board.loadedAt > 30000) boardWatchOnce();
+    });
   }
 
   let hpPanelTab = '';   // какая вкладка панели открыта сейчас ('Пинги' / 'Теги' / …)
@@ -9469,6 +9544,7 @@
   }
   if (ON_OMNI) {
     keepSynced(function () { ensureButton(); try { warmLessons(); } catch (e) {} });
+    startBoardWatch();   // табло посланий: карточка «Новое послание» в углу страницы
   }
   })();
 
