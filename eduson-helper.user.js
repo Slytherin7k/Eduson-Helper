@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.42.0
+// @version      1.43.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -4929,16 +4929,21 @@
     // вкладки — все 6 в одну строку
     const tabs = elt('div', 'display:flex;gap:4px;margin-bottom:8px;');
     const body = elt('div', '');
+    // select(track) отдельно от клика: автооткрытие «Пинги» при открытии панели — это не выбор
+    // куратора, трекать его как «открыл Пинги» не нужно (портит статистику), поэтому у автооткрытия
+    // track=false, а у настоящего клика по вкладке — track=true.
     const mkTab = function (label, fn) {
       const b = elt('div', 'flex:1 1 auto;min-width:0;text-align:center;cursor:pointer;font-weight:800;font-size:10px;padding:6px 2px;border-radius:8px;border:1.5px solid ' + ACC_BD + ';color:' + ACC + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;', label);
-      b.onclick = function () {
+      const select = function (track) {
         Array.from(tabs.children).forEach(function (t) { t.style.background = '#fff'; t.style.color = ACC; });
         b.style.background = ACC; b.style.color = '#fff';
         hpPanelTab = label;
         body.innerHTML = '';
         fn(body);
-        trackSend('Помощник: ' + label);
+        if (track) trackSend('Помощник: ' + label);
       };
+      b.onclick = function () { select(true); };
+      b.select = select;
       return b;
     };
     ensureSalesTeams();   // подтянуть актуальные команды продаж из Google-таблицы
@@ -4958,7 +4963,7 @@
     tabs.appendChild(tTag);
     p.appendChild(tabs);
     p.appendChild(body);
-    tPing.onclick();
+    tPing.select(false);
     return p;
   }
 
@@ -7436,10 +7441,11 @@
      Цены и список курсов — публичный каталог сайта assets.eduson.academy/prices_api/catalogue.json
      (course_name, product_url, price_from = итог со скидкой, price_per_month_from × installment_period_months).
      ТАРИФЫ отдельного курса (Начальный/Продвинутый/Мастер) каталог сайта не даёт — только 1-2 цены на
-     ссылку. Пробовали брать их из внутренней Notion-таблицы — путала куратора (её же и Наталью),
-     сопоставление курса из каталога со строкой Notion иногда съезжало. Поэтому берём тарифы С ТОЙ ЖЕ
-     страницы сайта, куда ведёт product_url курса (fetchSiteTariffs ниже) — это ровно то, что видит
-     студент, без риска перепутать источники.
+     ссылку. Пробовали брать их из внутренней Notion-таблицы (путала — сопоставление съезжало) и напрямую
+     со страницы курса (тоже не вышло: реальные цифры тарифов считает JS сайта в браузере студента при
+     открытии, в самом HTML на всех тарифах лежит одна и та же заглушка — тихий фоновый запрос её и
+     получает, то есть одинаковые неверные цифры). Раз надёжно посчитать нельзя — просто даём кнопку
+     на реальную страницу тарифов, без гадания.
      Бюджет — выигранные сделки амо с бюджетом > 0 (галочками выбираем, какие складывать:
      доплаты / два курса сразу). */
   const CATALOGUE_URL = 'https://assets.eduson.academy/prices_api/catalogue.json';
@@ -7453,37 +7459,6 @@
     if (!list.length) throw new Error('каталог цен пустой');
     _catalogCache = list;
     return list;
-  }
-
-  /* ---------- тарифы курса — прямо со страницы курса на сайте ----------
-     На странице курса цена каждого тарифа лежит в скрытом попапе заказа (виден только после клика
-     «Записаться» — но в HTML он есть всегда, готовый к показу). У курсов с 3 тарифами — три блока
-     с классами …Low/…Middle/…High (дешёвый/средний/дорогой тариф — в этом порядке всегда идут
-     Начальный/Продвинутый/Мастер, проверено на нескольких курсах). У курсов с одним тарифом — просто
-     .bigPrice, она совпадает с ценой из каталога, отдельно показывать нечего. Цена в блоке — в месяц
-     (рассрочка на 12 мес.), умножаем на 12 для итоговой суммы. */
-  const _tariffCache = {};
-  async function fetchSiteTariffs(productUrl) {
-    if (!productUrl) return [];
-    if (_tariffCache[productUrl]) return _tariffCache[productUrl];
-    let html;
-    try { html = await gmText(productUrl); } catch (e) { return []; }
-    let doc;
-    try { doc = new DOMParser().parseFromString(html, 'text/html'); } catch (e) { return []; }
-    const numOf = function (cls) {
-      const el = doc.querySelector('.' + cls);
-      if (!el) return null;
-      const digits = (el.textContent || '').replace(/[^\d]/g, '');
-      return digits ? +digits : null;
-    };
-    const tiers = [
-      { tariff: 'Начальный', per: numOf('bigPriceLowWithoutLabel') },
-      { tariff: 'Продвинутый', per: numOf('bigPriceMiddleWithoutLabel') },
-      { tariff: 'Мастер', per: numOf('bigPriceHighWithoutLabel') }
-    ].filter(function (t) { return t.per > 0; });
-    const result = tiers.map(function (t) { return { tariff: t.tariff, price: t.per * 12 }; });
-    _tariffCache[productUrl] = result;
-    return result;
   }
   function pcNorm(s) {
     return String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9]+/g, ' ').trim();
@@ -7644,11 +7619,8 @@
     });
     progInput.addEventListener('input', function () { typedByHand = true; });
 
-    let _resultToken = 0;
     function showResult() {
       result.innerHTML = '';
-      _resultToken++;
-      const myToken = _resultToken;
       if (!chosen) return;
       const c = chosen, price = +c.price_from, per = +c.price_per_month_from, months = +c.installment_period_months;
       const card = elt('div', 'border:1px solid ' + ACC_BD + ';background:#F0F9FF;border-radius:12px;padding:10px 12px;');
@@ -7686,23 +7658,16 @@
         }
       }
       result.appendChild(card);
-      // Тарифы курса (Начальный/Продвинутый/Мастер) — прямо со страницы курса, каталог сайта их не
-      // различает. Грузится не сразу — дорисовываем блок, когда придёт ответ.
-      const tariffBox = elt('div', 'margin-top:9px;font-size:11px;color:#9CA3AF;font-weight:700;', 'Смотрю тарифы курса…');
-      card.appendChild(tariffBox);
-      fetchSiteTariffs(c.product_url).then(function (tariffs) {
-        if (myToken !== _resultToken || !card.isConnected) return;
-        if (!tariffs.length) { tariffBox.remove(); return; }
-        tariffBox.innerHTML = '';
-        tariffBox.style.color = '#111827';
-        tariffBox.appendChild(elt('div', 'font-size:10px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:#6B7280;margin-bottom:3px;', 'Тарифы курса'));
-        tariffs.sort(function (a, z) { return a.price - z.price; }).forEach(function (t) {
-          const row = elt('div', 'display:flex;justify-content:space-between;gap:8px;font-size:12px;font-weight:700;padding:2px 0;');
-          row.appendChild(elt('span', '', t.tariff));
-          row.appendChild(elt('span', 'color:#6B7280;font-weight:600;', pcMoney(t.price)));
-          tariffBox.appendChild(row);
-        });
-      }).catch(function () { if (myToken === _resultToken) tariffBox.remove(); });
+      // Тарифы курса (Начальный/Продвинутый/Мастер): цену считает JS сайта на лету при открытии
+      // страницы (проверено — в самом HTML лежит одна и та же заглушка для всех тарифов, реальные
+      // цифры подставляются уже в браузере студента), поэтому тихо вычитать их из фонового запроса
+      // нельзя — будут одинаковые неверные цифры (это и увидела Наталья). Честнее дать прямую ссылку
+      // на тарифы, чем показывать цифры, в которых нельзя быть уверенной.
+      if (c.product_url) {
+        const tBtn = elt('div', 'display:inline-block;margin-top:9px;margin-left:6px;background:#fff;color:' + ACC + ';border:1.5px solid ' + ACC_BD + ';font-weight:800;font-size:11px;padding:5px 10px;border-radius:8px;cursor:pointer;', '📶 Тарифы на сайте');
+        tBtn.onclick = function () { window.open(c.product_url, '_blank'); };
+        card.appendChild(tBtn);
+      }
     }
 
     function drawList(found) {
