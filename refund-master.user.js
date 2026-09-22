@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.37.0
+// @version      1.38.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -36,6 +36,32 @@
     '/gviz/tq?tqx=out:csv&gid=' + SHEET_GID;
   const CALC_URL = 'https://docs.google.com/spreadsheets/d/11GNvwRy-fJwL2zg1KZbGouXzy5XXvJBlKXvtCHdgFfg/edit';
   const CUTOFF_DATE = new Date(2026, 5, 5); // 05.06.2026 — с этой даты сумму считают в калькуляторе
+
+  /* ==================== ТРЕКИНГ ОТКРЫТИЙ ПАНЕЛИ ====================
+     Та же Google-таблица, что и у Хэлпера («Хэлпер — трекинг открытий (Ответы)»): считаем и открытия
+     Возврат-мастера, отдельной строкой. Имя куратора хранится отдельно от Хэлпера (у каждого
+     юзерскрипта своё хранилище GM_setValue) — спросит один раз и запомнит. */
+  const TRACK_FORM_ID = '1FAIpQLSccdINuowvzjGyK-XZDD2bBBbecYG3hN4diphiQzBKkKWuzNg';
+  const TRACK_ENTRY_WHO = 'entry.2127510800';
+  const TRACK_ENTRY_WHAT = 'entry.1222951321';
+  function trackCurator() {
+    let name = GM_getValue('rm_curator_name', '');
+    if (!name) {
+      name = String(prompt('Как записать тебя в статистику открытий Возврат-мастера? (просит один раз, запомню)') || '').trim();
+      if (name) GM_setValue('rm_curator_name', name);
+    }
+    return name;
+  }
+  function trackSend(what) {
+    const who = trackCurator();
+    if (!who) return;
+    GM_xmlhttpRequest({
+      method: 'POST', url: 'https://docs.google.com/forms/d/e/' + TRACK_FORM_ID + '/formResponse', timeout: 15000, anonymous: true,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+      data: TRACK_ENTRY_WHO + '=' + encodeURIComponent(who) + '&' + TRACK_ENTRY_WHAT + '=' + encodeURIComponent(what),
+      onload: function () {}, onerror: function () {}, ontimeout: function () {}
+    });
+  }
 
   // Таблица длительности программ (курс → академ.часы + срок в днях). Публичная, gviz-CSV.
   // Столбцы: A Наименование программы | B Кол-во академ. часов | C Срок освоения, дней | D Тип диплома.
@@ -1021,6 +1047,7 @@
 
   function buildPanel() {
     if (panel) { panel.remove(); panel = null; return; }
+    trackSend('Возврат-мастер');
 
     // округлый шрифт Nunito (если не загрузится из-за CSP — просто фолбэк на Segoe UI)
     try {

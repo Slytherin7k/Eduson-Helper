@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.38.0
+// @version      1.40.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -4544,6 +4544,33 @@
     if (typeof setCatOpen === 'function') setCatOpen(true);
   }
 
+  /* ==================== ТРЕКИНГ ОТКРЫТИЙ ПАНЕЛИ ====================
+     Наталья тестирует на себе (доступ к таблице потом даст тимлиду обычным шарингом Google-таблицы,
+     без кода): кто и сколько раз открывал вкладки Хэлпера. Имя куратора спрашиваем ОДИН раз (native
+     prompt) и запоминаем локально (GM_setValue) — в OmniDesk нет надёжного места прочитать имя
+     залогиненного сотрудника. Пишем через Google-форму (formResponse), как табло посланий. */
+  const TRACK_FORM_ID = '1FAIpQLSccdINuowvzjGyK-XZDD2bBBbecYG3hN4diphiQzBKkKWuzNg';
+  const TRACK_ENTRY_WHO = 'entry.2127510800';
+  const TRACK_ENTRY_WHAT = 'entry.1222951321';
+  function trackCurator() {
+    let name = GM_getValue('hp_curator_name', '');
+    if (!name) {
+      name = String(prompt('Как записать тебя в статистику открытий Хэлпера? (просит один раз, запомню)') || '').trim();
+      if (name) GM_setValue('hp_curator_name', name);
+    }
+    return name;
+  }
+  function trackSend(what) {
+    const who = trackCurator();
+    if (!who) return;
+    GM_xmlhttpRequest({
+      method: 'POST', url: 'https://docs.google.com/forms/d/e/' + TRACK_FORM_ID + '/formResponse', timeout: 15000, anonymous: true,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+      data: TRACK_ENTRY_WHO + '=' + encodeURIComponent(who) + '&' + TRACK_ENTRY_WHAT + '=' + encodeURIComponent(what),
+      onload: function () {}, onerror: function () {}, ontimeout: function () {}
+    });
+  }
+
   /* ==================== ТАБЛО ПОСЛАНИЙ ====================
      Вместо «Здесь могла быть ваша реклама»: анонимное послание коллег, ОДНО на всех, висит 30 минут.
      Хранилище — Google-таблица «Пожелания» (лист «Ответы на форму (1)», gid 2002619174, читается по ссылке
@@ -4896,6 +4923,7 @@
         hpPanelTab = label;
         body.innerHTML = '';
         fn(body);
+        trackSend('Помощник: ' + label);
       };
       return b;
     };
@@ -7391,19 +7419,62 @@
 
   /* ---------- под-вкладка «Подбор курса» (акция 1+1) ----------
      Студент просит «подключите мне курс X»: сверяем цену курса с бюджетом из амо.
-     Цены — публичный каталог сайта assets.eduson.academy/prices_api/catalogue.json
-     (course_name, product_url, price_from = итог со скидкой, price_per_month_from × installment_period_months).
+     Цены — внутренняя Notion-таблица «Сводная таблица курсов Eduson Академии» (кураторский доступ,
+     тот же Notion-space, что и FAQ_SPACE): в ней курсы разбиты по тарифам (у одного курса — несколько
+     строк), в отличие от публичного прайс-листа сайта, где на одну ссылку иногда попадает только 1-2 цены.
+     Колонка «Цена со скидкой» в таблице — ФОРМУЛА: тихий запрос (без реального открытия страницы) отдаёт
+     её пустой или устаревшей (Notion считает формулы только когда кто-то смотрит страницу глазами — не
+     сама делает через getPageVisitors). Поэтому считаем сами: «Полная цена» × (1 − «% скидки») — оба поля
+     обычные (не формулы), отдаются надёжно; сверено на живых примерах — совпадает с тем, что видно на
+     странице. Архивные позиции («[Архив] …») и позиции без цены пропускаем.
      Бюджет — выигранные сделки амо с бюджетом > 0 (галочками выбираем, какие складывать:
      доплаты / два курса сразу). */
-  const CATALOGUE_URL = 'https://assets.eduson.academy/prices_api/catalogue.json';
+  const PRICE_COLLECTION = '55d64c80-2278-4b57-900a-993061bfdc71';
+  const PRICE_VIEW = '287c4b07-b1e7-4d7f-950f-98f95fdf7e23';
+  function pcText(v) { if (!v) return ''; try { return v.map(function (seg) { return seg[0]; }).join(''); } catch (e) { return ''; } }
   let _catalogCache = null;
   async function loadCatalogue() {
     if (_catalogCache) return _catalogCache;
-    const txt = await gmText(CATALOGUE_URL + '?_cb=' + Date.now());
-    let j;
-    try { j = JSON.parse(txt); } catch (e) { throw new Error('каталог цен не разобрался'); }
-    const list = ((j && j.courses) || []).filter(function (c) { return c && c.course_name && +c.price_from > 0; });
-    if (!list.length) throw new Error('каталог цен пустой');
+    let schemaJ;
+    try {
+      schemaJ = await notionPost('syncRecordValues', { requests: [{ pointer: { table: 'collection', id: PRICE_COLLECTION, spaceId: FAQ_SPACE }, version: -1 }] });
+    } catch (e) { throw new Error(e.message === 'NOAUTH' ? 'нет входа в Notion' : 'таблица цен не отвечает'); }
+    const coll = nUnwrap((schemaJ.recordMap.collection || {})[PRICE_COLLECTION]);
+    const schema = coll && coll.schema;
+    if (!schema) throw new Error('не прочитала таблицу цен — проверь вход в Notion');
+    const byName = function (re) { return Object.keys(schema).find(function (k) { return re.test(schema[k].name || ''); }); };
+    const K_FULL = byName(/^Полная цена$/i), K_DISC = byName(/^% скидки$/i),
+      K_LINK = byName(/^Ссылка на программу$/i), K_CLUSTER = byName(/^Кластер$/i);
+    if (!K_FULL || !K_DISC) throw new Error('в таблице цен не нашла колонки «Полная цена»/«% скидки»');
+
+    const qJ = await notionPost('queryCollection', {
+      collection: { id: PRICE_COLLECTION, spaceId: FAQ_SPACE },
+      collectionView: { id: PRICE_VIEW, spaceId: FAQ_SPACE },
+      loader: { type: 'reducer', reducers: { r: { type: 'results', limit: 5000 } }, searchQuery: '', userTimeZone: 'Europe/Moscow' }
+    });
+    const ids = (qJ.result && qJ.result.reducerResults && qJ.result.reducerResults.r && qJ.result.reducerResults.r.blockIds) || [];
+    const blocks = qJ.recordMap && qJ.recordMap.block || {};
+    if (!ids.length) throw new Error('таблица цен пустая');
+
+    const list = [];
+    ids.forEach(function (id) {
+      const b = nUnwrap(blocks[id]);
+      if (!b || !b.properties) return;
+      const name = pcText(b.properties.title);
+      if (!name || /^\[Архив\]/i.test(name)) return;
+      const full = +String(pcText(b.properties[K_FULL])).replace(/\D/g, '');
+      const disc = parseFloat(pcText(b.properties[K_DISC])) || 0;
+      const price = Math.round(full * (1 - disc));
+      if (!(price > 0)) return;
+      list.push({
+        course_name: name, price_from: price,
+        price_per_month_from: Math.round(price / 12), installment_period_months: 12,
+        product_url: K_LINK ? pcText(b.properties[K_LINK]) : '',
+        groups: K_CLUSTER ? [pcText(b.properties[K_CLUSTER])].filter(Boolean) : [],
+        type: 'Курс'
+      });
+    });
+    if (!list.length) throw new Error('в таблице цен нет ни одной подходящей строки');
     _catalogCache = list;
     return list;
   }
@@ -7418,11 +7489,12 @@
     // Голое слово-слаг (без дефиса, напр. «excel») НЕ считаем ссылкой — так оно попадает в
     // полнотекстовый поиск по названию ниже, а не отсекается точным совпадением по одной ссылке
     // (на одну страницу сайта может продаваться несколько курсов с разными названиями и ценами).
-    const m = q.match(/eduson\.academy\/([a-z0-9_\-]+)/i) || (/^[a-z0-9_\-]+-[a-z0-9_\-]+$/i.test(q) ? [null, q] : null);
+    // Ссылки бывают двух видов: с сайта (eduson.academy/…) и короткие из таблицы цен (eduson.tv/~…).
+    const m = q.match(/eduson\.(?:academy|tv)\/([a-z0-9_~\-]+)/i) || (/^[a-z0-9_\-]+-[a-z0-9_\-]+$/i.test(q) ? [null, q] : null);
     if (m) {
       const slug = m[1].toLowerCase();
       const byUrl = list.filter(function (c) { return String(c.product_url || '').toLowerCase().replace(/[?#].*$/, '').replace(/\/+$/, '').split('/').pop() === slug; });
-      if (byUrl.length || /eduson\.academy/i.test(q)) return byUrl;
+      if (byUrl.length || /eduson\.(?:academy|tv)/i.test(q)) return byUrl;
     }
     const stems = pcNorm(q).split(' ').filter(Boolean).map(function (t) { return t.length > 5 ? t.slice(0, Math.max(5, t.length - 4)) : t; });
     if (!stems.length) return [];
