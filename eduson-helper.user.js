@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.40.0
+// @version      1.41.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -4546,28 +4546,41 @@
 
   /* ==================== ТРЕКИНГ ОТКРЫТИЙ ПАНЕЛИ ====================
      Наталья тестирует на себе (доступ к таблице потом даст тимлиду обычным шарингом Google-таблицы,
-     без кода): кто и сколько раз открывал вкладки Хэлпера. Имя куратора спрашиваем ОДИН раз (native
-     prompt) и запоминаем локально (GM_setValue) — в OmniDesk нет надёжного места прочитать имя
-     залогиненного сотрудника. Пишем через Google-форму (formResponse), как табло посланий. */
+     без кода): кто и сколько раз открывал вкладки Хэлпера. Имя куратора смотрим САМИ — один раз читаем
+     его профиль OmniDesk (staff/profile, поле #full_name_1, свой домен — обычный fetch без GM), а не
+     спрашиваем. Если вдруг не нашли (профиль устроен иначе) — тогда спросим один раз сами и запомним.
+     Запоминаем локально (GM_setValue), чтобы второй раз не ходить за профилем. Пишем через
+     Google-форму (formResponse), как табло посланий. */
   const TRACK_FORM_ID = '1FAIpQLSccdINuowvzjGyK-XZDD2bBBbecYG3hN4diphiQzBKkKWuzNg';
   const TRACK_ENTRY_WHO = 'entry.2127510800';
   const TRACK_ENTRY_WHAT = 'entry.1222951321';
-  function trackCurator() {
-    let name = GM_getValue('hp_curator_name', '');
-    if (!name) {
-      name = String(prompt('Как записать тебя в статистику открытий Хэлпера? (просит один раз, запомню)') || '').trim();
-      if (name) GM_setValue('hp_curator_name', name);
-    }
+  function trackAskName() {
+    const name = String(prompt('Как записать тебя в статистику открытий Хэлпера? (спрошу один раз, запомню)') || '').trim();
+    if (name) GM_setValue('hp_curator_name', name);
     return name;
   }
+  function trackCurator() {
+    const saved = GM_getValue('hp_curator_name', '');
+    if (saved) return Promise.resolve(saved);
+    return fetch('https://eduson.omnidesk.ru/staff/profile/', { credentials: 'include' })
+      .then(function (r) { return r.text(); })
+      .then(function (html) {
+        const m = html.match(/id="full_name_1"[^>]*value="([^"]*)"/i);
+        const name = (m && m[1]) ? m[1].trim() : '';
+        if (name) { GM_setValue('hp_curator_name', name); return name; }
+        return trackAskName();
+      })
+      .catch(function () { return trackAskName(); });
+  }
   function trackSend(what) {
-    const who = trackCurator();
-    if (!who) return;
-    GM_xmlhttpRequest({
-      method: 'POST', url: 'https://docs.google.com/forms/d/e/' + TRACK_FORM_ID + '/formResponse', timeout: 15000, anonymous: true,
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
-      data: TRACK_ENTRY_WHO + '=' + encodeURIComponent(who) + '&' + TRACK_ENTRY_WHAT + '=' + encodeURIComponent(what),
-      onload: function () {}, onerror: function () {}, ontimeout: function () {}
+    trackCurator().then(function (who) {
+      if (!who) return;
+      GM_xmlhttpRequest({
+        method: 'POST', url: 'https://docs.google.com/forms/d/e/' + TRACK_FORM_ID + '/formResponse', timeout: 15000, anonymous: true,
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+        data: TRACK_ENTRY_WHO + '=' + encodeURIComponent(who) + '&' + TRACK_ENTRY_WHAT + '=' + encodeURIComponent(what),
+        onload: function () {}, onerror: function () {}, ontimeout: function () {}
+      });
     });
   }
 
@@ -7419,33 +7432,46 @@
 
   /* ---------- под-вкладка «Подбор курса» (акция 1+1) ----------
      Студент просит «подключите мне курс X»: сверяем цену курса с бюджетом из амо.
-     Цены — внутренняя Notion-таблица «Сводная таблица курсов Eduson Академии» (кураторский доступ,
-     тот же Notion-space, что и FAQ_SPACE): в ней курсы разбиты по тарифам (у одного курса — несколько
-     строк), в отличие от публичного прайс-листа сайта, где на одну ссылку иногда попадает только 1-2 цены.
-     Колонка «Цена со скидкой» в таблице — ФОРМУЛА: тихий запрос (без реального открытия страницы) отдаёт
-     её пустой или устаревшей (Notion считает формулы только когда кто-то смотрит страницу глазами — не
-     сама делает через getPageVisitors). Поэтому считаем сами: «Полная цена» × (1 − «% скидки») — оба поля
-     обычные (не формулы), отдаются надёжно; сверено на живых примерах — совпадает с тем, что видно на
-     странице. Архивные позиции («[Архив] …») и позиции без цены пропускаем.
+     Цены и список курсов — публичный каталог сайта assets.eduson.academy/prices_api/catalogue.json
+     (course_name, product_url, price_from = итог со скидкой, price_per_month_from × installment_period_months).
+     ТАРИФЫ отдельного курса (Начальный/Продвинутый/Мастер и т.п.) каталог сайта не даёт — только 1-2 цены
+     на ссылку. Их берём из внутренней Notion-таблицы «Сводная таблица курсов Eduson Академии» (см.
+     loadTariffTable/findTariffs ниже) и показываем отдельным списком под основной ценой.
      Бюджет — выигранные сделки амо с бюджетом > 0 (галочками выбираем, какие складывать:
      доплаты / два курса сразу). */
-  const PRICE_COLLECTION = '55d64c80-2278-4b57-900a-993061bfdc71';
-  const PRICE_VIEW = '287c4b07-b1e7-4d7f-950f-98f95fdf7e23';
-  function pcText(v) { if (!v) return ''; try { return v.map(function (seg) { return seg[0]; }).join(''); } catch (e) { return ''; } }
+  const CATALOGUE_URL = 'https://assets.eduson.academy/prices_api/catalogue.json';
   let _catalogCache = null;
   async function loadCatalogue() {
     if (_catalogCache) return _catalogCache;
-    let schemaJ;
-    try {
-      schemaJ = await notionPost('syncRecordValues', { requests: [{ pointer: { table: 'collection', id: PRICE_COLLECTION, spaceId: FAQ_SPACE }, version: -1 }] });
-    } catch (e) { throw new Error(e.message === 'NOAUTH' ? 'нет входа в Notion' : 'таблица цен не отвечает'); }
+    const txt = await gmText(CATALOGUE_URL + '?_cb=' + Date.now());
+    let j;
+    try { j = JSON.parse(txt); } catch (e) { throw new Error('каталог цен не разобрался'); }
+    const list = ((j && j.courses) || []).filter(function (c) { return c && c.course_name && +c.price_from > 0; });
+    if (!list.length) throw new Error('каталог цен пустой');
+    _catalogCache = list;
+    return list;
+  }
+
+  /* ---------- тарифы курса — из внутренней Notion-таблицы цен ----------
+     Строки таблицы называются «<Продукт>: тариф <Уровень>» (иногда с довеском вроде «+ ExcelAi») —
+     группируем по части названия ДО «: тариф», отдаём все тарифы этой группы. «Цена со скидкой» в
+     таблице — ФОРМУЛА: тихий запрос без реального открытия страницы отдаёт её пустой или устаревшей
+     (Notion считает формулы только когда кто-то смотрит страницу глазами, а не по запросу). Поэтому
+     считаем сами: «Полная цена» × (1 − «% скидки») — оба поля обычные, отдаются надёжно; сверено на
+     живых примерах — совпадает с тем, что видно на странице. Архивные позиции («[Архив] …») пропускаем. */
+  const PRICE_COLLECTION = '55d64c80-2278-4b57-900a-993061bfdc71';
+  const PRICE_VIEW = '287c4b07-b1e7-4d7f-950f-98f95fdf7e23';
+  function pcText(v) { if (!v) return ''; try { return v.map(function (seg) { return seg[0]; }).join(''); } catch (e) { return ''; } }
+  let _tariffCache = null;
+  async function loadTariffTable() {
+    if (_tariffCache) return _tariffCache;
+    const schemaJ = await notionPost('syncRecordValues', { requests: [{ pointer: { table: 'collection', id: PRICE_COLLECTION, spaceId: FAQ_SPACE }, version: -1 }] });
     const coll = nUnwrap((schemaJ.recordMap.collection || {})[PRICE_COLLECTION]);
     const schema = coll && coll.schema;
-    if (!schema) throw new Error('не прочитала таблицу цен — проверь вход в Notion');
+    if (!schema) throw new Error('не прочитала таблицу тарифов — проверь вход в Notion');
     const byName = function (re) { return Object.keys(schema).find(function (k) { return re.test(schema[k].name || ''); }); };
-    const K_FULL = byName(/^Полная цена$/i), K_DISC = byName(/^% скидки$/i),
-      K_LINK = byName(/^Ссылка на программу$/i), K_CLUSTER = byName(/^Кластер$/i);
-    if (!K_FULL || !K_DISC) throw new Error('в таблице цен не нашла колонки «Полная цена»/«% скидки»');
+    const K_FULL = byName(/^Полная цена$/i), K_DISC = byName(/^% скидки$/i), K_LINK = byName(/^Ссылка на программу$/i);
+    if (!K_FULL || !K_DISC) throw new Error('в таблице тарифов не нашла колонки «Полная цена»/«% скидки»');
 
     const qJ = await notionPost('queryCollection', {
       collection: { id: PRICE_COLLECTION, spaceId: FAQ_SPACE },
@@ -7454,7 +7480,6 @@
     });
     const ids = (qJ.result && qJ.result.reducerResults && qJ.result.reducerResults.r && qJ.result.reducerResults.r.blockIds) || [];
     const blocks = qJ.recordMap && qJ.recordMap.block || {};
-    if (!ids.length) throw new Error('таблица цен пустая');
 
     const list = [];
     ids.forEach(function (id) {
@@ -7462,21 +7487,24 @@
       if (!b || !b.properties) return;
       const name = pcText(b.properties.title);
       if (!name || /^\[Архив\]/i.test(name)) return;
+      const m = name.match(/^(.*?):\s*тариф\s+(.+)$/i);
+      if (!m) return;   // интересуют только строки-тарифы, остальное — не наша забота (это делает каталог сайта)
       const full = +String(pcText(b.properties[K_FULL])).replace(/\D/g, '');
       const disc = parseFloat(pcText(b.properties[K_DISC])) || 0;
       const price = Math.round(full * (1 - disc));
       if (!(price > 0)) return;
-      list.push({
-        course_name: name, price_from: price,
-        price_per_month_from: Math.round(price / 12), installment_period_months: 12,
-        product_url: K_LINK ? pcText(b.properties[K_LINK]) : '',
-        groups: K_CLUSTER ? [pcText(b.properties[K_CLUSTER])].filter(Boolean) : [],
-        type: 'Курс'
-      });
+      list.push({ product: m[1].trim(), tariff: m[2].trim(), price: price, url: K_LINK ? pcText(b.properties[K_LINK]) : '' });
     });
-    if (!list.length) throw new Error('в таблице цен нет ни одной подходящей строки');
-    _catalogCache = list;
+    _tariffCache = list;
     return list;
+  }
+  // Тарифы курса по его названию из каталога сайта (например, «Excel» → тарифы Базовый/PRO/Мастер).
+  async function findTariffs(courseName) {
+    const key = pcNorm(courseName);
+    if (!key) return [];
+    let table;
+    try { table = await loadTariffTable(); } catch (e) { return []; }
+    return table.filter(function (t) { return pcNorm(t.product) === key; });
   }
   function pcNorm(s) {
     return String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9]+/g, ' ').trim();
@@ -7637,8 +7665,11 @@
     });
     progInput.addEventListener('input', function () { typedByHand = true; });
 
+    let _resultToken = 0;
     function showResult() {
       result.innerHTML = '';
+      _resultToken++;
+      const myToken = _resultToken;
       if (!chosen) return;
       const c = chosen, price = +c.price_from, per = +c.price_per_month_from, months = +c.installment_period_months;
       const card = elt('div', 'border:1px solid ' + ACC_BD + ';background:#F0F9FF;border-radius:12px;padding:10px 12px;');
@@ -7676,6 +7707,23 @@
         }
       }
       result.appendChild(card);
+      // Тарифы курса (Начальный/Продвинутый/Мастер и т.п.) — из внутренней Notion-таблицы, каталог
+      // сайта их не различает. Грузится не сразу — дорисовываем блок, когда придёт ответ.
+      const tariffBox = elt('div', 'margin-top:9px;font-size:11px;color:#9CA3AF;font-weight:700;', 'Смотрю тарифы курса…');
+      card.appendChild(tariffBox);
+      findTariffs(c.course_name).then(function (tariffs) {
+        if (myToken !== _resultToken || !card.isConnected) return;
+        if (!tariffs.length) { tariffBox.remove(); return; }
+        tariffBox.innerHTML = '';
+        tariffBox.style.color = '#111827';
+        tariffBox.appendChild(elt('div', 'font-size:10px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:#6B7280;margin-bottom:3px;', 'Тарифы курса'));
+        tariffs.sort(function (a, z) { return a.price - z.price; }).forEach(function (t) {
+          const row = elt('div', 'display:flex;justify-content:space-between;gap:8px;font-size:12px;font-weight:700;padding:2px 0;');
+          row.appendChild(elt('span', '', t.tariff));
+          row.appendChild(elt('span', 'color:#6B7280;font-weight:600;', pcMoney(t.price)));
+          tariffBox.appendChild(row);
+        });
+      }).catch(function () { if (myToken === _resultToken) tariffBox.remove(); });
     }
 
     function drawList(found) {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.38.0
+// @version      1.39.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -39,27 +39,40 @@
 
   /* ==================== ТРЕКИНГ ОТКРЫТИЙ ПАНЕЛИ ====================
      Та же Google-таблица, что и у Хэлпера («Хэлпер — трекинг открытий (Ответы)»): считаем и открытия
-     Возврат-мастера, отдельной строкой. Имя куратора хранится отдельно от Хэлпера (у каждого
-     юзерскрипта своё хранилище GM_setValue) — спросит один раз и запомнит. */
+     Возврат-мастера, отдельной строкой. Имя куратора смотрим САМИ — один раз читаем его профиль
+     OmniDesk (staff/profile, поле #full_name_1, свой домен — обычный fetch без GM), а не спрашиваем.
+     Если вдруг не нашли — тогда спросим один раз сами. Хранится отдельно от Хэлпера (у каждого
+     юзерскрипта своё хранилище GM_setValue). */
   const TRACK_FORM_ID = '1FAIpQLSccdINuowvzjGyK-XZDD2bBBbecYG3hN4diphiQzBKkKWuzNg';
   const TRACK_ENTRY_WHO = 'entry.2127510800';
   const TRACK_ENTRY_WHAT = 'entry.1222951321';
-  function trackCurator() {
-    let name = GM_getValue('rm_curator_name', '');
-    if (!name) {
-      name = String(prompt('Как записать тебя в статистику открытий Возврат-мастера? (просит один раз, запомню)') || '').trim();
-      if (name) GM_setValue('rm_curator_name', name);
-    }
+  function trackAskName() {
+    const name = String(prompt('Как записать тебя в статистику открытий Возврат-мастера? (спрошу один раз, запомню)') || '').trim();
+    if (name) GM_setValue('rm_curator_name', name);
     return name;
   }
+  function trackCurator() {
+    const saved = GM_getValue('rm_curator_name', '');
+    if (saved) return Promise.resolve(saved);
+    return fetch('https://eduson.omnidesk.ru/staff/profile/', { credentials: 'include' })
+      .then(function (r) { return r.text(); })
+      .then(function (html) {
+        const m = html.match(/id="full_name_1"[^>]*value="([^"]*)"/i);
+        const name = (m && m[1]) ? m[1].trim() : '';
+        if (name) { GM_setValue('rm_curator_name', name); return name; }
+        return trackAskName();
+      })
+      .catch(function () { return trackAskName(); });
+  }
   function trackSend(what) {
-    const who = trackCurator();
-    if (!who) return;
-    GM_xmlhttpRequest({
-      method: 'POST', url: 'https://docs.google.com/forms/d/e/' + TRACK_FORM_ID + '/formResponse', timeout: 15000, anonymous: true,
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
-      data: TRACK_ENTRY_WHO + '=' + encodeURIComponent(who) + '&' + TRACK_ENTRY_WHAT + '=' + encodeURIComponent(what),
-      onload: function () {}, onerror: function () {}, ontimeout: function () {}
+    trackCurator().then(function (who) {
+      if (!who) return;
+      GM_xmlhttpRequest({
+        method: 'POST', url: 'https://docs.google.com/forms/d/e/' + TRACK_FORM_ID + '/formResponse', timeout: 15000, anonymous: true,
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+        data: TRACK_ENTRY_WHO + '=' + encodeURIComponent(who) + '&' + TRACK_ENTRY_WHAT + '=' + encodeURIComponent(what),
+        onload: function () {}, onerror: function () {}, ontimeout: function () {}
+      });
     });
   }
 
