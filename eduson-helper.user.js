@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.43.0
+// @version      1.45.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -127,7 +127,7 @@
 
   /* ================================================ */
 
-  const VER = '1.37.5';
+  const VER = '1.45.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3648,7 +3648,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.37.5'; // синхр. с Хэлпером
+  const VER = '1.45.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -4963,7 +4963,10 @@
     tabs.appendChild(tTag);
     p.appendChild(tabs);
     p.appendChild(body);
-    tPing.select(false);
+    // Раньше при каждом открытии панели сразу раскрывались «Пинги» — Наталья попросила убрать
+    // (лишний контент выскакивает сам, хотя она просто хотела открыть Хэлпер). Теперь панель
+    // открывается пустой, без выбранной вкладки — контент показывается только по клику.
+    body.appendChild(elt('div', 'text-align:center;color:#9CA3AF;font-weight:700;font-size:11.5px;padding:14px 6px;', 'Выбери вкладку выше'));
     return p;
   }
 
@@ -7460,6 +7463,40 @@
     _catalogCache = list;
     return list;
   }
+
+  // Тарифы отдельного курса (Начальный/Продвинутый/Мастер и т.п.): каталог CATALOGUE_URL их не
+  // разделяет (1-2 цены на ссылку). Наталья нашла источник — страница «Подарок 1+1»
+  // (gift.eduson.workers.dev): в неё зашит JSON со ВСЕМИ курсами, тарифы в нём — отдельные строки
+  // («Методист: тариф PRO» / «Методист: тариф Специалист», у каждой своя цена и ссылка).
+  // Сверено на живом курсе (HR-строительство, единственный тариф): 10 702 ₽/мес и 26 756 ₽/мес
+  // из этого JSON день-в-день совпали с ценой на самой странице сайта — значит это не «промо-цена
+  // подарка», а обычная текущая цена сайта (сейчас с действующей акцией -60%, до 22.09).
+  // Раз это текущая акция — цену не кэшируем надолго, грузим заново при каждом открытии карточки.
+  const GIFT_URL = 'https://gift.eduson.workers.dev/';
+  let _giftCache = null;
+  async function loadGiftCatalog() {
+    if (_giftCache) return _giftCache;
+    const html = await gmText(GIFT_URL + '?_cb=' + Date.now());
+    const key = 'courses: [';
+    const at = html.indexOf(key);
+    if (at === -1) throw new Error('на странице подарка не нашла список курсов');
+    const start = at + key.length - 1;   // указывает на '['
+    let depth = 0, end = -1;
+    for (let i = start; i < html.length; i++) {
+      const ch = html[i];
+      if (ch === '[') depth++;
+      else if (ch === ']') { depth--; if (depth === 0) { end = i; break; } }
+    }
+    if (end === -1) throw new Error('не нашла конец списка курсов на странице подарка');
+    let list;
+    try { list = JSON.parse(html.slice(start, end + 1)); } catch (e) { throw new Error('список курсов на странице подарка не разобрался'); }
+    if (!Array.isArray(list) || !list.length) throw new Error('список курсов на странице подарка пустой');
+    _giftCache = list;
+    return list;
+  }
+  // «Методист: тариф PRO» → база «методист», ярлык «PRO».
+  function giftBaseName(course) { return pcNorm(String(course || '').replace(/[:.]?\s*тариф[:\s]+[^,]+$/i, '')); }
+  function giftTariffLabel(course) { const m = String(course || '').match(/тариф[:\s]+([^,]+)$/i); return m ? m[1].trim() : ''; }
   function pcNorm(s) {
     return String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9]+/g, ' ').trim();
   }
@@ -7658,11 +7695,29 @@
         }
       }
       result.appendChild(card);
-      // Тарифы курса (Начальный/Продвинутый/Мастер): цену считает JS сайта на лету при открытии
-      // страницы (проверено — в самом HTML лежит одна и та же заглушка для всех тарифов, реальные
-      // цифры подставляются уже в браузере студента), поэтому тихо вычитать их из фонового запроса
-      // нельзя — будут одинаковые неверные цифры (это и увидела Наталья). Честнее дать прямую ссылку
-      // на тарифы, чем показывать цифры, в которых нельзя быть уверенной.
+      // Тарифы курса (Начальный/Продвинутый/Мастер): каталог CATALOGUE_URL их не разделяет.
+      // Источник — «Подарок 1+1» (см. loadGiftCatalog): там та же цена, что и на живой странице
+      // курса, тарифы — отдельные строки. Если курс там нашёлся — показываем список; если нет
+      // (в подарочном каталоге меньше курсов) — просто остаётся кнопка на сайт ниже.
+      loadGiftCatalog().then(function (list) {
+        const base = giftBaseName(c.course_name);
+        const sibs = list.filter(function (o) { return giftBaseName(o.course) === base; });
+        if (!sibs.length) return;
+        sibs.sort(function (a, b) { return a.price - b.price; });
+        const box = elt('div', 'margin-top:9px;border-top:1px solid ' + ACC_BD + ';padding-top:8px;');
+        box.appendChild(elt('div', fieldLabel + 'margin:0 0 4px;', 'Тарифы на сайте сейчас'));
+        sibs.forEach(function (o) {
+          const row = elt('div', 'display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:12px;font-weight:700;padding:3px 0;');
+          row.appendChild(elt('span', 'color:#374151;', giftTariffLabel(o.course) || o.course));
+          const priceWrap = elt('span', 'white-space:nowrap;');
+          priceWrap.appendChild(elt('span', 'color:' + ACC_DEEP + ';', pcMoney(o.price)));
+          if (o.fullPrice > o.price) priceWrap.appendChild(elt('span', 'color:#9CA3AF;font-weight:600;text-decoration:line-through;margin-left:5px;font-size:10.5px;', pcMoney(o.fullPrice)));
+          row.appendChild(priceWrap);
+          box.appendChild(row);
+        });
+        box.appendChild(elt('div', 'font-size:10px;color:#9CA3AF;font-weight:600;margin-top:3px;', 'С учётом текущей акции сайта — цена может измениться.'));
+        card.appendChild(box);
+      }).catch(function () {});
       if (c.product_url) {
         const tBtn = elt('div', 'display:inline-block;margin-top:9px;margin-left:6px;background:#fff;color:' + ACC + ';border:1.5px solid ' + ACC_BD + ';font-weight:800;font-size:11px;padding:5px 10px;border-radius:8px;cursor:pointer;', '📶 Тарифы на сайте');
         tBtn.onclick = function () { window.open(c.product_url, '_blank'); };
