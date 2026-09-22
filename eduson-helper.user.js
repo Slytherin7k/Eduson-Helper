@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.37.5
+// @version      1.38.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -7415,7 +7415,10 @@
   function pcFind(list, q) {
     q = String(q || '').trim();
     if (!q) return [];
-    const m = q.match(/eduson\.academy\/([a-z0-9_\-]+)/i) || (/^[a-z0-9_\-]+$/i.test(q) ? [null, q] : null);
+    // Голое слово-слаг (без дефиса, напр. «excel») НЕ считаем ссылкой — так оно попадает в
+    // полнотекстовый поиск по названию ниже, а не отсекается точным совпадением по одной ссылке
+    // (на одну страницу сайта может продаваться несколько курсов с разными названиями и ценами).
+    const m = q.match(/eduson\.academy\/([a-z0-9_\-]+)/i) || (/^[a-z0-9_\-]+-[a-z0-9_\-]+$/i.test(q) ? [null, q] : null);
     if (m) {
       const slug = m[1].toLowerCase();
       const byUrl = list.filter(function (c) { return String(c.product_url || '').toLowerCase().replace(/[?#].*$/, '').replace(/\/+$/, '').split('/').pop() === slug; });
@@ -7429,6 +7432,7 @@
       return { c: c, score: (n === pcNorm(q) ? -1000 : 0) + n.length };
     }).filter(Boolean).sort(function (a, b) { return a.score - b.score; }).slice(0, 10).map(function (x) { return x.c; });
   }
+  function pcUrlKey(url) { return String(url || '').toLowerCase().replace(/[?#].*$/, '').replace(/\/+$/, ''); }
   function pcMoney(n) { return Math.round(n).toLocaleString('ru-RU') + ' ₽'; }
   function pcDate(ts) {
     if (!ts) return '';
@@ -7584,6 +7588,20 @@
         const btn = elt('div', 'display:inline-block;margin-top:9px;background:#fff;color:' + ACC + ';border:1.5px solid ' + ACC_BD + ';font-weight:800;font-size:11px;padding:5px 10px;border-radius:8px;cursor:pointer;', '📋 Скопировать ссылку');
         btn.onclick = function () { copyText(c.product_url); toast('Ссылка на курс скопирована'); };
         card.appendChild(btn);
+      }
+      // На одной странице сайта иногда продаётся несколько тарифов/комплектов (в каталоге цен —
+      // отдельные записи с одинаковой ссылкой). Показываем, что там есть ещё варианты, чтобы
+      // цена по ссылке не расходилась с выбранной здесь без объяснений.
+      if (catalog && c.product_url) {
+        const key = pcUrlKey(c.product_url);
+        const siblings = catalog.filter(function (o) { return o !== c && pcUrlKey(o.product_url) === key; });
+        if (siblings.length) {
+          const note = elt('div', 'font-size:10.5px;color:#B45309;font-weight:700;margin-top:8px;line-height:1.4;',
+            'По этой же ссылке на сайте есть ещё ' + (siblings.length === 1 ? 'вариант' : 'варианты') + ': '
+            + siblings.map(function (o) { return o.course_name + ' — ' + pcMoney(+o.price_from); }).join(', ')
+            + '. На странице курса могут быть и другие тарифы — точную цену сверяй на сайте.');
+          card.appendChild(note);
+        }
       }
       result.appendChild(card);
     }
