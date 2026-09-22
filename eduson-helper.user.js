@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.41.0
+// @version      1.42.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -18,6 +18,7 @@
 // @connect      eduson.tv
 // @connect      docs.google.com
 // @connect      assets.eduson.academy
+// @connect      eduson.academy
 // @connect      app.notion.com
 // @connect      notion.com
 // @connect      notion.so
@@ -7434,9 +7435,11 @@
      Студент просит «подключите мне курс X»: сверяем цену курса с бюджетом из амо.
      Цены и список курсов — публичный каталог сайта assets.eduson.academy/prices_api/catalogue.json
      (course_name, product_url, price_from = итог со скидкой, price_per_month_from × installment_period_months).
-     ТАРИФЫ отдельного курса (Начальный/Продвинутый/Мастер и т.п.) каталог сайта не даёт — только 1-2 цены
-     на ссылку. Их берём из внутренней Notion-таблицы «Сводная таблица курсов Eduson Академии» (см.
-     loadTariffTable/findTariffs ниже) и показываем отдельным списком под основной ценой.
+     ТАРИФЫ отдельного курса (Начальный/Продвинутый/Мастер) каталог сайта не даёт — только 1-2 цены на
+     ссылку. Пробовали брать их из внутренней Notion-таблицы — путала куратора (её же и Наталью),
+     сопоставление курса из каталога со строкой Notion иногда съезжало. Поэтому берём тарифы С ТОЙ ЖЕ
+     страницы сайта, куда ведёт product_url курса (fetchSiteTariffs ниже) — это ровно то, что видит
+     студент, без риска перепутать источники.
      Бюджет — выигранные сделки амо с бюджетом > 0 (галочками выбираем, какие складывать:
      доплаты / два курса сразу). */
   const CATALOGUE_URL = 'https://assets.eduson.academy/prices_api/catalogue.json';
@@ -7452,59 +7455,35 @@
     return list;
   }
 
-  /* ---------- тарифы курса — из внутренней Notion-таблицы цен ----------
-     Строки таблицы называются «<Продукт>: тариф <Уровень>» (иногда с довеском вроде «+ ExcelAi») —
-     группируем по части названия ДО «: тариф», отдаём все тарифы этой группы. «Цена со скидкой» в
-     таблице — ФОРМУЛА: тихий запрос без реального открытия страницы отдаёт её пустой или устаревшей
-     (Notion считает формулы только когда кто-то смотрит страницу глазами, а не по запросу). Поэтому
-     считаем сами: «Полная цена» × (1 − «% скидки») — оба поля обычные, отдаются надёжно; сверено на
-     живых примерах — совпадает с тем, что видно на странице. Архивные позиции («[Архив] …») пропускаем. */
-  const PRICE_COLLECTION = '55d64c80-2278-4b57-900a-993061bfdc71';
-  const PRICE_VIEW = '287c4b07-b1e7-4d7f-950f-98f95fdf7e23';
-  function pcText(v) { if (!v) return ''; try { return v.map(function (seg) { return seg[0]; }).join(''); } catch (e) { return ''; } }
-  let _tariffCache = null;
-  async function loadTariffTable() {
-    if (_tariffCache) return _tariffCache;
-    const schemaJ = await notionPost('syncRecordValues', { requests: [{ pointer: { table: 'collection', id: PRICE_COLLECTION, spaceId: FAQ_SPACE }, version: -1 }] });
-    const coll = nUnwrap((schemaJ.recordMap.collection || {})[PRICE_COLLECTION]);
-    const schema = coll && coll.schema;
-    if (!schema) throw new Error('не прочитала таблицу тарифов — проверь вход в Notion');
-    const byName = function (re) { return Object.keys(schema).find(function (k) { return re.test(schema[k].name || ''); }); };
-    const K_FULL = byName(/^Полная цена$/i), K_DISC = byName(/^% скидки$/i), K_LINK = byName(/^Ссылка на программу$/i);
-    if (!K_FULL || !K_DISC) throw new Error('в таблице тарифов не нашла колонки «Полная цена»/«% скидки»');
-
-    const qJ = await notionPost('queryCollection', {
-      collection: { id: PRICE_COLLECTION, spaceId: FAQ_SPACE },
-      collectionView: { id: PRICE_VIEW, spaceId: FAQ_SPACE },
-      loader: { type: 'reducer', reducers: { r: { type: 'results', limit: 5000 } }, searchQuery: '', userTimeZone: 'Europe/Moscow' }
-    });
-    const ids = (qJ.result && qJ.result.reducerResults && qJ.result.reducerResults.r && qJ.result.reducerResults.r.blockIds) || [];
-    const blocks = qJ.recordMap && qJ.recordMap.block || {};
-
-    const list = [];
-    ids.forEach(function (id) {
-      const b = nUnwrap(blocks[id]);
-      if (!b || !b.properties) return;
-      const name = pcText(b.properties.title);
-      if (!name || /^\[Архив\]/i.test(name)) return;
-      const m = name.match(/^(.*?):\s*тариф\s+(.+)$/i);
-      if (!m) return;   // интересуют только строки-тарифы, остальное — не наша забота (это делает каталог сайта)
-      const full = +String(pcText(b.properties[K_FULL])).replace(/\D/g, '');
-      const disc = parseFloat(pcText(b.properties[K_DISC])) || 0;
-      const price = Math.round(full * (1 - disc));
-      if (!(price > 0)) return;
-      list.push({ product: m[1].trim(), tariff: m[2].trim(), price: price, url: K_LINK ? pcText(b.properties[K_LINK]) : '' });
-    });
-    _tariffCache = list;
-    return list;
-  }
-  // Тарифы курса по его названию из каталога сайта (например, «Excel» → тарифы Базовый/PRO/Мастер).
-  async function findTariffs(courseName) {
-    const key = pcNorm(courseName);
-    if (!key) return [];
-    let table;
-    try { table = await loadTariffTable(); } catch (e) { return []; }
-    return table.filter(function (t) { return pcNorm(t.product) === key; });
+  /* ---------- тарифы курса — прямо со страницы курса на сайте ----------
+     На странице курса цена каждого тарифа лежит в скрытом попапе заказа (виден только после клика
+     «Записаться» — но в HTML он есть всегда, готовый к показу). У курсов с 3 тарифами — три блока
+     с классами …Low/…Middle/…High (дешёвый/средний/дорогой тариф — в этом порядке всегда идут
+     Начальный/Продвинутый/Мастер, проверено на нескольких курсах). У курсов с одним тарифом — просто
+     .bigPrice, она совпадает с ценой из каталога, отдельно показывать нечего. Цена в блоке — в месяц
+     (рассрочка на 12 мес.), умножаем на 12 для итоговой суммы. */
+  const _tariffCache = {};
+  async function fetchSiteTariffs(productUrl) {
+    if (!productUrl) return [];
+    if (_tariffCache[productUrl]) return _tariffCache[productUrl];
+    let html;
+    try { html = await gmText(productUrl); } catch (e) { return []; }
+    let doc;
+    try { doc = new DOMParser().parseFromString(html, 'text/html'); } catch (e) { return []; }
+    const numOf = function (cls) {
+      const el = doc.querySelector('.' + cls);
+      if (!el) return null;
+      const digits = (el.textContent || '').replace(/[^\d]/g, '');
+      return digits ? +digits : null;
+    };
+    const tiers = [
+      { tariff: 'Начальный', per: numOf('bigPriceLowWithoutLabel') },
+      { tariff: 'Продвинутый', per: numOf('bigPriceMiddleWithoutLabel') },
+      { tariff: 'Мастер', per: numOf('bigPriceHighWithoutLabel') }
+    ].filter(function (t) { return t.per > 0; });
+    const result = tiers.map(function (t) { return { tariff: t.tariff, price: t.per * 12 }; });
+    _tariffCache[productUrl] = result;
+    return result;
   }
   function pcNorm(s) {
     return String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9]+/g, ' ').trim();
@@ -7707,11 +7686,11 @@
         }
       }
       result.appendChild(card);
-      // Тарифы курса (Начальный/Продвинутый/Мастер и т.п.) — из внутренней Notion-таблицы, каталог
-      // сайта их не различает. Грузится не сразу — дорисовываем блок, когда придёт ответ.
+      // Тарифы курса (Начальный/Продвинутый/Мастер) — прямо со страницы курса, каталог сайта их не
+      // различает. Грузится не сразу — дорисовываем блок, когда придёт ответ.
       const tariffBox = elt('div', 'margin-top:9px;font-size:11px;color:#9CA3AF;font-weight:700;', 'Смотрю тарифы курса…');
       card.appendChild(tariffBox);
-      findTariffs(c.course_name).then(function (tariffs) {
+      fetchSiteTariffs(c.product_url).then(function (tariffs) {
         if (myToken !== _resultToken || !card.isConnected) return;
         if (!tariffs.length) { tariffBox.remove(); return; }
         tariffBox.innerHTML = '';
