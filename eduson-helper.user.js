@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.45.0
+// @version      1.46.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -127,7 +127,7 @@
 
   /* ================================================ */
 
-  const VER = '1.45.0';
+  const VER = '1.46.0';
   const STORE_KEY = 'lastClient';
   const DEBUG_KEY = 'lastDebug';
   const IS_AMO  = location.hostname.endsWith('amocrm.ru');
@@ -3648,7 +3648,7 @@
      не конфликтует (все имена локальные). Кнопка-чат 💬 сама встаёт в общий ряд #eduson-hdr-btns. */
   (function () {
     'use strict';
-  const VER = '1.45.0'; // синхр. с Хэлпером
+  const VER = '1.46.0'; // синхр. с Хэлпером
   const ON_OMNI = /(^|\.)omnidesk\.ru$/.test(location.hostname);
   const TAG = '[curator-tools]';
   const ACC = '#0284C7';
@@ -7497,6 +7497,49 @@
   // «Методист: тариф PRO» → база «методист», ярлык «PRO».
   function giftBaseName(course) { return pcNorm(String(course || '').replace(/[:.]?\s*тариф[:\s]+[^,]+$/i, '')); }
   function giftTariffLabel(course) { const m = String(course || '').match(/тариф[:\s]+([^,]+)$/i); return m ? m[1].trim() : ''; }
+
+  // Сопоставляет запись каталога цен (CATALOGUE_URL) с записью подарочного каталога по цене —
+  // обе отражают текущую цену сайта (см. комментарий у loadGiftCatalog), а имя тарифа каталог
+  // цен часто не несёт («Excel и Google-таблицы» на деле — тариф Мастер курса «Excel», Наталья
+  // поймала на живом поиске). При нескольких совпадениях по цене уточняем по общим словам названия.
+  function giftMatchByPrice(c, giftList) {
+    const target = Math.round(+c.price_from);
+    if (!target) return null;
+    const cands = giftList.filter(function (o) { return Math.round(+o.price) === target; });
+    if (!cands.length) return null;
+    if (cands.length === 1) return cands[0];
+    const stems = pcNorm(c.course_name).split(' ').filter(function (w) { return w.length > 2; });
+    let best = null, bestScore = -1;
+    cands.forEach(function (o) {
+      const n = pcNorm(o.course);
+      const score = stems.filter(function (w) { return n.indexOf(w) !== -1; }).length;
+      if (score > bestScore) { bestScore = score; best = o; }
+    });
+    return bestScore > 0 ? best : cands[0];
+  }
+  // Внутри одной ссылки каталога цен несколько тарифов делят одно название (см. «siblings» в
+  // showResult) — размечаем их коротким «база + тариф» (напр. «Excel Мастер») по цене из
+  // подарочного каталога. Группы из одного тарифа не трогаем — переименовывать нечего.
+  function buildTariffLabels(catalog, giftList) {
+    const byUrl = {};
+    catalog.forEach(function (c) {
+      const key = pcUrlKey(c.product_url);
+      if (!key) return;
+      (byUrl[key] = byUrl[key] || []).push(c);
+    });
+    const labels = new Map();
+    Object.keys(byUrl).forEach(function (key) {
+      const group = byUrl[key];
+      if (group.length < 2) return;
+      const base = group.reduce(function (a, b) { return a.course_name.length <= b.course_name.length ? a : b; }).course_name;
+      group.forEach(function (c) {
+        const m = giftMatchByPrice(c, giftList);
+        const t = m && giftTariffLabel(m.course);
+        if (t) labels.set(c, base + ' ' + t);
+      });
+    });
+    return labels;
+  }
   function pcNorm(s) {
     return String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9]+/g, ' ').trim();
   }
@@ -7597,8 +7640,9 @@
     const statusEl = elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;margin-top:8px;', 'Загружаю каталог цен…');
     body.appendChild(statusEl);
 
-    let catalog = null, chosen = null, deals = [];
+    let catalog = null, chosen = null, deals = [], giftList = null, giftLabels = null;
     const checked = {};
+    const labelFor = function (c) { return (giftLabels && giftLabels.get(c)) || c.course_name; };
     const rawBudget = function () { return parseInt(String(budgetInput.value || '').replace(/\D/g, ''), 10) || 0; };
     const progress = function () { return replCb.checked ? Math.min(parseInt(String(progInput.value || '').replace(/\D/g, ''), 10) || 0, 100) : 0; };
     // бюджет для сравнений = бюджет из амо × (100 − % пройденного) / 100
@@ -7662,7 +7706,7 @@
       const c = chosen, price = +c.price_from, per = +c.price_per_month_from, months = +c.installment_period_months;
       const card = elt('div', 'border:1px solid ' + ACC_BD + ';background:#F0F9FF;border-radius:12px;padding:10px 12px;');
       card.appendChild(elt('div', 'font-size:11px;color:#6B7280;font-weight:700;line-height:1.35;', [c.type, c.duration].filter(Boolean).join(' · ')));
-      card.appendChild(elt('div', 'font-weight:900;font-size:15px;color:' + ACC_DEEP + ';margin-top:2px;', c.course_name));
+      card.appendChild(elt('div', 'font-weight:900;font-size:15px;color:' + ACC_DEEP + ';margin-top:2px;', labelFor(c)));
       card.appendChild(elt('div', 'font-weight:900;font-size:20px;color:#111827;margin-top:6px;', pcMoney(price)));
       if (per > 0 && months > 0) card.appendChild(elt('div', 'font-size:11px;color:#6B7280;font-weight:700;margin-top:1px;', pcMoney(per) + ' × ' + months + ' мес.'));
       const b = budget();
@@ -7689,7 +7733,7 @@
         if (siblings.length) {
           const note = elt('div', 'font-size:10.5px;color:#B45309;font-weight:700;margin-top:8px;line-height:1.4;',
             'По этой же ссылке на сайте есть ещё ' + (siblings.length === 1 ? 'вариант' : 'варианты') + ': '
-            + siblings.map(function (o) { return o.course_name + ' — ' + pcMoney(+o.price_from); }).join(', ')
+            + siblings.map(function (o) { return labelFor(o) + ' — ' + pcMoney(+o.price_from); }).join(', ')
             + '. На странице курса могут быть и другие тарифы — точную цену сверяй на сайте.');
           card.appendChild(note);
         }
@@ -7731,7 +7775,7 @@
       listBox.style.display = 'block';
       found.forEach(function (c) {
         const row = elt('div', 'padding:6px 9px;cursor:pointer;border-bottom:1px solid #F3F4F6;font-size:12px;font-weight:700;color:#111827;');
-        row.appendChild(document.createTextNode(c.course_name));
+        row.appendChild(document.createTextNode(labelFor(c)));
         row.appendChild(elt('span', 'color:#9CA3AF;font-weight:600;margin-left:6px;', pcMoney(+c.price_from)));
         row.onmouseenter = function () { row.style.background = '#F0F9FF'; };
         row.onmouseleave = function () { row.style.background = 'transparent'; };
@@ -7794,7 +7838,7 @@
       const lines = ['Здравствуйте! Подобрала для вас курсы, которые подходят по сумме вашей оплаты:', ''];
       groups.forEach(function (g) {
         lines.push(g.dir);
-        g.items.forEach(function (c) { lines.push('• ' + c.course_name + (c.product_url ? ' - ' + c.product_url : '')); });
+        g.items.forEach(function (c) { lines.push('• ' + labelFor(c) + (c.product_url ? ' - ' + c.product_url : '')); });
         lines.push('');
       });
       lines.push('Напишите, какой курс вам подходит, — мы его подключим.');
@@ -7845,7 +7889,7 @@
           listEl.appendChild(elt('div', 'font-size:10px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:#6B7280;margin:8px 0 3px;', g.dir + ' (' + g.items.length + ')'));
           shown.forEach(function (c) {
             const row = elt('div', 'display:flex;justify-content:space-between;gap:8px;font-size:12px;font-weight:700;color:#111827;padding:3px 2px;border-bottom:1px solid #F3F4F6;');
-            row.appendChild(elt('span', 'min-width:0;', c.course_name));
+            row.appendChild(elt('span', 'min-width:0;', labelFor(c)));
             row.appendChild(elt('span', 'flex:0 0 auto;color:#6B7280;font-weight:600;', pcMoney(+c.price_from)));
             listEl.appendChild(row);
           });
@@ -7911,15 +7955,28 @@
       onBudgetChange();
     }
 
+    // Как только оба каталога готовы — размечаем тарифы (buildTariffLabels) и перерисовываем
+    // уже показанное (список / выбранную карточку / «показать все»), не дожидаясь нового ввода.
+    function tryBuildLabels() {
+      if (!catalog || !giftList || giftLabels) return;
+      giftLabels = buildTariffLabels(catalog, giftList);
+      onQuery();
+      if (chosen) showResult();
+      refreshAll();
+    }
     loadCatalogue().then(function (list) {
       catalog = list;
       statusEl.textContent = 'В каталоге ' + list.length + ' курсов.';
       onQuery();
       refreshAll();
+      tryBuildLabels();
     }).catch(function (e) {
       statusEl.style.color = '#B45309';
       statusEl.textContent = '🙀 Не получилось загрузить каталог цен (' + ((e && e.message) || 'сеть') + '). Обнови вкладку или посмотри цену на сайте.';
     });
+    // Не критично, если не загрузится — без него просто не будет коротких «база + тариф» подписей
+    // (labelFor вернёт исходное имя из каталога цен, как раньше).
+    loadGiftCatalog().then(function (list) { giftList = list; tryBuildLabels(); }).catch(function () {});
 
     pcLoadDeals().then(function (list) {
       deals = list;
