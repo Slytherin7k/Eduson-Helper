@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.48.0
+// @version      1.49.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -8633,6 +8633,13 @@
     return [].slice.call(doc.querySelectorAll('input[name$="[id]"]')).some(function (i) { return i.value === String(uid); });
   }
 
+  // Черновик формы «Новый аккаунт» живёт в модуле (не в DOM), поэтому переживает сворачивание/
+  // разворачивание панели — иначе введённые ФИО/почта/курс/ход создания терялись при закрытии панели
+  // (closePanel полностью удаляет DOM панели, а заново открытая рисуется с нуля).
+  var _newAccDraft = {
+    last: '', first: '', middle: '', email: '', phone: '', password: NEWACC_PASSWORD,
+    qText: '', picked: null, userId: '', moved: false, done: false, accEmail: ''
+  };
   function renderNewAccount(body) {
     const lab = function (t, hint) {
       const d = elt('div', 'margin:10px 0 4px;');
@@ -8648,34 +8655,47 @@
 
     body.appendChild(lab('Фамилия', '— ФИО целиком можно вставить сюда, разложится само'));
     const lastI = mk('text', 'Иванова');
+    lastI.value = _newAccDraft.last;
     body.appendChild(lastI);
     body.appendChild(lab('Имя'));
     const firstI = mk('text', 'Мария');
+    firstI.value = _newAccDraft.first;
     body.appendChild(firstI);
     body.appendChild(lab('Отчество', '— если есть'));
     const midI = mk('text', 'Сергеевна');
+    midI.value = _newAccDraft.middle;
     body.appendChild(midI);
     lastI.addEventListener('paste', function (ev) {
       const t = String((ev.clipboardData || window.clipboardData).getData('text') || '').trim().split(/\s+/);
       if (t.length < 2) return;
       ev.preventDefault();
       lastI.value = t[0]; firstI.value = t[1]; midI.value = t.slice(2).join(' ');
+      _newAccDraft.last = lastI.value; _newAccDraft.first = firstI.value; _newAccDraft.middle = midI.value;
     });
+    lastI.addEventListener('input', function () { _newAccDraft.last = lastI.value; });
+    firstI.addEventListener('input', function () { _newAccDraft.first = firstI.value; });
+    midI.addEventListener('input', function () { _newAccDraft.middle = midI.value; });
 
     body.appendChild(lab('Почта'));
     const emailI = mk('email', 'name@mail.ru');
+    emailI.value = _newAccDraft.email;
+    emailI.addEventListener('input', function () { _newAccDraft.email = emailI.value; });
     body.appendChild(emailI);
     body.appendChild(lab('Телефон'));
     const phoneI = mk('tel', '+7…');
+    phoneI.value = _newAccDraft.phone;
+    phoneI.addEventListener('input', function () { _newAccDraft.phone = phoneI.value; });
     body.appendChild(phoneI);
     body.appendChild(lab('Пароль', '— как обычно 123456'));
     const passI = mk('text');
-    passI.value = NEWACC_PASSWORD;
+    passI.value = _newAccDraft.password || NEWACC_PASSWORD;
+    passI.addEventListener('input', function () { _newAccDraft.password = passI.value; });
     body.appendChild(passI);
 
     // курс (Company) — поиск по названию, как во вкладке «Добавить курс»
     body.appendChild(lab('Курс', '— название, ID или ссылка на компанию'));
     const qInp = mk('search', 'название курса  ·  16023  ·  ссылка');
+    qInp.value = _newAccDraft.qText;
     body.appendChild(qInp);
     const hits = elt('div', 'margin-top:5px;max-height:160px;overflow:auto;border:1px solid #EEF2F5;border-radius:9px;display:none;');
     body.appendChild(hits);
@@ -8684,11 +8704,14 @@
     let picked = null, qTimer = null;
     function pick(it) {
       picked = it;
+      _newAccDraft.picked = it;
       chosen.style.display = 'block';
       chosen.textContent = '✓ ' + it.name + '  ·  Company ID ' + it.id;
       hits.style.display = 'none';
     }
+    if (_newAccDraft.picked) pick(_newAccDraft.picked);
     qInp.addEventListener('input', function () {
+      _newAccDraft.qText = qInp.value;
       clearTimeout(qTimer);
       const v = qInp.value.trim();
       const idm = v.match(/\/admin\/companies\/(\d+)/) || (/^\d{2,7}$/.test(v) ? [null, v] : null);
@@ -8720,11 +8743,25 @@
     body.appendChild(btn); body.appendChild(status);
 
     // Шаги: аккаунт → смена курса на нужный → проверка группы. Если что-то оборвалось, повторное нажатие
-    // «Достроить» продолжает с того места, а не заводит нового человека.
-    let busy = false, done = false, userId = '', moved = false, email = '';
+    // «Достроить» продолжает с того места, а не заводит нового человека. Ход тоже держим в _newAccDraft,
+    // чтобы сворачивание панели посреди процесса не заставляло заводить дубль аккаунта.
+    let busy = false, done = _newAccDraft.done, userId = _newAccDraft.userId, moved = _newAccDraft.moved, email = _newAccDraft.accEmail;
+    if (done) {
+      btn.style.opacity = '1'; btn.style.background = '#fff'; btn.style.color = ACC; btn.style.border = '1.5px solid ' + ACC_BD;
+      btn.textContent = 'Создать ещё один';
+      status.style.color = '#16A34A';
+      status.textContent = '😻 Готово: аккаунт #' + userId + (picked ? (', курс «' + picked.name + '»') : '') + '.';
+      const a0 = elt('a', 'display:inline-block;margin:6px 12px 0 0;font-size:11px;font-weight:800;color:' + ACC + ';text-decoration:none;', 'открыть аккаунт в админке →');
+      a0.href = EDU_ADMIN + '/admin/users/' + userId + '?language=ru'; a0.target = '_blank'; a0.rel = 'noopener';
+      status.appendChild(document.createElement('br')); status.appendChild(a0);
+    } else if (userId) {
+      btn.textContent = 'Достроить';
+      status.style.color = '#6B7280';
+      status.textContent = 'Аккаунт #' + userId + ' уже создан — жми «Достроить», лишнего не заведу.';
+    }
     btn.onclick = async function () {
       if (busy) return;
-      if (done) { body.innerHTML = ''; renderNewAccount(body); return; } // «создать ещё один» — чистая форма
+      if (done) { _newAccDraft = { last: '', first: '', middle: '', email: '', phone: '', password: NEWACC_PASSWORD, qText: '', picked: null, userId: '', moved: false, done: false, accEmail: '' }; body.innerHTML = ''; renderNewAccount(body); return; } // «создать ещё один» — чистая форма
       const d = {
         last: lastI.value.trim(), first: firstI.value.trim(), middle: midI.value.trim(),
         email: emailI.value.trim().toLowerCase(), phone: phoneI.value.trim(), password: passI.value.trim()
@@ -8759,6 +8796,7 @@
             return;
           }
           userId = res.id; email = d.email;
+          _newAccDraft.userId = userId; _newAccDraft.accEmail = email;
         }
         btn.textContent = 'Ставлю курс…';
         if (!moved) {
@@ -8766,6 +8804,7 @@
           const r = await adminSetUserCompany(userId, picked.id);
           if (r.errs.length) throw new Error('админка не приняла смену курса: ' + r.errs.join('; ').slice(0, 200));
           moved = true;
+          _newAccDraft.moved = true;
         }
         // проверка: аккаунт появился в списке курса (там только состоящие в группе)
         const inGroup = await adminUserInCompanyGroup(picked.id, email, userId).catch(function () { return null; });
@@ -8782,7 +8821,7 @@
         const a = elt('a', 'display:inline-block;margin:6px 12px 0 0;font-size:11px;font-weight:800;color:' + ACC + ';text-decoration:none;', 'открыть аккаунт в админке →');
         a.href = EDU_ADMIN + '/admin/users/' + userId + '?language=ru'; a.target = '_blank'; a.rel = 'noopener';
         status.appendChild(document.createElement('br')); status.appendChild(a);
-        done = true; busy = false; btn.style.opacity = '1'; btn.style.background = '#fff'; btn.style.color = ACC; btn.style.border = '1.5px solid ' + ACC_BD;
+        done = true; _newAccDraft.done = true; busy = false; btn.style.opacity = '1'; btn.style.background = '#fff'; btn.style.color = ACC; btn.style.border = '1.5px solid ' + ACC_BD;
         btn.textContent = 'Создать ещё один';
       } catch (e) {
         console.error('[eduson-helper] новый аккаунт:', e);
