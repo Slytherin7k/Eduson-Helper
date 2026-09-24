@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.49.0
+// @version      1.50.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -6801,6 +6801,9 @@
   // группы, в B (и C для оферты) — текст про гарантию для этой группы.
   const GUAR_SHEET_CSV =
     'https://docs.google.com/spreadsheets/d/1XTS-f9ndG4J5StlnqZJK4GbSR1m6Vxq1LmRVoKlneeE/gviz/tq?tqx=out:csv&gid=1199768420';
+  // Та же таблица, первый лист (gid=0): отсюда берём только раздел про ресейл.
+  const RESALE_SHEET_CSV =
+    'https://docs.google.com/spreadsheets/d/1XTS-f9ndG4J5StlnqZJK4GbSR1m6Vxq1LmRVoKlneeE/gviz/tq?tqx=out:csv&gid=0';
   // кириллические двойники латиницы → латиница: чтобы «1С-Разработчик» (омник)
   // и «1C-Разработчик — 112 часов» (таблица) считались одним курсом.
   const DOC_FOLD = { 'а':'a','е':'e','о':'o','р':'p','с':'c','х':'x','к':'k','м':'m','т':'t','н':'h','в':'b','у':'y','і':'i','ѕ':'s' };
@@ -6843,7 +6846,27 @@
     return rows;
   }
 
-  let docMapCache = null; // { list:[{course,doc,hours,srok,section}], byNorm:{} }
+  // Курсы ресейла (TeachMeSkills) — из старой таблицы «Академ.часы в курсах», раздел
+  // «Курсы TechMeSkills»: A — курс («… — 224 часа»), B — ак. часы, C — ДПП/УПК, D — «Курс ресейла…».
+  // Берём ТОЛЬКО ресейл, остальное из той таблицы не используем. Срока освоения там нет.
+  function loadResaleDocs() {
+    return gmText(RESALE_SHEET_CSV + '&_cb=' + Date.now()).then(function (csv) {
+      if (/<!doctype|<html|accounts\.google\.com/i.test(csv.slice(0, 400))) throw new Error('NOAUTH');
+      const out = []; let section = '';
+      parseCsv(csv).forEach(function (r, idx) {
+        const course = (r[0] || '').trim(), hours = (r[1] || '').trim(), doc = (r[2] || '').trim(), note = (r[3] || '').trim();
+        if (!course || idx === 0) return;
+        if (!hours && !doc && !note) { section = course; return; }
+        if (!/ресейл/i.test(note) && !/te?a?chmeskills|ресейл/i.test(section)) return;
+        // «DevOps-инженер — 224 часа» → «DevOps-инженер» (часы и так есть отдельным полем)
+        const name = course.replace(/\s*[—–-]\s*\d+\s*час\S*\s*$/i, '').trim() || course;
+        out.push({ course: name, doc: doc, hours: hours, srok: '', section: 'Ресейл TeachMeSkills', resale: true });
+      });
+      return out;
+    });
+  }
+
+  let docMapCache = null; // { list:[{course,doc,hours,srok,section,resale?}], byNorm:{} }
   function loadDocMap() {
     if (docMapCache) return Promise.resolve(docMapCache);
     return gmText(DOC_SHEET_CSV + '&_cb=' + Date.now()).then(function (csv) {
@@ -6858,10 +6881,17 @@
         list.push({ course: course, doc: doc, hours: hours, srok: srok, section: section });
       });
       if (!list.length) throw new Error('таблица пустая');
-      const byNorm = {};
-      list.forEach(function (it) { byNorm[docNorm(it.course)] = it; });
-      docMapCache = { list: list, byNorm: byNorm };
-      return docMapCache;
+      // ресейл — отдельно; если он не прочитался, основная таблица всё равно работает
+      return loadResaleDocs().catch(function (e) {
+        console.warn('[eduson-helper] ресейл-курсы не прочитались:', e && e.message);
+        return [];
+      }).then(function (resale) {
+        const byNorm = {};
+        list.forEach(function (it) { byNorm[docNorm(it.course)] = it; });
+        resale.forEach(function (it) { list.push(it); byNorm[docNorm(it.course)] = it; });
+        docMapCache = { list: list, byNorm: byNorm };
+        return docMapCache;
+      });
     });
   }
 
@@ -6986,6 +7016,7 @@
         if (it.hours) meta.push(it.hours + ' ак. ч.');
         if (it.srok) meta.push(it.srok + ' дн. освоения');
         if (meta.length) card.appendChild(elt('div', 'font-size:11px;color:#9CA3AF;font-weight:600;margin-top:4px;', meta.join(' · ')));
+        if (it.resale) card.appendChild(elt('div', 'font-size:10.5px;color:#B45309;font-weight:700;margin-top:5px;line-height:1.4;', '🅿️ Курс ресейла (TeachMeSkills) — на нашей платформе его нет'));
         if (note) card.appendChild(elt('div', 'font-size:10.5px;color:#9CA3AF;font-weight:600;margin-top:5px;line-height:1.4;', note));
         result.appendChild(card);
       }
