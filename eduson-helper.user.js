@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.51.0
+// @version      1.52.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -4614,16 +4614,53 @@
     'M16.456 6.733c.214 -1.376 -.375 -2.594 -1.32 -2.722a1.164 1.164 0 0 0 -.162 -.011c-.885 0 -1.728 .97 -1.93 2.267c-.214 1.376 .375 2.594 1.32 2.722c.054 .007 .108 .011 .162 .011c.885 0 1.73 -.974 1.93 -2.267z',
     'M5.69 12.918c.816 -.352 1.054 -1.719 .536 -3.052c-.436 -1.124 -1.271 -1.866 -2.009 -1.866c-.14 0 -.277 .027 -.407 .082c-.816 .352 -1.054 1.719 -.536 3.052c.436 1.124 1.271 1.866 2.009 1.866c.14 0 .277 -.027 .407 -.082z'];
 
+  /* Реакции на послание. Пишутся той же формой, отдельной строкой «⟦реакция⟧ <время послания> <смайл>»;
+     при чтении такие строки НЕ считаются посланиями (не занимают табло), а складываются в счётчики.
+     Послание опознаём по его времени из таблицы (одинаково у всех кураторов). Одну реакцию каждого вида
+     на одно послание — помним у себя (GM_setValue), что уже ставили. */
+  const BOARD_REACT_TAG = '⟦реакция⟧';
+  const BOARD_REACTS = ['😻', '😹', '🙀', '😿'];
+  const BOARD_REACT_KEY = 'hp_board_reacted';
+
   // общий кэш между открытиями панели: rows — строки таблицы, skew — серверное «сейчас» минус локальное
-  const _board = { rows: null, skew: 0, loadedAt: 0, err: false, mine: null, draft: '' };
+  // reacts — реакции из таблицы [{m: время послания, e: смайл}], pending — свои, ещё не долетевшие до таблицы
+  const _board = { rows: null, reacts: [], pending: [], skew: 0, loadedAt: 0, err: false, mine: null, draft: '' };
+
+  function boardStore(d) {
+    _board.rows = d.rows; _board.reacts = d.reacts || []; _board.skew = d.skew; _board.loadedAt = Date.now(); _board.err = false;
+    // своя реакция уже прочитана из таблицы (таблицу загрузили позже отправки) — больше не досчитываем её вручную
+    _board.pending = _board.pending.filter(function (p) { return p.at > _board.loadedAt - 3000 && Date.now() - p.at < 120000; });
+  }
+  function boardReacted() {
+    let o = {};
+    try { o = JSON.parse(GM_getValue(BOARD_REACT_KEY, '{}')) || {}; } catch (e) { o = {}; }
+    return o;
+  }
+  function boardMarkReacted(m, e, on) {
+    const o = boardReacted();
+    const cut = Date.now() - 24 * 3600000;   // старые послания давно ушли с табло — не храним
+    Object.keys(o).forEach(function (k) { if (+k < cut) delete o[k]; });
+    const list = o[m] || [];
+    const i = list.indexOf(e);
+    if (on && i < 0) list.push(e);
+    if (!on && i >= 0) list.splice(i, 1);
+    if (list.length) o[m] = list; else delete o[m];
+    GM_setValue(BOARD_REACT_KEY, JSON.stringify(o));
+  }
+  function boardReactCount(m, e) {
+    let n = 0;
+    _board.reacts.forEach(function (r) { if (r.m === m && r.e === e) n++; });
+    _board.pending.forEach(function (p) { if (p.m === m && p.e === e) n++; });
+    return n;
+  }
 
   function boardLen(s) { return Array.from(String(s || '')).length; }
   function boardClean(s) { return Array.from(String(s || '').replace(/\s+/g, ' ')).filter(function (ch) { const c = ch.charCodeAt(0); return c > 31 && c !== 127; }).join('').trim(); }
   function boardCut(s) { return Array.from(s).slice(0, BOARD_MAX).join(''); }
 
-  // Читает таблицу (gviz JSON, последние 100 строк). → {rows:[{t,text}] по возрастанию времени, skew}
+  // Читает таблицу (gviz JSON, последние 300 строк). → {rows:[{t,text}] по возрастанию времени, reacts, skew}
   function boardLoad() {
-    const q = 'select A,B order by A desc limit 100';
+    const q = 'select A,B order by A desc limit 300';
     const url = 'https://docs.google.com/spreadsheets/d/' + BOARD_SHEET_ID + '/gviz/tq?tqx=out:json&gid=' + BOARD_GID +
       '&tq=' + encodeURIComponent(q) + '&_=' + Date.now();
     return new Promise(function (resolve, reject) {
@@ -4637,16 +4674,21 @@
           if (!j || j.status !== 'ok' || !j.table) { reject(new Error('таблица ответила не так')); return; }
           const dh = /(?:^|\n)date:\s*(.+)/i.exec(res.responseHeaders || '');
           const srv = dh ? Date.parse(dh[1].trim()) : NaN;
-          const rows = [];
+          const rows = [], reacts = [];
           (j.table.rows || []).forEach(function (r) {
             const c = r.c || [];
             const dm = c[0] && typeof c[0].v === 'string' && c[0].v.match(/^Date\((\d+),(\d+),(\d+),(\d+),(\d+),(\d+)\)$/);
             const text = boardCut(boardClean(c[1] && c[1].v));
             if (!dm || !text) return;
+            if (text.indexOf(BOARD_REACT_TAG) === 0) {
+              const rm = text.slice(BOARD_REACT_TAG.length).trim().match(/^(\d+)\s+(.+)$/);
+              if (rm && BOARD_REACTS.indexOf(rm[2]) >= 0) reacts.push({ m: +rm[1], e: rm[2] });
+              return;
+            }
             rows.push({ t: Date.UTC(+dm[1], +dm[2], +dm[3], +dm[4], +dm[5], +dm[6]) - BOARD_TZ_H * 3600000, text: text });
           });
           rows.sort(function (a, b) { return a.t - b.t; });
-          resolve({ rows: rows, skew: isFinite(srv) ? srv - Date.now() : 0 });
+          resolve({ rows: rows, reacts: reacts, skew: isFinite(srv) ? srv - Date.now() : 0 });
         },
         onerror: function () { reject(new Error('сеть')); },
         ontimeout: function () { reject(new Error('долго не отвечает')); }
@@ -4745,6 +4787,7 @@
       const sig = elt('div', 'text-align:right;font-size:12px;margin-top:4px;color:' + INK2 + ';', '— твой');
       sig.appendChild(mkCat(21, -6, 4));
       inner.appendChild(sig);
+      if (!cur.tmp) inner.appendChild(reactRow(cur));
       const leftMs = Math.max(0, Math.min(BOARD_WINDOW_MS, cur.t + BOARD_WINDOW_MS - nowMs()));
       const mins = Math.max(1, Math.ceil(leftMs / 60000));
       const meta = elt('div', 'display:flex;align-items:center;gap:8px;margin-top:8px;font-size:11px;color:' + INK3 + ';');
@@ -4753,6 +4796,42 @@
       track.appendChild(elt('div', 'height:100%;border-radius:2px;background:' + ACC + ';width:' + Math.round(leftMs / BOARD_WINDOW_MS * 100) + '%;'));
       meta.appendChild(track);
       inner.appendChild(meta);
+    }
+
+    // Ряд реакций: 😻 😹 🙀 😿 со счётчиками. Своя уже поставленная — подсвечена и второй раз не жмётся.
+    function reactRow(cur) {
+      const mine = boardReacted()[cur.t] || [];
+      const rowR = elt('div', 'display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;');
+      BOARD_REACTS.forEach(function (e) {
+        const n = boardReactCount(cur.t, e);
+        const on = mine.indexOf(e) >= 0;
+        const b = elt('button', 'display:inline-flex;align-items:center;gap:4px;padding:2px 9px;border-radius:999px;font:700 12px ' + FONT + ';' +
+          'color:' + INK + ';line-height:20px;' + (on
+            ? 'background:#D4ECF8;border:1px solid ' + ACC + ';cursor:default;'
+            : 'background:#fff;border:1px solid #C2E1F2;cursor:pointer;'));
+        b.type = 'button';
+        b.appendChild(elt('span', 'font-size:14px;', e));
+        if (n) b.appendChild(elt('span', '', String(n)));
+        b.title = on ? 'Ты уже так отреагировал(а)' : 'Отреагировать';
+        b.onclick = async function () {
+          if (on) return;
+          const p = { m: cur.t, e: e, at: Date.now() };
+          boardMarkReacted(cur.t, e, true);
+          _board.pending.push(p);
+          render();
+          const ok = await boardSend(BOARD_REACT_TAG + ' ' + cur.t + ' ' + e);
+          if (!ok) {
+            boardMarkReacted(cur.t, e, false);
+            _board.pending = _board.pending.filter(function (x) { return x !== p; });
+            if (mode === 'view') render();
+            toast('Реакция не отправилась. Проверь интернет и попробуй ещё раз.', 5000);
+            return;
+          }
+          setTimeout(refresh, 8000);
+        };
+        rowR.appendChild(b);
+      });
+      return rowR;
     }
 
     function writeUI(inner) {
@@ -4788,7 +4867,7 @@
         try {
           // перед отправкой — свежая проверка: вдруг табло только что заняли
           const d = await boardLoad();
-          _board.rows = d.rows; _board.skew = d.skew; _board.loadedAt = Date.now(); _board.err = false;
+          boardStore(d);
           const busy = boardActive(d.rows, nowMs());
           if (busy) {
             sending = false; mode = 'view'; render();
@@ -4797,7 +4876,7 @@
           }
           const ok = await boardSend(v);
           if (!ok) throw new Error('send');
-          _board.mine = { t: nowMs(), text: v };
+          _board.mine = { t: nowMs(), text: v, tmp: true };
           boardApplyMail();              // конверт на коробке — сразу, не дожидаясь опроса
           _board.draft = '';
           sending = false; showOk = true; mode = 'view'; render();
@@ -4832,7 +4911,7 @@
     function refresh() {
       if (!document.body.contains(box)) return Promise.resolve();
       return boardLoad().then(function (d) {
-        _board.rows = d.rows; _board.skew = d.skew; _board.loadedAt = Date.now(); _board.err = false;
+        boardStore(d);
         // своё послание уже видно в таблице — «временное» больше не нужно
         if (_board.mine && d.rows.some(function (r) { return r.text === _board.mine.text; })) _board.mine = null;
       }).catch(function () { _board.err = true; }).then(function () {
@@ -4876,7 +4955,7 @@
   function boardWatchOnce() {
     if (document.hidden) return Promise.resolve();
     return boardLoad().then(function (d) {
-      _board.rows = d.rows; _board.skew = d.skew; _board.loadedAt = Date.now(); _board.err = false;
+      boardStore(d);
     }).catch(function () { /* тихо: в следующий раз */ }).then(boardApplyMail);
   }
 
