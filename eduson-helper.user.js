@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.50.0
+// @version      1.51.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -3396,7 +3396,11 @@
 
       const magBtn = makeHdrIcon('eduson-magnet-btn', MAGNET_SVG,
         'Заполнить карточку из amoCRM. Правый клик — панель с отчётом.');
-      magBtn.onclick = function (e) { e.stopPropagation(); magBtn._flash(); smartFillOmni(); };
+      magBtn.onclick = function (e) {
+        e.stopPropagation(); magBtn._flash(); smartFillOmni();
+        // трекинг живёт в модуле «Пинги и теги» (другое замыкание) — шлём ему событие
+        try { document.dispatchEvent(new CustomEvent('eduson-track', { detail: 'Помощник: Магнит' })); } catch (e2) {}
+      };
       magBtn.oncontextmenu = function (e) {
         e.preventDefault(); e.stopPropagation();
         ensurePanel();
@@ -4584,6 +4588,8 @@
       });
     });
   }
+  // Клики из основной части Хэлпера (магнит 🧲) приходят событием — у неё нет доступа к trackSend.
+  document.addEventListener('eduson-track', function (e) { if (e && e.detail) trackSend(String(e.detail)); });
 
   /* ==================== ТАБЛО ПОСЛАНИЙ ====================
      Вместо «Здесь могла быть ваша реклама»: анонимное послание коллег, ОДНО на всех, висит 30 минут.
