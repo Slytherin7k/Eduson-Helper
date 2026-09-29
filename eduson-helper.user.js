@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.55.3
+// @version      1.55.4
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -6145,6 +6145,17 @@
       });
     });
   }
+  // Notion (с 09.2026) не принимает прямой 'set' в properties у существующей карточки:
+  // «Block property value updates must use high-level property operations». Формат — как у самого сайта.
+  function notionSetPropOps(spaceId, blockId, propId, value) {
+    const ptr = { table: 'block', id: blockId, spaceId: spaceId };
+    return [
+      { command: 'updateBlockPropertyValue', pointer: ptr, path: ['properties', propId],
+        args: { primitiveOp: { command: 'set', args: value } },
+        onlyLogVersionMismatch: true, blockPropertyValueExpectedVersions: {}, additionalUpdatedPointers: [ptr] },
+      { pointer: ptr, path: [], command: 'update', args: { last_edited_time: Date.now() } }
+    ];
+  }
   // Пробуем современный эндпоинт транзакций, затем запасной.
   async function notionTx(operations) {
     const body = { requestId: nUid(), transactions: [{ id: nUid(), spaceId: FAQ_SPACE, operations: operations }] };
@@ -6254,7 +6265,7 @@
     if (!pf) throw new Error('поле «Файлы студента» не нашлось');
     const val = [];
     infos.forEach(function (f, i) { if (i) val.push([',']); val.push([f.name, [['a', f.url]]]); });
-    await notionTx([{ pointer: { table: 'block', id: cardId, spaceId: FAQ_SPACE }, path: ['properties', pf.id], command: 'set', args: val }]);
+    await notionTx(notionSetPropOps(FAQ_SPACE, cardId, pf.id, val));
   }
 
   /* ---------- Notion: доска «Ревью резюме студентов» (отдельная от «Вопросы студентов») ----------
@@ -6353,7 +6364,7 @@
     if (!pf) throw new Error('поле «Файл резюме студента» не нашлось');
     const val = [];
     infos.forEach(function (f, i) { if (i) val.push([',']); val.push([f.name, [['a', f.url]]]); });
-    await notionTxResume([{ pointer: { table: 'block', id: cardId, spaceId: RESUME_SPACE }, path: ['properties', pf.id], command: 'set', args: val }]);
+    await notionTxResume(notionSetPropOps(RESUME_SPACE, cardId, pf.id, val));
   }
 
   function renderQuestions(body) {
@@ -7001,7 +7012,7 @@
     if (!pf) throw new Error('поле «Files & media» не нашлось');
     const val = [];
     infos.forEach(function (f, i) { if (i) val.push([',']); val.push([f.name, [['a', f.url]]]); });
-    await notionTxCons([{ pointer: { table: 'block', id: cardId, spaceId: CONS_SPACE }, path: ['properties', pf.id], command: 'set', args: val }]);
+    await notionTxCons(notionSetPropOps(CONS_SPACE, cardId, pf.id, val));
   }
 
   // Курс, % и прошлые курсы студента: суб-аккаунт под курс карточки → кабинет → план → «Пройдено N%»
@@ -7025,11 +7036,11 @@
   function consChatText(cardUrl, caseUrl, paid) {
     const PAID = 'Заявка платная, ждем итоговую стоимость, чтобы студент мог оплатить.';
     const head = '@ededlovskaya  @ChristinaErnandez. Добрый день! Поступила новая ';
-    const tail = ' на консультацию. Возьмите в работу, пожалуйста.' + (paid ? ' ' + PAID : '') + '\n\n';
+    const tail = ' на консультацию.' + (paid ? ' ' + PAID : '') + ' Возьмите в работу, пожалуйста.\n\n';
     const plain = head + 'заявка (' + cardUrl + ')' + tail + 'Омнидеск (' + caseUrl + ').';
     const esc = function (x) { return String(x).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); };
     const html = '<p>@ededlovskaya&nbsp; @ChristinaErnandez. Добрый день! Поступила новая <a href="' + esc(cardUrl) + '">заявка</a>' +
-      ' на консультацию. Возьмите в работу, пожалуйста.' + (paid ? ' ' + PAID : '') + '</p><p>&nbsp;</p><p><a href="' + esc(caseUrl) + '">Омнидеск</a>.</p>';
+      ' на консультацию.' + (paid ? ' ' + PAID : '') + ' Возьмите в работу, пожалуйста.</p><p>&nbsp;</p><p><a href="' + esc(caseUrl) + '">Омнидеск</a>.</p>';
     return { plain: plain, html: html };
   }
 
