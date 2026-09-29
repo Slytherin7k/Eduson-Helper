@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.54.0
+// @version      1.54.1
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -3504,7 +3504,9 @@
   function placeSupportAlert() {
     const box = document.getElementById('eduson-support-alert');
     if (!box) return;
-    const sb = document.querySelector('.sidebar-cont'), ft = document.querySelector('.chat_l_sidebar_footer');
+    // чат: футер .chat_l_sidebar_footer; письмо (/cases/record/): ссылка «Дополнительные опции» в .sidebar-bottom-menu
+    const sb = document.querySelector('.sidebar-cont'), ft = document.querySelector('.chat_l_sidebar_footer') ||
+      document.querySelector('.sidebar-bottom-menu.add-options .dropdown-trigger-item') || document.querySelector('.sidebar-bottom-menu.add-options');
     let left = 8, bottom = 48;
     if (sb && ft) {
       const r = sb.getBoundingClientRect(), f = ft.getBoundingClientRect();
@@ -3591,7 +3593,7 @@
   }
   function checkSupportAlert() {
     if (!IS_OMNI) return;
-    const m = location.pathname.match(/\/staff\/cases\/chat\/(\d+-\d+)/);
+    const m = location.pathname.match(/\/staff\/cases\/(?:chat|record)\/(\d+-\d+)/);
     if (!m) { if (_supCase) { _supCase = ''; _supReq = null; _supShownKey = ''; closeSupportAlert(); } return; }
     if (m[1] !== _supCase) { _supCase = m[1]; _supReq = null; _supLoading = false; _supShownKey = ''; closeSupportAlert(); }
     const f = document.querySelector(OMNI_FIELDS.support);
