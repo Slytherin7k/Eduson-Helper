@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.55.2
+// @version      1.55.3
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -7022,13 +7022,14 @@
     return t;
   }
 
-  function consChatText(cardUrl, caseUrl) {
+  function consChatText(cardUrl, caseUrl, paid) {
+    const PAID = 'Заявка платная, ждем итоговую стоимость, чтобы студент мог оплатить.';
     const head = '@ededlovskaya  @ChristinaErnandez. Добрый день! Поступила новая ';
-    const tail = ' на консультацию. Возьмите в работу, пожалуйста.\n\n';
+    const tail = ' на консультацию. Возьмите в работу, пожалуйста.' + (paid ? ' ' + PAID : '') + '\n\n';
     const plain = head + 'заявка (' + cardUrl + ')' + tail + 'Омнидеск (' + caseUrl + ').';
     const esc = function (x) { return String(x).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); };
     const html = '<p>@ededlovskaya&nbsp; @ChristinaErnandez. Добрый день! Поступила новая <a href="' + esc(cardUrl) + '">заявка</a>' +
-      ' на консультацию. Возьмите в работу, пожалуйста.</p><p>&nbsp;</p><p><a href="' + esc(caseUrl) + '">Омнидеск</a>.</p>';
+      ' на консультацию. Возьмите в работу, пожалуйста.' + (paid ? ' ' + PAID : '') + '</p><p>&nbsp;</p><p><a href="' + esc(caseUrl) + '">Омнидеск</a>.</p>';
     return { plain: plain, html: html };
   }
 
@@ -7140,12 +7141,12 @@
     const chatBtn = elt('div', 'margin-top:7px;text-align:center;background:#fff;color:' + ACC + ';border:1.5px solid ' + ACC_BD + ';font-weight:800;font-size:11.5px;padding:8px 0;border-radius:8px;cursor:pointer;display:none;', '💬 Скопировать сообщение в чат консультаций');
     const linkBtn = elt('div', 'margin-top:7px;text-align:center;background:#fff;color:' + ACC + ';border:1.5px solid ' + ACC_BD + ';font-weight:800;font-size:11.5px;padding:8px 0;border-radius:8px;cursor:pointer;display:none;', '🔗 Скопировать ссылку на карточку');
     body.appendChild(btn); body.appendChild(linkBtn); body.appendChild(chatBtn); body.appendChild(status);
-    function armChat(cardUrl, caseUrl) {
+    function armChat(cardUrl, caseUrl, paid) {
       linkBtn.style.display = 'block';
       linkBtn.onclick = function () { copyText(cardUrl); toast('Ссылка на карточку скопирована'); };
       chatBtn.style.display = 'block';
       chatBtn.onclick = function () {
-        const m = consChatText(cardUrl, caseUrl);
+        const m = consChatText(cardUrl, caseUrl, paid);
         copyRich(m.plain, m.html);
         toast('Сообщение скопировано — «заявка» и «Омнидеск» со ссылками');
       };
@@ -7157,7 +7158,7 @@
       status.appendChild(document.createElement('br')); status.appendChild(a);
     }
     if (_cnState.lastUrl) {
-      armChat(_cnState.lastUrl, _cnState.lastCase);
+      armChat(_cnState.lastUrl, _cnState.lastCase, _cnState.lastPaid);
       status.textContent = '😻 Заявка по этому обращению уже создана.'; showLast();
     }
 
@@ -7197,9 +7198,9 @@
           }
         }
         status.style.color = '#16A34A'; status.textContent = msg;
-        _cnState.lastUrl = res.url; _cnState.lastCase = caseUrl; _cnState.files = []; drawChips();
+        _cnState.lastUrl = res.url; _cnState.lastCase = caseUrl; _cnState.lastPaid = (type === 'платная'); _cnState.files = []; drawChips();
         showLast();
-        armChat(res.url, caseUrl);
+        armChat(res.url, caseUrl, _cnState.lastPaid);
         status.appendChild(document.createElement('br'));
         status.appendChild(elt('span', 'font-size:10.5px;color:#64748B;', 'Теперь скопируй сообщение кнопкой выше и отправь в чат «Обсуждение консультаций».'));
       } catch (e) {
