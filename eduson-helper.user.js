@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.55.1
+// @version      1.55.2
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -6253,7 +6253,7 @@
     const pf = faqProp(schema, ['файлы студента', 'файлы студент', 'файлы']);
     if (!pf) throw new Error('поле «Файлы студента» не нашлось');
     const val = [];
-    infos.forEach(function (f, i) { if (i) val.push([',', []]); val.push([f.name, [['a', f.url]]]); });
+    infos.forEach(function (f, i) { if (i) val.push([',']); val.push([f.name, [['a', f.url]]]); });
     await notionTx([{ pointer: { table: 'block', id: cardId, spaceId: FAQ_SPACE }, path: ['properties', pf.id], command: 'set', args: val }]);
   }
 
@@ -6352,7 +6352,7 @@
     const pf = faqProp(schema, ['файл резюме студента', 'файл резюме', 'резюме']);
     if (!pf) throw new Error('поле «Файл резюме студента» не нашлось');
     const val = [];
-    infos.forEach(function (f, i) { if (i) val.push([',', []]); val.push([f.name, [['a', f.url]]]); });
+    infos.forEach(function (f, i) { if (i) val.push([',']); val.push([f.name, [['a', f.url]]]); });
     await notionTxResume([{ pointer: { table: 'block', id: cardId, spaceId: RESUME_SPACE }, path: ['properties', pf.id], command: 'set', args: val }]);
   }
 
@@ -7000,7 +7000,7 @@
     const pf = faqProp(schema, ['files & media', 'files']);
     if (!pf) throw new Error('поле «Files & media» не нашлось');
     const val = [];
-    infos.forEach(function (f, i) { if (i) val.push([',', []]); val.push([f.name, [['a', f.url]]]); });
+    infos.forEach(function (f, i) { if (i) val.push([',']); val.push([f.name, [['a', f.url]]]); });
     await notionTxCons([{ pointer: { table: 'block', id: cardId, spaceId: CONS_SPACE }, path: ['properties', pf.id], command: 'set', args: val }]);
   }
 
@@ -7028,7 +7028,7 @@
     const plain = head + 'заявка (' + cardUrl + ')' + tail + 'Омнидеск (' + caseUrl + ').';
     const esc = function (x) { return String(x).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); };
     const html = '<p>@ededlovskaya&nbsp; @ChristinaErnandez. Добрый день! Поступила новая <a href="' + esc(cardUrl) + '">заявка</a>' +
-      ' на консультацию. Возьмите в работу, пожалуйста.</p><p><a href="' + esc(caseUrl) + '">Омнидеск</a>.</p>';
+      ' на консультацию. Возьмите в работу, пожалуйста.</p><p>&nbsp;</p><p><a href="' + esc(caseUrl) + '">Омнидеск</a>.</p>';
     return { plain: plain, html: html };
   }
 
@@ -7123,7 +7123,7 @@
       cNote.style.color = '#94A3B8'; cNote.textContent = 'Смотрю в админке курсы и процент…';
       consLoadCourses().then(function (t) {
         coursesInp.value = t; _cnState.courses = t;
-        cNote.style.color = '#166534'; cNote.textContent = 'Из админки (процент — как в «Подборе курса») — можно поправить';
+        cNote.textContent = '';
       }).catch(function (e) {
         cNote.style.color = '#B45309';
         cNote.textContent = (e && e.message === 'NOAUTH')
