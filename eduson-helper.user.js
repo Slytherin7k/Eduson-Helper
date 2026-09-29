@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.54.1
+// @version      1.55.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -6358,10 +6358,10 @@
 
   function renderQuestions(body) {
     const barCss = 'display:flex;gap:6px;margin-bottom:9px;';
-    const tCss = 'flex:1;text-align:center;cursor:pointer;font-weight:800;font-size:11px;padding:6px 4px;border-radius:8px;border:1.5px solid ' + ACC_BD + ';color:' + ACC + ';';
+    const tCss = 'flex:1 1 0;min-width:0;line-height:1.2;text-align:center;cursor:pointer;font-weight:800;font-size:10px;padding:6px 2px;border-radius:8px;border:1.5px solid ' + ACC_BD + ';color:' + ACC + ';';
     const bar = elt('div', barCss);
     const inner = elt('div', '');
-    const defs = [['Поиск', renderQSearch, 'search'], ['Создать карточку', renderQCreate, 'create'], ['Ревью резюме', renderQResume, 'resume']];
+    const defs = [['Поиск', renderQSearch, 'search'], ['Создать карточку', renderQCreate, 'create'], ['Ревью резюме', renderQResume, 'resume'], ['Консультация', renderQConsult, 'consult']];
     const btns = defs.map(function (d) {
       const b = elt('div', tCss, d[0]);
       b.onclick = function () {
@@ -6376,7 +6376,7 @@
     btns.forEach(function (b) { bar.appendChild(b); });
     body.appendChild(bar);
     body.appendChild(inner);
-    (_qcState.sub === 'create' ? btns[1] : _qcState.sub === 'resume' ? btns[2] : btns[0]).onclick();
+    (_qcState.sub === 'create' ? btns[1] : _qcState.sub === 'resume' ? btns[2] : _qcState.sub === 'consult' ? btns[3] : btns[0]).onclick();
   }
 
   function renderQSearch(body) {
@@ -6854,6 +6854,358 @@
           : ('🙀 Не получилось создать карточку.\n' + (e.message || e) + '\n\nНажми F12 → вкладка Console, скопируй красные строки и пришли мне.');
       }
       busy = false; btn.style.opacity = '1'; btn.textContent = 'Добавить на доску';
+    };
+  }
+
+  /* ---------- Notion: доска «Задачи» (консультации с экспертом) ----------
+     Страница https://app.notion.com/p/eduson/820f229e40fb4bff965fbc7c844eec26 . Новая заявка = карточка по
+     шаблону «Консультация с экспертом» в столбце Backlog. Поля: Name(title) / Почта клиента(email) /
+     Заказчик(person = сам куратор) / Задача поставлена(date = сегодня) / Статус(status → «Backlog») /
+     Files & media(file). «Исполнитель» и «Формат» копируем из самого шаблона (Катя и Кристина + «Консультации»).
+     Тело карточки — нумерованный список из 5 пунктов, как в шаблоне. */
+  const CONS_COLLECTION = 'a49eba5a-ce5f-4854-af43-e5e6469bf1df';
+  const CONS_SPACE = '816a0709-d1b1-494e-8060-6340ffac6df1';
+  const CONS_TEMPLATE = '768c0f38-696b-4a79-948a-ae3cbc3f0326';
+  const CONS_FORM_URL = 'https://docs.google.com/spreadsheets/d/1fz6pH07mk5PuNhpTcTD91AMCnSFZuNJRlxL9PbX0fVA/edit?resourcekey=&gid=1576790497#gid=1576790497';
+  var _consSchemaCache = null;
+  var _cnState = { caseId: '', name: null, mail: null, type: '', problem: '', courses: null, files: [], lastUrl: '', lastCase: '' };
+  async function consSchema() {
+    if (_consSchemaCache) return _consSchemaCache;
+    const j = await notionPost('syncRecordValues', { requests: [{ pointer: { table: 'collection', id: CONS_COLLECTION, spaceId: CONS_SPACE }, version: -1 }] });
+    const rec = j.recordMap.collection[CONS_COLLECTION];
+    const cv = (rec && rec.value && rec.value.value) ? rec.value.value : (rec && rec.value) || {};
+    _consSchemaCache = { raw: cv.schema || {}, parent_id: cv.parent_id || '' };
+    return _consSchemaCache;
+  }
+  async function notionTxCons(operations) {
+    const body = { requestId: nUid(), transactions: [{ id: nUid(), spaceId: CONS_SPACE, operations: operations }] };
+    try { return await notionWrite('saveTransactionsFanout', body); }
+    catch (e1) {
+      if (e1.message === 'NOAUTH') throw e1;
+      try { return await notionWrite('saveTransactions', body); }
+      catch (e2) {
+        if (e2.message === 'NOAUTH') throw e2;
+        console.warn('[eduson-helper] обе транзакции (консультация) не прошли:', e1.message, '||', e2.message);
+        throw e2;
+      }
+    }
+  }
+  // «Исполнитель» и «Формат» из шаблона (не прочиталось — карточка создастся без них)
+  async function consTemplateProps(schema) {
+    try {
+      const j = await notionPost('syncRecordValues', { requests: [{ pointer: { table: 'block', id: CONS_TEMPLATE, spaceId: CONS_SPACE }, version: -1 }] });
+      const rec = j.recordMap.block[CONS_TEMPLATE];
+      const b = (rec && rec.value && rec.value.value) ? rec.value.value : (rec && rec.value) || {};
+      const out = {};
+      [['исполнитель'], ['формат']].forEach(function (nm) {
+        const pr = faqProp(schema, nm);
+        if (pr && b.properties && b.properties[pr.id]) out[pr.id] = b.properties[pr.id];
+      });
+      return out;
+    } catch (e) { console.warn('[eduson-helper] шаблон консультации не прочитался:', e); return {}; }
+  }
+  // d = {name, email, typeText, courses, filesCount}. → {id, url, bodyOk}
+  async function notionCreateConsult(d) {
+    const me = await notionMe();
+    const schema = await consSchema();
+    const seg = function (txt) { return [[String(txt == null ? '' : txt)]]; };
+    const props = { title: seg('Консультация с экспертом — ' + d.name) };
+    const pMail = faqProp(schema, ['почта клиента', 'почта студента', 'email']);
+    const pWho = faqProp(schema, ['заказчик']);
+    const pDate = faqProp(schema, ['задача поставлена']);
+    const pStatus = faqProp(schema, ['статус', 'status']);
+    if (pMail && d.email) props[pMail.id] = seg(d.email);
+    if (pWho && pWho.type === 'person' && me) props[pWho.id] = [['‣', [['u', me]]]];
+    if (pDate && pDate.type === 'date') {
+      const dd = new Date();
+      props[pDate.id] = [['‣', [['d', { type: 'date', start_date: dd.getFullYear() + '-' + p2(dd.getMonth() + 1) + '-' + p2(dd.getDate()) }]]]];
+    }
+    if (pStatus && pStatus.type === 'status') props[pStatus.id] = seg('Backlog');
+    const tp = await consTemplateProps(schema);
+    Object.keys(tp).forEach(function (k) { props[k] = tp[k]; });
+
+    const NEW = nUid();
+    const now = Date.now();
+    const mkOps = function (withBody) {
+      const ops = [{
+        pointer: { table: 'block', id: NEW, spaceId: CONS_SPACE }, path: [], command: 'set', args: {
+          type: 'page', id: NEW, version: 1, alive: true,
+          parent_id: CONS_COLLECTION, parent_table: 'collection', space_id: CONS_SPACE,
+          properties: props, created_time: now, last_edited_time: now,
+          created_by_table: 'notion_user', created_by_id: me,
+          last_edited_by_table: 'notion_user', last_edited_by_id: me
+        }
+      }];
+      if (!withBody) return ops;
+      // 5 нумерованных пунктов, как в шаблоне
+      const items = [
+        [['Имя и фамилия студента: '], [d.name, [['b']]]],
+        [['Тип консультации: '], [d.typeText, [['b']]]],
+        [['Ссылка на google-таблицу с анкетой для консультации: '], [CONS_FORM_URL, [['a', CONS_FORM_URL]]]],
+        [['Ссылки/файлы от студента, если присылал куратору в личных сообщениях: '],
+          [d.filesCount ? ('файлы приложены к карточке (поле «Files & media»), ' + d.filesCount + ' шт.') : 'нет', [['b']]]],
+        [['На каком курсе учится, какой % курса прошел, на каких курсах учился раньше: '], [d.courses || '—', [['b']]]]
+      ];
+      let prev = null;
+      items.forEach(function (rt) {
+        const bid = nUid();
+        ops.push({
+          pointer: { table: 'block', id: bid, spaceId: CONS_SPACE }, path: [], command: 'set', args: {
+            type: 'numbered_list', id: bid, version: 1, alive: true,
+            parent_id: NEW, parent_table: 'block', space_id: CONS_SPACE,
+            properties: { title: rt }, created_time: now, last_edited_time: now,
+            created_by_table: 'notion_user', created_by_id: me,
+            last_edited_by_table: 'notion_user', last_edited_by_id: me
+          }
+        });
+        ops.push({ pointer: { table: 'block', id: NEW, spaceId: CONS_SPACE }, path: ['content'], command: 'listAfter', args: prev ? { id: bid, after: prev } : { id: bid } });
+        prev = bid;
+      });
+      return ops;
+    };
+    let bodyOk = true;
+    try { await notionTxCons(mkOps(true)); }
+    catch (e) {
+      if (e.message === 'NOAUTH') throw e;
+      console.warn('[eduson-helper] карточка с телом не прошла, создаю без тела:', e);
+      bodyOk = false;
+      await notionTxCons(mkOps(false));
+    }
+    console.log('[eduson-helper] карточка «Консультация» создана:', NEW);
+    return { id: NEW, url: 'https://www.notion.so/' + NEW.replace(/-/g, ''), bodyOk: bodyOk };
+  }
+  async function notionUploadConsFile(cardId, file) {
+    const info = await notionPost('getUploadFileUrl', {
+      bucket: 'secure', name: file.name || ('file-' + Date.now()),
+      contentType: file.type || 'application/octet-stream',
+      record: { table: 'block', id: cardId, spaceId: CONS_SPACE }
+    });
+    const putUrl = info.signedPutUrl || info.signedUploadUrl;
+    const finalUrl = info.url;
+    if (!putUrl || !finalUrl) throw new Error('Notion не дал ссылку для загрузки');
+    await new Promise(function (resolve, reject) {
+      GM_xmlhttpRequest({
+        method: 'PUT', url: putUrl, data: file, timeout: 90000,
+        headers: { 'Content-Type': file.type || 'application/octet-stream' },
+        onload: function (r) { (r.status >= 200 && r.status < 300) ? resolve() : reject(new Error('хранилище ответило ' + r.status)); },
+        onerror: function () { reject(new Error('сеть при загрузке файла')); },
+        ontimeout: function () { reject(new Error('файл грузился слишком долго')); }
+      });
+    });
+    return { name: file.name || 'файл', url: finalUrl };
+  }
+  async function notionAttachConsFiles(cardId, infos) {
+    const schema = await consSchema();
+    const pf = faqProp(schema, ['files & media', 'files']);
+    if (!pf) throw new Error('поле «Files & media» не нашлось');
+    const val = [];
+    infos.forEach(function (f, i) { if (i) val.push([',', []]); val.push([f.name, [['a', f.url]]]); });
+    await notionTxCons([{ pointer: { table: 'block', id: cardId, spaceId: CONS_SPACE }, path: ['properties', pf.id], command: 'set', args: val }]);
+  }
+
+  // Курс, % и прошлые курсы студента: суб-аккаунт под курс карточки → кабинет → план → «Пройдено N%»
+  // (как в «Подборе курса»). Прошлые курсы = остальные планы кабинета + остальные суб-аккаунты суперюзера.
+  async function consLoadCourses() {
+    const a = await resolveStudentAccount();
+    const d = await accountLessons(a.uid, a.course);
+    let pct = '';
+    try { pct = await planPct(d.planKey); } catch (e) { if (e.message === 'NOAUTH') throw e; }
+    const cur = d.planName || a.course || '';
+    const seen = {}; seen[docNorm(cur)] = 1; if (a.course) seen[docNorm(a.course)] = 1;
+    const prev = [];
+    const add = function (n) { const k = docNorm(n); if (n && k && !seen[k]) { seen[k] = 1; prev.push(n); } };
+    (d.plans || []).forEach(function (p) { add(p.name); });
+    (a.subs || []).forEach(function (s) { add(s.company); });
+    let t = 'Сейчас: ' + (cur || '— не определила —') + (pct !== '' ? ' — пройдено ' + pct + '%' : ' — % не нашла, впиши');
+    t += '\nРаньше: ' + (prev.length ? prev.join('; ') : 'других курсов в админке не вижу');
+    return t;
+  }
+
+  function consChatText(cardUrl, caseUrl) {
+    const head = '@ededlovskaya  @ChristinaErnandez. Добрый день! Поступила новая ';
+    const tail = ' на консультацию. Возьмите в работу, пожалуйста.\n\n';
+    const plain = head + 'заявка (' + cardUrl + ')' + tail + 'Омнидеск (' + caseUrl + ').';
+    const esc = function (x) { return String(x).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); };
+    const html = '<p>@ededlovskaya&nbsp; @ChristinaErnandez. Добрый день! Поступила новая <a href="' + esc(cardUrl) + '">заявка</a>' +
+      ' на консультацию. Возьмите в работу, пожалуйста.</p><p><a href="' + esc(caseUrl) + '">Омнидеск</a>.</p>';
+    return { plain: plain, html: html };
+  }
+
+  /* ---------- под-вкладка «Консультация» (рисуется и тянет данные только при открытии) ---------- */
+  function renderQConsult(body) {
+    const lab = function (n, t) {
+      const d = elt('div', 'display:flex;align-items:baseline;gap:6px;margin:12px 0 4px;');
+      d.appendChild(elt('span', 'flex:0 0 auto;width:16px;height:16px;border-radius:50%;background:' + ACC + ';color:#fff;font-size:9px;font-weight:900;display:flex;align-items:center;justify-content:center;', String(n)));
+      d.appendChild(elt('span', 'font-size:12px;font-weight:800;color:#1F2937;', t));
+      return d;
+    };
+    const inCss = 'width:100%;box-sizing:border-box;padding:8px 10px;border:1.5px solid #CBD5E1;border-radius:9px;font:600 12px ' + FONT + ';color:#111827;background:#fff;';
+    const note = 'font-size:10px;color:#94A3B8;font-weight:600;margin-top:3px;';
+    const caseId = (location.pathname.match(/(\d{2,4}-\d{5,})/) || [])[1] || location.pathname;
+    if (_cnState.caseId !== caseId) {   // другое обращение — начинаем с чистого листа
+      _cnState = { caseId: caseId, name: null, mail: null, type: '', problem: '', courses: null, files: [], lastUrl: '', lastCase: '' };
+    }
+    const u = readUser();
+    if (_cnState.name == null) _cnState.name = u.name || '';
+    if (_cnState.mail == null) _cnState.mail = u.email || '';
+    function save() {
+      _cnState.name = nameInp.value; _cnState.mail = mailInp.value;
+      _cnState.problem = probInp.value; _cnState.courses = coursesInp.value;
+    }
+
+    body.appendChild(elt('div', 'font-size:10.5px;color:#64748B;font-weight:700;line-height:1.4;', 'Заявка на консультацию с экспертом → карточка на доске «Задачи» (Backlog) и готовое сообщение в чат консультаций'));
+
+    body.appendChild(lab(1, 'Имя и фамилия студента'));
+    const nameInp = elt('input', inCss); nameInp.placeholder = 'Фамилия Имя';
+    nameInp.value = _cnState.name || ''; body.appendChild(nameInp);
+    body.appendChild(elt('div', note, 'из карточки OmniDesk — проверь'));
+
+    body.appendChild(lab(2, 'Почта клиента'));
+    const mailInp = elt('input', inCss); mailInp.placeholder = 'client@mail.ru';
+    mailInp.value = _cnState.mail || ''; body.appendChild(mailInp);
+    body.appendChild(elt('div', note, 'из карточки OmniDesk — проверь'));
+
+    body.appendChild(lab(3, 'Тип консультации'));
+    const typeRow = elt('div', 'display:flex;gap:5px;');
+    const TYPES = ['подарочная', 'платная', 'проблемная'];
+    const typeBtns = TYPES.map(function (t) {
+      const b = elt('div', 'flex:1;text-align:center;cursor:pointer;font-weight:800;font-size:11px;padding:7px 2px;border-radius:8px;border:1.5px solid ' + ACC_BD + ';', t);
+      b.onclick = function () { _cnState.type = t; paintType(); };
+      typeRow.appendChild(b); return b;
+    });
+    body.appendChild(typeRow);
+    const probInp = elt('textarea', inCss + 'margin-top:6px;min-height:58px;resize:vertical;display:none;');
+    probInp.placeholder = 'В чём заключается негатив студента?';
+    probInp.value = _cnState.problem || ''; body.appendChild(probInp);
+    function paintType() {
+      typeBtns.forEach(function (b, i) {
+        const on = TYPES[i] === _cnState.type;
+        b.style.background = on ? ACC : '#fff'; b.style.color = on ? '#fff' : ACC;
+      });
+      probInp.style.display = _cnState.type === 'проблемная' ? 'block' : 'none';
+    }
+    paintType();
+
+    body.appendChild(lab(4, 'Ссылки/файлы от студента'));
+    const fileInp = elt('input', 'display:none'); fileInp.type = 'file'; fileInp.multiple = true;
+    const pickBtn = elt('div', 'display:flex;align-items:center;justify-content:center;gap:8px;width:100%;box-sizing:border-box;background:#EEF2F7;color:#334155;border:1.5px dashed #94A3B8;border-radius:8px;padding:12px 14px;font-weight:800;font-size:13px;line-height:1;cursor:pointer;', '📎 Прикрепить файлы');
+    pickBtn.onclick = function () { fileInp.click(); };
+    const chips = elt('div', 'display:flex;flex-wrap:wrap;gap:5px;margin-top:7px;');
+    body.appendChild(pickBtn); body.appendChild(fileInp); body.appendChild(chips);
+    body.appendChild(elt('div', note, 'если студент присылал что-то в личных сообщениях; если нет — пропусти'));
+    function drawChips() {
+      chips.innerHTML = '';
+      _cnState.files.forEach(function (f, i) {
+        const c = elt('span', 'display:inline-flex;align-items:center;gap:5px;background:#E0F2FE;color:#075985;border-radius:999px;padding:3px 6px 3px 10px;font-size:10.5px;font-weight:800;max-width:100%;');
+        c.appendChild(elt('span', 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:170px;', f.name));
+        const xx = elt('span', 'cursor:pointer;font-weight:900;color:#0369A1;padding:0 2px;', '×');
+        xx.onclick = function () { _cnState.files.splice(i, 1); drawChips(); };
+        c.appendChild(xx); chips.appendChild(c);
+      });
+      pickBtn.textContent = _cnState.files.length ? ('📎 Добавить ещё (' + _cnState.files.length + ')') : '📎 Прикрепить файлы';
+    }
+    fileInp.addEventListener('change', function () {
+      Array.from(fileInp.files).forEach(function (f) { _cnState.files.push(f); });
+      fileInp.value = ''; drawChips();
+    });
+    drawChips();
+
+    body.appendChild(lab(5, 'Курс, % и прошлые курсы'));
+    const coursesInp = elt('textarea', inCss + 'min-height:66px;resize:vertical;');
+    coursesInp.placeholder = 'Сейчас: … — пройдено N%\nРаньше: …';
+    body.appendChild(coursesInp);
+    const cNote = elt('div', note, '');
+    body.appendChild(cNote);
+    const reload = elt('div', 'display:inline-block;margin-top:5px;font-size:10.5px;font-weight:800;color:' + ACC + ';cursor:pointer;', '↻ подтянуть из админки заново');
+    body.appendChild(reload);
+    function loadCourses() {
+      cNote.style.color = '#94A3B8'; cNote.textContent = 'Смотрю в админке курсы и процент…';
+      consLoadCourses().then(function (t) {
+        coursesInp.value = t; _cnState.courses = t;
+        cNote.style.color = '#166534'; cNote.textContent = 'Из админки (процент — как в «Подборе курса») — можно поправить';
+      }).catch(function (e) {
+        cNote.style.color = '#B45309';
+        cNote.textContent = (e && e.message === 'NOAUTH')
+          ? 'Не пустило в админку — открой её в соседней вкладке, войди и нажми «подтянуть заново». Или впиши руками.'
+          : ('Не подтянулось (' + ((e && e.message) || 'ошибка') + ') — впиши руками.');
+      });
+    }
+    if (_cnState.courses == null) loadCourses(); else { coursesInp.value = _cnState.courses; cNote.textContent = 'можно поправить'; }
+    reload.onclick = loadCourses;
+    [nameInp, mailInp, probInp, coursesInp].forEach(function (i) { i.addEventListener('input', save); });
+
+    const status = elt('div', 'font-size:11px;font-weight:700;line-height:1.45;margin-top:12px;white-space:pre-wrap;');
+    const btn = elt('div', 'margin-top:10px;text-align:center;background:' + ACC + ';color:#fff;font-weight:800;font-size:12.5px;padding:10px 0;border-radius:8px;cursor:pointer;', 'Создать заявку в Notion');
+    const chatBtn = elt('div', 'margin-top:7px;text-align:center;background:#fff;color:' + ACC + ';border:1.5px solid ' + ACC_BD + ';font-weight:800;font-size:11.5px;padding:8px 0;border-radius:8px;cursor:pointer;display:none;', '💬 Скопировать сообщение в чат консультаций');
+    body.appendChild(btn); body.appendChild(chatBtn); body.appendChild(status);
+    function armChat(cardUrl, caseUrl) {
+      chatBtn.style.display = 'block';
+      chatBtn.onclick = function () {
+        const m = consChatText(cardUrl, caseUrl);
+        copyRich(m.plain, m.html);
+        toast('Сообщение скопировано — «заявка» и «Омнидеск» со ссылками');
+      };
+    }
+    function showLast() {
+      status.style.color = '#16A34A';
+      const a = elt('a', 'display:inline-block;margin-top:5px;font-size:11px;font-weight:800;color:' + ACC + ';text-decoration:none;', 'открыть карточку в Notion →');
+      a.href = _cnState.lastUrl; a.target = '_blank'; a.rel = 'noopener';
+      status.appendChild(document.createElement('br')); status.appendChild(a);
+    }
+    if (_cnState.lastUrl) {
+      armChat(_cnState.lastUrl, _cnState.lastCase);
+      status.textContent = '😻 Заявка по этому обращению уже создана.'; showLast();
+    }
+
+    let busy = false;
+    btn.onclick = async function () {
+      if (busy) return;
+      save();
+      const name = nameInp.value.trim(), mail = mailInp.value.trim();
+      const type = _cnState.type, problem = probInp.value.trim();
+      const courses = coursesInp.value.trim();
+      const files = _cnState.files.slice();
+      if (!name) { toast('Впиши имя и фамилию студента'); nameInp.focus(); return; }
+      if (!type) { toast('Выбери тип консультации'); return; }
+      if (type === 'проблемная' && !problem) { toast('Опиши, в чём негатив студента'); probInp.focus(); return; }
+      if (_cnState.lastUrl && !window.confirm('По этому обращению заявка уже создана. Создать ещё одну?')) return;
+      if (!window.confirm('Создать заявку на консультацию (доска «Задачи», Backlog)?\n\n' + name + '\nПочта: ' + (mail || '—') +
+        '\nТип: ' + type + '\nФайлов: ' + files.length)) return;
+      const typeText = type === 'проблемная' ? ('проблемная: ' + problem) : type;
+      const caseUrl = location.origin + location.pathname;
+
+      busy = true; btn.style.opacity = '.55'; btn.textContent = 'Создаю карточку…';
+      chatBtn.style.display = 'none'; status.style.color = '#6B7280'; status.textContent = '';
+      try {
+        const res = await notionCreateConsult({ name: name, email: mail, typeText: typeText, courses: courses, filesCount: files.length });
+        let msg = '😻 Карточка создана.';
+        if (!res.bodyOk) msg += '\n⚠️ Текст внутри карточки не записался — открой её и впиши пункты руками.';
+        if (files.length) {
+          btn.textContent = 'Загружаю файлы…';
+          try {
+            const infos = [];
+            for (const f of files) { infos.push(await notionUploadConsFile(res.id, f)); }
+            await notionAttachConsFiles(res.id, infos);
+            msg += '\nФайлы прикреплены (' + infos.length + ').';
+          } catch (fe) {
+            console.error('[eduson-helper] файлы консультации не прикрепились:', fe);
+            msg += '\n⚠️ Файлы не прикрепились (' + (fe.message || fe) + ') — добавь вручную.';
+          }
+        }
+        status.style.color = '#16A34A'; status.textContent = msg;
+        _cnState.lastUrl = res.url; _cnState.lastCase = caseUrl; _cnState.files = []; drawChips();
+        showLast();
+        armChat(res.url, caseUrl);
+        status.appendChild(document.createElement('br'));
+        status.appendChild(elt('span', 'font-size:10.5px;color:#64748B;', 'Теперь скопируй сообщение кнопкой выше и отправь в чат «Обсуждение консультаций».'));
+      } catch (e) {
+        console.error('[eduson-helper] создание заявки на консультацию:', e);
+        status.style.color = '#DC2626';
+        status.textContent = (e.message === 'NOAUTH')
+          ? '🙀 Notion не пустил. Открой app.notion.com в соседней вкладке, войди, вернись, попробуй снова.'
+          : ('🙀 Не получилось создать карточку.\n' + (e.message || e) + '\n\nНажми F12 → вкладка Console, скопируй красные строки и пришли мне.');
+      }
+      busy = false; btn.style.opacity = '1'; btn.textContent = 'Создать заявку в Notion';
     };
   }
 
