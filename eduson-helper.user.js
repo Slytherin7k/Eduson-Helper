@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.55.0
+// @version      1.55.1
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -6357,11 +6357,11 @@
   }
 
   function renderQuestions(body) {
-    const barCss = 'display:flex;gap:6px;margin-bottom:9px;';
-    const tCss = 'flex:1 1 0;min-width:0;line-height:1.2;text-align:center;cursor:pointer;font-weight:800;font-size:10px;padding:6px 2px;border-radius:8px;border:1.5px solid ' + ACC_BD + ';color:' + ACC + ';';
+    const barCss = 'display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px;';
+    const tCss = 'display:flex;align-items:center;justify-content:center;text-align:center;cursor:pointer;font-weight:800;font-size:11.5px;padding:8px 4px;border-radius:8px;border:1.5px solid ' + ACC_BD + ';color:' + ACC + ';';
     const bar = elt('div', barCss);
     const inner = elt('div', '');
-    const defs = [['Поиск', renderQSearch, 'search'], ['Создать карточку', renderQCreate, 'create'], ['Ревью резюме', renderQResume, 'resume'], ['Консультация', renderQConsult, 'consult']];
+    const defs = [['Поиск', renderQSearch, 'search'], ['Вопрос на доску', renderQCreate, 'create'], ['Ревью резюме', renderQResume, 'resume'], ['Консультация', renderQConsult, 'consult']];
     const btns = defs.map(function (d) {
       const b = elt('div', tCss, d[0]);
       b.onclick = function () {
@@ -6909,7 +6909,8 @@
     const me = await notionMe();
     const schema = await consSchema();
     const seg = function (txt) { return [[String(txt == null ? '' : txt)]]; };
-    const props = { title: seg('Консультация с экспертом — ' + d.name) };
+    const today = new Date();
+    const props = { title: seg('Консультация с экспертом ' + p2(today.getDate()) + '.' + p2(today.getMonth() + 1) + '.' + today.getFullYear()) };
     const pMail = faqProp(schema, ['почта клиента', 'почта студента', 'email']);
     const pWho = faqProp(schema, ['заказчик']);
     const pDate = faqProp(schema, ['задача поставлена']);
@@ -6944,7 +6945,7 @@
         [['Ссылка на google-таблицу с анкетой для консультации: '], [CONS_FORM_URL, [['a', CONS_FORM_URL]]]],
         [['Ссылки/файлы от студента, если присылал куратору в личных сообщениях: '],
           [d.filesCount ? ('файлы приложены к карточке (поле «Files & media»), ' + d.filesCount + ' шт.') : 'нет', [['b']]]],
-        [['На каком курсе учится, какой % курса прошел, на каких курсах учился раньше: '], [d.courses || '—', [['b']]]]
+        [['На каком курсе учится, какой % курса прошел, на каких курсах учился раньше:\n'], [d.courses || '—', [['b']]]]
       ];
       let prev = null;
       items.forEach(function (rt) {
@@ -7017,7 +7018,7 @@
     (d.plans || []).forEach(function (p) { add(p.name); });
     (a.subs || []).forEach(function (s) { add(s.company); });
     let t = 'Сейчас: ' + (cur || '— не определила —') + (pct !== '' ? ' — пройдено ' + pct + '%' : ' — % не нашла, впиши');
-    t += '\nРаньше: ' + (prev.length ? prev.join('; ') : 'других курсов в админке не вижу');
+    t += '\nРаньше: ' + (prev.length ? prev.join('; ') : 'нет');
     return t;
   }
 
@@ -7137,8 +7138,11 @@
     const status = elt('div', 'font-size:11px;font-weight:700;line-height:1.45;margin-top:12px;white-space:pre-wrap;');
     const btn = elt('div', 'margin-top:10px;text-align:center;background:' + ACC + ';color:#fff;font-weight:800;font-size:12.5px;padding:10px 0;border-radius:8px;cursor:pointer;', 'Создать заявку в Notion');
     const chatBtn = elt('div', 'margin-top:7px;text-align:center;background:#fff;color:' + ACC + ';border:1.5px solid ' + ACC_BD + ';font-weight:800;font-size:11.5px;padding:8px 0;border-radius:8px;cursor:pointer;display:none;', '💬 Скопировать сообщение в чат консультаций');
-    body.appendChild(btn); body.appendChild(chatBtn); body.appendChild(status);
+    const linkBtn = elt('div', 'margin-top:7px;text-align:center;background:#fff;color:' + ACC + ';border:1.5px solid ' + ACC_BD + ';font-weight:800;font-size:11.5px;padding:8px 0;border-radius:8px;cursor:pointer;display:none;', '🔗 Скопировать ссылку на карточку');
+    body.appendChild(btn); body.appendChild(linkBtn); body.appendChild(chatBtn); body.appendChild(status);
     function armChat(cardUrl, caseUrl) {
+      linkBtn.style.display = 'block';
+      linkBtn.onclick = function () { copyText(cardUrl); toast('Ссылка на карточку скопирована'); };
       chatBtn.style.display = 'block';
       chatBtn.onclick = function () {
         const m = consChatText(cardUrl, caseUrl);
@@ -7175,7 +7179,7 @@
       const caseUrl = location.origin + location.pathname;
 
       busy = true; btn.style.opacity = '.55'; btn.textContent = 'Создаю карточку…';
-      chatBtn.style.display = 'none'; status.style.color = '#6B7280'; status.textContent = '';
+      chatBtn.style.display = 'none'; linkBtn.style.display = 'none'; status.style.color = '#6B7280'; status.textContent = '';
       try {
         const res = await notionCreateConsult({ name: name, email: mail, typeText: typeText, courses: courses, filesCount: files.length });
         let msg = '😻 Карточка создана.';
