@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.55.4
+// @version      1.55.5
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -7239,7 +7239,7 @@
   // заголовок группы (A — название, B — «Отправляем шаблон»), дальше в A — курсы
   // группы, в B (и C для оферты) — текст про гарантию для этой группы.
   const GUAR_SHEET_CSV =
-    'https://docs.google.com/spreadsheets/d/1XTS-f9ndG4J5StlnqZJK4GbSR1m6Vxq1LmRVoKlneeE/gviz/tq?tqx=out:csv&gid=1199768420';
+    'https://docs.google.com/spreadsheets/d/1p0Yo4ikx_AegiJitKjgAiYN7ydpHcENIjT-3Xppkon4/gviz/tq?tqx=out:csv&gid=514855590';
   // Та же таблица, первый лист (gid=0): отсюда берём только раздел про ресейл.
   const RESALE_SHEET_CSV =
     'https://docs.google.com/spreadsheets/d/1XTS-f9ndG4J5StlnqZJK4GbSR1m6Vxq1LmRVoKlneeE/gviz/tq?tqx=out:csv&gid=0';
