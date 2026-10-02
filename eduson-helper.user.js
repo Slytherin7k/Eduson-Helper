@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.55.5
+// @version      1.55.6
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -7249,6 +7249,7 @@
   function docNorm(s) {
     return String(s || '').toLowerCase()
       .replace(/ё/g, 'е')
+      .replace(/(^|[^а-яё])про(?![а-яё])/g, '$1pro')   // «ПРО» кириллицей = «PRO» латиницей
       .replace(/[а-яіѕ]/g, function (ch) { return DOC_FOLD[ch] || ch; })
       .replace(/[^a-zа-я0-9]+/g, ' ').trim();
   }
