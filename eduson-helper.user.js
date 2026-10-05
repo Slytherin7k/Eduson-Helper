@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.55.6
+// @version      1.56.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -8117,6 +8117,12 @@
     const budgetInput = elt('input', inputCss + 'margin-top:6px;font-weight:800;font-size:14px;');
     budgetInput.placeholder = 'бюджет, ₽ (можно вписать вручную)';
     body.appendChild(budgetInput);
+    // нижняя граница цены: студент просит курсы «от такой-то суммы», а не только «до бюджета»
+    body.appendChild(elt('div', fieldLabel, 'Цена курса от, ₽ (необязательно)'));
+    const minInput = elt('input', inputCss + 'font-weight:800;font-size:14px;');
+    minInput.placeholder = 'например, 50000 — покажу курсы не дешевле';
+    minInput.inputMode = 'numeric';
+    body.appendChild(minInput);
     // замена курса: на новый курс идёт бюджет минус доля уже пройденного. Галочка нужна, чтобы обычный
     // подбор (1+1) не трогать; процент подтягивается из кабинета студента только после включения.
     const replCb = elt('input', 'margin:0;flex:0 0 auto;cursor:pointer;');
@@ -8176,6 +8182,7 @@
     const progress = function () { return replCb.checked ? Math.min(parseInt(String(progInput.value || '').replace(/\D/g, ''), 10) || 0, 100) : 0; };
     // бюджет для сравнений = бюджет из амо × (100 − % пройденного) / 100
     const budget = function () { return Math.round(rawBudget() * (100 - progress()) / 100); };
+    const minPrice = function () { return parseInt(String(minInput.value || '').replace(/\D/g, ''), 10) || 0; };
     function updateAvail() {
       const raw = rawBudget(), p = progress();
       availLine.style.display = raw && p ? 'block' : 'none';
@@ -8366,11 +8373,12 @@
     function fitInfo() {
       const b = budget();
       const has = rawBudget() > 0;
-      const fit = (catalog && has) ? catalog.filter(function (c) { return +c.price_from <= b; }) : [];
+      const lo = minPrice();
+      const fit = (catalog && has) ? catalog.filter(function (c) { return +c.price_from <= b && +c.price_from >= lo; }) : [];
       const count = {};
       fit.forEach(function (c) { dirsOf(c).forEach(function (d) { count[d] = (count[d] || 0) + 1; }); });
       const dirs = Object.keys(count).sort(function (a, z) { return count[z] - count[a] || a.localeCompare(z, 'ru'); });
-      return { b: b, has: has, fit: fit, count: count, dirs: dirs };
+      return { b: b, lo: lo, has: has, fit: fit, count: count, dirs: dirs };
     }
     // Отмеченные направления → [{dir, items}]; курс, входящий в несколько направлений, показываем один раз.
     function pickedGroups(info) {
@@ -8402,10 +8410,10 @@
       if (!catalog) { allBox.appendChild(elt('div', 'font-size:11px;color:#9CA3AF;font-weight:600;', 'Каталог цен ещё грузится…')); return; }
       const info = fitInfo();
       if (!info.has) { allBox.appendChild(elt('div', 'font-size:11.5px;color:#B45309;font-weight:800;', 'Впиши бюджет студента выше — покажу, что подходит.')); return; }
-      if (!info.fit.length) { allBox.appendChild(elt('div', 'font-size:11.5px;color:#B91C1C;font-weight:800;', 'В рамках ' + pcMoney(info.b) + ' курсов не нашла.')); return; }
+      if (!info.fit.length) { allBox.appendChild(elt('div', 'font-size:11.5px;color:#B91C1C;font-weight:800;', (info.lo ? 'В диапазоне ' + pcMoney(info.lo) + ' – ' + pcMoney(info.b) : 'В рамках ' + pcMoney(info.b)) + ' курсов не нашла.')); return; }
       // Все направления отмечены по умолчанию; если куратор что-то снял — это запоминается, отмечаются только новые.
       info.dirs.forEach(function (d) { if (!seenDirs[d]) { seenDirs[d] = true; pickedDirs[d] = true; } });
-      allBox.appendChild(elt('div', 'font-size:11.5px;font-weight:800;color:#1F2937;', 'Подходит курсов: ' + info.fit.length + ' из ' + catalog.length + '.'));
+      allBox.appendChild(elt('div', 'font-size:11.5px;font-weight:800;color:#1F2937;', 'Подходит курсов: ' + info.fit.length + ' из ' + catalog.length + (info.lo ? ' (цена ' + pcMoney(info.lo) + ' – ' + pcMoney(info.b) + ')' : '') + '.'));
       // Направления спрятаны за кнопкой — раскрываются по клику.
       const dirsToggle = elt('div', 'margin-top:6px;background:#fff;color:' + ACC + ';border:1.5px solid ' + ACC_BD + ';font-weight:800;font-size:12px;padding:7px 10px;border-radius:8px;cursor:pointer;', '');
       const dirsWrap = elt('div', 'margin-top:6px;display:' + (dirsOpen ? 'block' : 'none') + ';');
@@ -8485,6 +8493,7 @@
     const onBudgetChange = function () { updateAvail(); showResult(); refreshAll(); };
     budgetInput.addEventListener('input', onBudgetChange);
     progInput.addEventListener('input', onBudgetChange);
+    minInput.addEventListener('input', onBudgetChange);
 
     function renderDeals() {
       dealsBox.innerHTML = '';
