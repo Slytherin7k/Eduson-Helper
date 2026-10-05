@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.56.0
+// @version      1.56.1
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -5444,7 +5444,7 @@
     let mopTagBase = '';
     function applyMopTag(name) {
       if (!manualTag || !manualInput) return;
-      if (curSub && curSub.toRop) return; // пишем РОПу — тег из кластера, не от МОПа
+      if (curSub && curSub.toRop) { manualInput.value = ropTagFor(); return; } // пишем РОПу: руководитель МОПа, иначе РОП кластера
       const mi = MOP_INDEX.get(name);
       const t = mi ? (mi.tag || mi.rg) : '';
       if (t && !manualInput.value.trim()) manualInput.value = t;
@@ -5494,6 +5494,14 @@
       ta.value = r.plain;
       lastHtml = r.html;
     }
+    // Тег РОПа для ситуации «писать РОПу»: если МОП сделки известен — его руководитель
+    // из справочника команд, иначе РОП кластера.
+    function ropTagFor() {
+      const mi = mopInput && mopInput.value.trim() ? MOP_INDEX.get(mopInput.value.trim()) : null;
+      if (mi && mi.rg) return mi.rg;
+      const rop = CLUSTER_ROP[clusterSel && clusterSel.value] || null;
+      return rop ? rop.tag : '';
+    }
     // Переключение ситуации ПКК: показать/скрыть курс и кластер, обновить тег.
     function applySub() {
       if (!subSel) return;
@@ -5502,8 +5510,7 @@
       if (clusterBox && isPkk) clusterBox.style.display = curSub.toRop ? 'block' : 'none';
       if (manualInput) {
         if (curSub.toRop) {
-          const rop = CLUSTER_ROP[clusterSel && clusterSel.value] || null;
-          manualInput.value = rop ? rop.tag : '';
+          manualInput.value = ropTagFor();
         } else {
           manualInput.value = '';
           if (mopInput && mopInput.value.trim()) applyMopTag(mopInput.value.trim());
@@ -5537,10 +5544,7 @@
     if (respCombo) respCombo.onPick(applyResp);
     if (clusterSel) clusterSel.onchange = function () {
       fillTagSel();
-      if (isPkk && curSub && curSub.toRop && manualInput) {
-        const rop = CLUSTER_ROP[clusterSel.value] || null;
-        manualInput.value = rop ? rop.tag : '';
-      }
+      if (isPkk && curSub && curSub.toRop && manualInput) manualInput.value = ropTagFor();
       recompute();
     };
     if (tagSel) tagSel.onchange = function () {
@@ -5550,7 +5554,8 @@
     if (manualInput) manualInput.oninput = recompute;
     if (mopInput) mopInput.oninput = function () {
       // куратор поправил МОПа — подставим тег из справочника (если поле тега ещё пустое)
-      applyMopTag(mopInput.value.trim());
+      if (isPkk && curSub && curSub.toRop && manualInput) manualInput.value = ropTagFor();
+      else applyMopTag(mopInput.value.trim());
       recompute();
     };
     if (linkInput) linkInput.oninput = recompute;
