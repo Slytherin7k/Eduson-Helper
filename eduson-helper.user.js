@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.56.1
+// @version      1.56.2
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -8051,6 +8051,37 @@
     giftList.forEach(function (o, i) { map.set(o, buckets[find(i)]); });
     return map;
   }
+  // Каталог цен сайта (catalogue.json) знает не все курсы: часть живых страниц (напр. «SMM-специалист»)
+  // там отсутствует, но есть в списке «Подарок 1+1». Раньше «Подбор» искал только по каталогу цен и
+  // эти курсы «не видел». Подмешиваем недостающие из подарочного списка. «Недостающий» = ни имени,
+  // ни цены нет среди курсов каталога (цена — тот же ключ, по которому giftMatchByPrice сводит
+  // записи; так не плодим дубли уже известных курсов под другим названием).
+  const GIFT_CLUSTER_DIRS = { 'HR': 'Управление персоналом (HR)', 'IT': 'ИТ-факультет', 'Менеджмент': 'Управление и бизнес' };
+  function mergeGiftOnly(catalog, giftList) {
+    if (catalog.__giftMerged) return 0;
+    catalog.__giftMerged = true;
+    const names = {}, prices = {};
+    catalog.forEach(function (c) { names[pcNorm(c.course_name)] = 1; prices[Math.round(+c.price_from)] = 1; });
+    const only = giftList.filter(function (o) {
+      return o && o.course && +o.price > 0 && !names[pcNorm(o.course)] && !prices[Math.round(+o.price)];
+    });
+    // ссылки: страница сайта / короткая eduson.tv/~… — годятся; PDF-программы и «голый» корень — нет
+    const goodUrl = function (u) { return /^https?:\/\/(?:www\.)?eduson\.(?:academy\/[a-z0-9_\-]+|tv\/~[^\s]+)/i.test(String(u || '')); };
+    const urlCount = {};
+    only.forEach(function (o) { if (goodUrl(o.url)) { const k = pcUrlKey(o.url); urlCount[k] = (urlCount[k] || 0) + 1; } });
+    only.forEach(function (o) {
+      const ok = goodUrl(o.url);
+      // несколько тарифов на одной ссылке — имя без «тариф X», как в каталоге цен (дальше их подпишет buildTariffLabels)
+      const shared = ok && urlCount[pcUrlKey(o.url)] > 1;
+      const name = shared ? (String(o.course).replace(/[:.]?\s*тариф[:\s]+[^,]+$/i, '').trim() || o.course) : o.course;
+      catalog.push({
+        course_name: name, product_url: ok ? o.url : '', type: '', duration: '',
+        price_from: +o.price, price_per_month_from: 0, installment_period_months: 0,
+        groups: [GIFT_CLUSTER_DIRS[o.cluster] || o.cluster || 'Другое'], fromGift: true
+      });
+    });
+    return only.length;
+  }
   function pcNorm(s) {
     return String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9]+/g, ' ').trim();
   }
@@ -8355,9 +8386,16 @@
       if (!found.length) {
         listBox.style.display = 'none';
         result.innerHTML = '';
-        result.appendChild(elt('div', 'font-size:12px;color:#B45309;font-weight:800;', /eduson\.academy/i.test(val)
-          ? 'Этого курса нет в каталоге цен. Возможно, страница закрытая — цену посмотри на сайте.'
+        const isLink = /eduson\.academy/i.test(val);
+        result.appendChild(elt('div', 'font-size:12px;color:#B45309;font-weight:800;', isLink
+          ? 'Этого курса нет ни в каталоге цен, ни в списке «Подарок 1+1» — цену здесь показать не могу, она считается только на самой странице сайта.'
           : 'Не нашла такой курс. Попробуй другое слово из названия или вставь ссылку.'));
+        const lm = isLink && val.match(/https?:\/\/[^\s]+/i);
+        if (lm) {
+          const ob = elt('div', 'display:inline-block;margin-top:8px;background:#fff;color:' + ACC + ';border:1.5px solid ' + ACC_BD + ';font-weight:800;font-size:11px;padding:5px 10px;border-radius:8px;cursor:pointer;', '🔗 Открыть страницу курса');
+          ob.onclick = function () { window.open(lm[0], '_blank'); };
+          result.appendChild(ob);
+        }
         return;
       }
       if (found.length === 1) { chosen = found[0]; listBox.style.display = 'none'; showResult(); return; }
@@ -8523,6 +8561,8 @@
     // уже показанное (список / выбранную карточку / «показать все»), не дожидаясь нового ввода.
     function tryBuildLabels() {
       if (!catalog || !giftList || giftLabels) return;
+      const added = mergeGiftOnly(catalog, giftList);
+      if (added) statusEl.textContent = 'В каталоге ' + catalog.length + ' курсов (из них ' + added + ' — только из списка «Подарок 1+1»).';
       giftLabels = buildTariffLabels(catalog, giftList);
       giftGroups = buildGiftGroups(giftList);
       onQuery();
