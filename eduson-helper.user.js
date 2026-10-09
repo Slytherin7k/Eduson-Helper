@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.56.2
+// @version      1.57.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -4576,6 +4576,76 @@
   }
   // Клики из основной части Хэлпера (магнит 🧲) приходят событием — у неё нет доступа к trackSend.
   document.addEventListener('eduson-track', function (e) { if (e && e.detail) trackSend(String(e.detail)); });
+
+  /* ==================== РЕЙТИНГ УРОКОВ «ПРОГРЕСС 80» ====================
+     Каждая «подтяжка» (завершение урока кнопкой «Прогресс 80») записывается в ту же Google-форму, что и
+     трекинг открытий: в колонку «Открыл» уходит строка «ПОДТЯЖКА|<ссылка на урок>|<ссылка на обращение>|<название>».
+     В таблице эти строки видны на вкладке «Прогресс» (столбцы «Ссылка на урок», «Ссылка на Омни»).
+     Рейтинг считается по ВСЕМ кураторам: Хэлпер читает эти строки обратно (gviz, таблица открыта по ссылке)
+     и поднимает чаще подтягиваемые уроки выше в списке; новые уроки (которых нет в списке Натальи),
+     по которым подтяжка была, сами попадают в список (если они есть в программе студента). Числа в Хэлпере
+     не показываем. */
+  const PROG_SHEET_ID = '1UeBoDeSzw37BlwkakaaZoD4O1nraAeEiXEYNi3rJoMQ';
+  const PROG_ANS_SHEET = 'Ответы на форму (1)';
+  const PROG_TAG = 'ПОДТЯЖКА|';
+  function progLogSend(id, name) {
+    id = String(id || '').trim();
+    if (!/^\d{2,8}$/.test(id)) return;
+    const post = function (nm) {
+      const what = PROG_TAG + 'https://www.eduson.tv/admin/courses/' + id + '|' + location.href.split('#')[0] + '|' +
+        String(nm || '').replace(/[|\r\n]+/g, ' ').trim();
+      trackCurator().then(function (who) {
+        GM_xmlhttpRequest({
+          method: 'POST', url: 'https://docs.google.com/forms/d/e/' + TRACK_FORM_ID + '/formResponse', timeout: 15000, anonymous: true,
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+          data: TRACK_ENTRY_WHO + '=' + encodeURIComponent(who || '?') + '&' + TRACK_ENTRY_WHAT + '=' + encodeURIComponent(what),
+          onload: function () {}, onerror: function () {}, ontimeout: function () {}
+        });
+        // счётчик в памяти — чтобы рейтинг обновился сразу, не дожидаясь таблицы
+        try { const e = _progRating.map[id] || (_progRating.map[id] = { c: 0, n: nm || '' }); e.c++; if (nm) e.n = nm; } catch (er) { /* ignore */ }
+      });
+    };
+    if (name) post(name);
+    else fetchCourseName(id).then(post, function () { post(''); });
+  }
+  // {id: {c: сколько раз подтягивали, n: название}} по всем кураторам. Кэш 10 минут; при сбое — прошлый кэш.
+  const _progRating = { t: 0, map: {}, busy: null };
+  function progRatingLoad() {
+    if (_progRating.t && Date.now() - _progRating.t < 600000) return Promise.resolve(_progRating.map);
+    if (_progRating.busy) return _progRating.busy;
+    const q = "select C where C starts with '" + PROG_TAG + "' limit 5000";
+    const url = 'https://docs.google.com/spreadsheets/d/' + PROG_SHEET_ID + '/gviz/tq?tqx=out:json&sheet=' + encodeURIComponent(PROG_ANS_SHEET) +
+      '&tq=' + encodeURIComponent(q) + '&_=' + Date.now();
+    _progRating.busy = new Promise(function (resolve) {
+      GM_xmlhttpRequest({
+        method: 'GET', url: url, timeout: 15000, anonymous: true,
+        onload: function (res) {
+          let map = null;
+          try {
+            const m = String(res.responseText || '').match(/setResponse\(([\s\S]*)\)\s*;?\s*$/);
+            const j = JSON.parse(m && m[1]);
+            if (j && j.status === 'ok' && j.table) {
+              map = {};
+              (j.table.rows || []).forEach(function (r) {
+                const v = r.c && r.c[0] && r.c[0].v;
+                if (typeof v !== 'string') return;
+                const p = v.split('|');
+                const idm = /\/courses\/(\d+)/.exec(p[1] || '');
+                if (!idm) return;
+                const e = map[idm[1]] || (map[idm[1]] = { c: 0, n: '' });
+                e.c++; if ((p[3] || '').trim()) e.n = p[3].trim();
+              });
+            }
+          } catch (e) { map = null; }
+          if (map) { _progRating.map = map; _progRating.t = Date.now(); }
+          resolve(_progRating.map);
+        },
+        onerror: function () { resolve(_progRating.map); },
+        ontimeout: function () { resolve(_progRating.map); }
+      });
+    }).then(function (m) { _progRating.busy = null; return m; });
+    return _progRating.busy;
+  }
 
   /* ==================== ТАБЛО ПОСЛАНИЙ ====================
      Вместо «Здесь могла быть ваша реклама»: анонимное послание коллег, ОДНО на всех, висит 30 минут.
@@ -9810,8 +9880,9 @@
       if (pat) { const s = subs.find(function (x) { return pat.test(x.company || ''); }); if (s) return s.uid; }
       return acctUid || uid;
     }
-    // возвращает промис (для последовательного завершения блока)
-    function doComplete(logEl, id, name, targetUid) {
+    // возвращает промис (для последовательного завершения блока). noLog=true — не записывать в рейтинг уроков
+    // (блоки «Работа мечты»/«Презентации» и анкета-подарок — это не «подтяжка» отдельного урока)
+    function doComplete(logEl, id, name, targetUid, noLog) {
       const tu = targetUid || acctUid || uid;
       const line = elt('div', 'color:#6B7280;font-weight:700;', '… ' + id + (name ? (' «' + name + '»') : '') + ' — отправляю');
       logEl.appendChild(line);
@@ -9820,7 +9891,7 @@
       }).then(function (r) {
         if (r.noauth) { line.textContent = '✗ ' + id + ' — не пустило в админку'; line.style.color = '#B91C1C'; }
         else if (r.csrf) { line.textContent = '✗ ' + id + ' — токен устарел, открой панель заново'; line.style.color = '#B91C1C'; }
-        else if (r.ok || r.maybe) { line.textContent = '✓ ' + id + (name ? (' «' + name + '»') : '') + ' — завершено'; line.style.color = '#16A34A'; toast('Курс завершён'); }
+        else if (r.ok || r.maybe) { line.textContent = '✓ ' + id + (name ? (' «' + name + '»') : '') + ' — завершено'; line.style.color = '#16A34A'; toast('Курс завершён'); if (!noLog) { try { progLogSend(id, name); } catch (e) { /* рейтинг не критичен */ } } }
         else { line.textContent = '✗ ' + id + ' — не отправилось (код ' + (r.code || '?') + ')'; line.style.color = '#B91C1C'; }
         return r;
       });
@@ -9831,7 +9902,7 @@
       const step = function () {
         if (i >= items.length) { logEl.appendChild(elt('div', 'color:#6B7280;font-weight:800;margin-top:2px;', 'Готово: ' + items.length)); return; }
         const x = items[i++];
-        doComplete(logEl, x.id, x.n, targetUid).then(function () { setTimeout(step, 400); });
+        doComplete(logEl, x.id, x.n, targetUid, true).then(function () { setTimeout(step, 400); });
       };
       step();
     }
@@ -9873,7 +9944,7 @@
       box.appendChild(mkQ('🎁', 'Анкета-подарок', '1 клик', function () {
         log.appendChild(elt('div', 'color:#6B7280;font-weight:700;', '🎁 ищу курс-анкету у студента…'));
         resolveGiftCourse().then(function (g) {
-          if (g && g.id) doComplete(log, g.id, g.name || GIFT_NAME);
+          if (g && g.id) doComplete(log, g.id, g.name || GIFT_NAME, undefined, true);
           else log.appendChild(elt('div', 'color:#B45309;font-weight:700;',
             'Не нашла анкету автоматически. Открой вкладку «Урок» (прогреется) и попробуй снова, либо вставь ссылку ниже.'));
         });
@@ -9960,22 +10031,26 @@
       }).catch(function () {});
 
       // порядок в списке: обычные курсы по частоте запросов, «избранное» за кнопками — в конец.
+      // Рейтинг по подтяжкам ВСЕХ кураторов (таблица «Прогресс»): чаще подтягиваемые — выше; числа не показываем.
+      let learnedMap = _progRating.map || {};
+      const cnt = function (id) { return (learnedMap[id] && learnedMap[id].c) || 0; };
       const rank = function (x) { return x.inBtn ? 2 : 1; };
+      const score = function (x) { return (x.f || 0) + cnt(x.id); };
       const sortRows = function (arr) {
-        return arr.slice().sort(function (a, b) { return rank(a) - rank(b) || ((b.f || 0) - (a.f || 0)) || a.n.localeCompare(b.n); });
+        return arr.slice().sort(function (a, b) { return rank(a) - rank(b) || (score(b) - score(a)) || a.n.localeCompare(b.n); });
       };
 
       const courseRow = function (x) {
         const r = elt('div', S.row);
         // метки «нет в списке» больше нет (21.09, по просьбе Натальи) — остаётся только «частый»
-        if (x.f >= 2) { const b = elt('span', 'float:right;font-size:8.5px;font-weight:800;color:#15803D;background:#E9F6EE;border-radius:5px;padding:1px 5px;', 'частый'); r.appendChild(b); }
+        if (x.f >= 2 || cnt(x.id) >= 3) { const b = elt('span', 'float:right;font-size:8.5px;font-weight:800;color:#15803D;background:#E9F6EE;border-radius:5px;padding:1px 5px;', 'частый'); r.appendChild(b); }
         r.appendChild(document.createTextNode(x.n));
         r.appendChild(elt('div', 'font-size:9.5px;color:#6B7280;font-weight:600;', x.id === '__gift' ? 'найду нужный' : String(x.id)));
         r.onclick = function () {
           if (x.id === '__gift') {
             log.appendChild(elt('div', 'color:#6B7280;font-weight:700;', '🎁 ищу курс-анкету у студента…'));
             resolveGiftCourse().then(function (g) {
-              if (g && g.id) doComplete(log, g.id, g.name || GIFT_NAME);
+              if (g && g.id) doComplete(log, g.id, g.name || GIFT_NAME, undefined, true);
               else log.appendChild(elt('div', 'color:#B45309;font-weight:700;', 'Не нашла анкету — открой вкладку «Урок» (прогреется) и попробуй снова, либо вставь ссылку ниже.'));
             });
           } else doComplete(log, x.id, x.n, x.stu ? acctUid : acctForCat(x.cat));
@@ -9987,7 +10062,8 @@
         const q = docNorm(search.value.trim());
         let rows;
         if (!q) {
-          rows = sortRows(lib);                       // раскрытый список — ТОЛЬКО курсы из списка Натальи
+          // раскрытый список: курсы из списка Натальи + уроки программы студента, по которым уже была подтяжка (рейтинг)
+          rows = sortRows(lib.concat(stuCourses.filter(function (x) { return cnt(x.id) > 0; })));
         } else {
           const w = q.split(/\s+/).filter(Boolean);
           const m = function (name) { const h = docNorm(name); return w.every(function (t) { return h.indexOf(t) !== -1; }); };
@@ -9995,7 +10071,7 @@
           const inLib = {}; libHit.forEach(function (x) { inLib[x.id] = 1; });
           // курс, которого НЕТ в списке — из выбранной программы студента
           const stuHit = stuCourses.filter(function (x) { return !inLib[x.id] && m(x.n); })
-            .sort(function (a, b) { return a.n.localeCompare(b.n); });
+            .sort(function (a, b) { return (cnt(b.id) - cnt(a.id)) || a.n.localeCompare(b.n); });
           rows = libHit.concat(stuHit);
           if (m(GIFT_NAME)) rows.unshift({ id: '__gift', n: GIFT_NAME, f: 1 });
         }
@@ -10005,6 +10081,8 @@
       };
       search.addEventListener('input', drawList);
       drawList();
+      // рейтинг подтягивается из таблицы в фоне; список перерисуется, когда придёт (не мешает, если таблица недоступна)
+      progRatingLoad().then(function (m) { learnedMap = m || {}; if (!search.value.trim()) drawList(); }).catch(function () {});
 
       // запасное: вставить ссылку/ID — по просьбе Натальи открыто сразу
       const more = elt('div', S.more, '▾ вставить ссылку или ID');
@@ -10022,7 +10100,7 @@
         if (!ids.length) { toast('Не нашла ссылку на курс или ID'); return; }
         ids.forEach(function (id) {
           const hit = COURSE_LIB.find(function (c) { return String(c.id) === String(id); }) || {};
-          doComplete(log, id, hit.n || '', hit.c ? acctForCat(hit.c) : acctUid);
+          doComplete(log, id, hit.n || '', hit.c ? acctForCat(hit.c) : acctUid, !!hit.c);
         });
       };
       moreBox.appendChild(fbTa); moreBox.appendChild(fbGo);
@@ -10044,7 +10122,7 @@
       const log = elt('div', S.log);
       const rows = COURSE_LIB.filter(function (x) { return x.c === cat; });
       const list = elt('div', S.list);
-      rows.forEach(function (x) { const r = elt('div', S.row, x.n); r.onclick = function () { doComplete(log, x.id, x.n, tu); }; list.appendChild(r); });
+      rows.forEach(function (x) { const r = elt('div', S.row, x.n); r.onclick = function () { doComplete(log, x.id, x.n, tu, true); }; list.appendChild(r); });
       main.appendChild(list);
       const all = elt('div', S.go, 'Завершить весь блок (' + rows.length + ')');
       all.onclick = function () { all.style.pointerEvents = 'none'; all.style.opacity = '.6'; completeSeq(log, rows, tu); };
