@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.59.0
+// @version      1.59.1
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -8175,12 +8175,12 @@
     let cands = [];          // [{email, label, main}]
     let sel = [];            // какие почты показываем сейчас
     let courseNames = [];    // названия курсов студента (для блока «ДЗ на курсе»)
-    const addCand = function (email, label, main) {
+    const addCand = function (email, label, main, card) {
       email = String(email || '').toLowerCase().trim();
       if (!email || email.indexOf('@') === -1) return;
       const ex = cands.find(function (x) { return x.email === email; });
-      if (ex) { if (label && ex.label.indexOf(label) === -1) ex.label += ' · ' + label; if (main) ex.main = true; return; }
-      cands.push({ email: email, label: label || '', main: !!main });
+      if (ex) { if (main) ex.main = true; return; }
+      cands.push({ email: email, label: label || '', main: !!main, card: !!card });
     };
 
     function drawChips() {
@@ -8191,8 +8191,8 @@
         const cnt = c ? (c.by[x.email] || []).length : null;
         const on = sel.length === 1 && sel[0] === x.email;
         const short = x.email.length > 26 ? x.email.slice(0, 24) + '…' : x.email;
-        const b = elt('div', chipCss(on, cnt === 0), short + (x.label ? ' · ' + x.label : '') + (cnt === null ? '' : ' · ' + cnt));
-        b.title = x.email + (x.label ? ' — ' + x.label : '') + (cnt === null ? '' : ' (попыток ДЗ: ' + cnt + ')');
+        const b = elt('div', chipCss(on, cnt === 0), x.label || (x.card ? 'почта из карточки' : short));
+        b.title = x.email + (x.label ? ' — ' + x.label : '');
         b.onclick = function () { sel = [x.email]; inp.value = x.email; drawChips(); draw(); };
         chipsBox.appendChild(b);
       });
@@ -8211,7 +8211,7 @@
         const o = c.co[name]; if (!o) return;
         holder.innerHTML = '';
         Object.keys(o.hw).sort(function (a, b) { return o.hw[b] - o.hw[a]; }).forEach(function (t) {
-          holder.appendChild(elt('div', note + 'padding:1px 0;', '• ' + t + ' (' + o.hw[t] + ')'));
+          holder.appendChild(elt('div', note + 'padding:1px 0;', '• ' + t + ''));
         });
       };
       const companyRow = function (name, open) {
@@ -8219,7 +8219,7 @@
         const row = elt('div', 'border:1px solid #E5E7EB;border-radius:10px;padding:6px 9px;margin-bottom:5px;');
         const head = elt('div', 'cursor:pointer;font-weight:800;font-size:12px;color:#111827;display:flex;gap:6px;align-items:baseline;');
         head.appendChild(elt('span', '', '✅ ' + name));
-        head.appendChild(elt('span', note + 'margin-left:auto;white-space:nowrap;', Object.keys(o.hw).length + ' заданий · ' + o.n + ' попыток'));
+        head.appendChild(elt('span', note + 'margin-left:auto;white-space:nowrap;', 'заданий: ' + Object.keys(o.hw).length));
         const tasks = elt('div', 'margin-top:4px;display:' + (open ? 'block' : 'none') + ';');
         if (open) showTasks(name, tasks);
         head.onclick = function () {
@@ -8258,7 +8258,7 @@
       res.innerHTML = '';
       info.innerHTML = '';
       if (!c) return;
-      info.appendChild(document.createTextNode('Список ДЗ на ' + hwFmtDate(new Date(c.t).toISOString(), true) + ' · ' + c.n + ' попыток · '));
+      info.appendChild(document.createTextNode('Список ДЗ на ' + hwFmtDate(new Date(c.t).toISOString(), true) + ' · '));
       const rf = elt('span', 'cursor:pointer;color:' + ACC + ';text-decoration:underline;', 'обновить (1–3 мин)');
       rf.onclick = function () { start(true); };
       info.appendChild(rf);
@@ -8278,13 +8278,12 @@
       const cnt = {};
       rows.forEach(function (r) { cnt[r.x] = (cnt[r.x] || 0) + 1; });
       const sum = elt('div', 'display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px;');
-      sum.appendChild(elt('span', 'font-weight:800;font-size:11.5px;color:#111827;padding:3px 0;', 'Попыток: ' + rows.length));
       Object.keys(cnt).forEach(function (x) {
         const st = rows.find(function (r) { return r.x === x; }).s;
         const col = HW_COLORS[st] || ['#4B5563', '#F3F4F6'];
-        sum.appendChild(elt('span', 'font-weight:800;font-size:10.5px;padding:3px 8px;border-radius:999px;color:' + col[0] + ';background:' + col[1] + ';', x + ' · ' + cnt[x]));
+        sum.appendChild(elt('span', 'font-weight:800;font-size:10.5px;padding:3px 8px;border-radius:999px;color:' + col[0] + ';background:' + col[1] + ';', x));
       });
-      res.appendChild(sum);
+      if (Object.keys(cnt).length > 1) res.appendChild(sum);
       const LIM = 25;
       const drawRow = function (r) {
         const col = HW_COLORS[r.s] || ['#4B5563', '#F3F4F6'];
@@ -8375,7 +8374,7 @@
         const mainSub = (a.subs || []).find(function (x) { return x.uid === a.uid; });
         if (mainSub && mainSub.company) { courseNames = [mainSub.company]; }
       } catch (e) { /* ниже запасной вариант */ }
-      try { String(readUser().email || '').split(/[,;\s]+/).forEach(function (e2) { addCand(e2, 'карточка', false); }); } catch (e) {}
+      try { String(readUser().email || '').split(/[,;\s]+/).forEach(function (e2) { addCand(e2, '', false, true); }); } catch (e) {}
       cands.sort(function (x, y) { return (y.main ? 1 : 0) - (x.main ? 1 : 0); });
       if (!mainEm && cands.length) mainEm = cands[0].email;
       if (alive() && mainEm) { sel = [mainEm]; inp.value = mainEm; }
