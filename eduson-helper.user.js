@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.59.2
+// @version      1.60.1
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -7998,8 +7998,9 @@
   const HW_LIST = HW_HOST + '/ru/dashboard/homework_attempts';
   const HW_KEY = 'hp_hw_cache';
   const HW_LOCK = 'hp_hw_lock';
-  const HW_STALE_MS = 12 * 3600 * 1000;
+  const HW_STALE_MS = 6 * 3600 * 1000;
   let _hwMem = null, _hwLoading = null;
+  const HW_DEMO = /демо|саммари/i;   // «демо», «демоверсия», «Саммари 28 книг…» — такие курсы в ДЗ не показываем
   const HW_COLORS = {
     sent: ['#92400E', '#FEF3C7'], checking: ['#075985', '#E0F2FE'],
     in_crosscheck: ['#5B21B6', '#EDE9FE'], recheck: ['#5B21B6', '#EDE9FE'],
@@ -8011,7 +8012,7 @@
     try {
       const raw = GM_getValue(HW_KEY);
       if (raw) { _hwMem = typeof raw === 'string' ? JSON.parse(raw) : raw; }
-      if (_hwMem && !_hwMem.co) _hwMem = null;   // кэш старого формата (без списка курсов) — загрузим заново
+      if (_hwMem && (!_hwMem.co || !_hwMem.ti)) _hwMem = null;   // кэш старого формата — загрузим заново
     } catch (e) { _hwMem = null; }
     return _hwMem;
   }
@@ -8043,7 +8044,7 @@
     r = r.split('&quot;').join('"').split('&#39;').join("'").split('&lt;').join('<').split('&gt;').join('>').split('&amp;').join('&');
     const arr = JSON.parse(r);
     r = null;
-    const by = {}, co = {};
+    const by = {}, co = {}, ti = {};
     let n = 0;
     arr.forEach(function (x) {
       const em = String((x.user && x.user.email) || '').toLowerCase().trim();
@@ -8056,6 +8057,9 @@
         const title = (lec.course && lec.course.name) || lec.name || ('ДЗ №' + x.homework_id);
         o.n++; o.hw[title] = (o.hw[title] || 0) + 1;
       }
+      // все названия заданий по всей академии (для точной сверки с уроками плана конкретного курса)
+      const tAll = (lec.course && lec.course.name) || lec.name;
+      if (tAll) ti[tAll] = (ti[tAll] || 0) + 1;
       const ans = typeof x.answer === 'string' && /^https?:\/\//i.test(x.answer.trim()) ? x.answer.trim().slice(0, 300) : '';
       (by[em] = by[em] || []).push({
         i: x.id, s: x.status, x: (x.status_with_translate && x.status_with_translate.text) || x.status,
@@ -8067,7 +8071,7 @@
       });
       n++;
     });
-    return { t: Date.now(), n: n, by: by, co: co };
+    return { t: Date.now(), n: n, by: by, co: co, ti: ti };
   }
 
   // Грузит и сохраняет список. Одновременно только одна загрузка (и в других вкладках OmniDesk — по метке времени).
@@ -8156,12 +8160,13 @@
     inp.placeholder = 'почта студента на курсе';
     const goBtn = elt('div', 'flex:0 0 auto;cursor:pointer;font-weight:800;font-size:11.5px;padding:7px 11px;border-radius:9px;background:' + ACC + ';color:#fff;', 'Найти');
     bar.appendChild(inp); bar.appendChild(goBtn);
-    body.appendChild(chipsBox);
-    body.appendChild(bar);
     const info = elt('div', note + 'margin-bottom:8px;');
     const res = elt('div', '');
     const coBox = elt('div', 'margin-top:10px;border-top:1px solid #E5E7EB;padding-top:8px;');
+    // порядок: строка про список → поиск по почте → курсы (кнопки) → результат → «Есть ли ДЗ на курсе»
     body.appendChild(info);
+    body.appendChild(bar);
+    body.appendChild(chipsBox);
     body.appendChild(res);
     body.appendChild(coBox);
 
@@ -8175,12 +8180,12 @@
     let cands = [];          // [{email, label, main}]
     let sel = [];            // какие почты показываем сейчас
     let courseNames = [];    // названия курсов студента (для блока «ДЗ на курсе»)
-    const addCand = function (email, label, main, card) {
+    const addCand = function (email, label, main, card, uid) {
       email = String(email || '').toLowerCase().trim();
       if (!email || email.indexOf('@') === -1) return;
       const ex = cands.find(function (x) { return x.email === email; });
-      if (ex) { if (main) ex.main = true; return; }
-      cands.push({ email: email, label: label || '', main: !!main, card: !!card });
+      if (ex) { if (main) ex.main = true; if (uid && !ex.uid) ex.uid = uid; return; }
+      cands.push({ email: email, label: label || '', main: !!main, card: !!card, uid: uid || '' });
     };
 
     // маленький круглый значок: клик раскрывает / сворачивает спрятанный блок target
@@ -8233,50 +8238,67 @@
       const c = hwCacheGet();
       if (!c || !c.co) return;
       coBox.appendChild(elt('div', 'font-weight:800;font-size:11.5px;color:#111827;margin-bottom:5px;', 'Есть ли ДЗ на курсе'));
-      const listBox = elt('div', '');
-      // строка-ответ «Да / Нет» по курсу; список заданий (☰) или пояснение (?) спрятаны под значком
-      const verdictRow = function (title, names) {
-        const yes = names.length > 0;
+      // строка-ответ «Да / Нет»; список заданий (☰) или пояснение (?) спрятаны под значком.
+      // Сначала серая «…», ответ ставится через set(задания, пояснение_для_«Нет»).
+      const verdictRow = function (title) {
         const row = elt('div', 'border:1px solid #E5E7EB;border-radius:10px;padding:6px 9px;margin-bottom:5px;');
         const head = elt('div', 'display:flex;gap:7px;align-items:center;font-weight:800;font-size:12px;color:#111827;');
-        head.appendChild(elt('span', 'flex:0 0 auto;padding:1px 9px;border-radius:999px;font-size:11px;color:' + (yes ? '#166534' : '#991B1B') + ';background:' + (yes ? '#DCFCE7' : '#FEE2E2') + ';', yes ? 'Да' : 'Нет'));
+        const plate = elt('span', 'flex:0 0 auto;min-width:30px;text-align:center;padding:1px 9px;border-radius:999px;font-size:11px;color:#4B5563;background:#F3F4F6;', '…');
+        head.appendChild(plate);
         head.appendChild(elt('span', 'flex:1 1 auto;min-width:0;line-height:1.35;', title));
+        const slot = elt('span', 'flex:0 0 auto;display:inline-flex;');
+        head.appendChild(slot);
         const detail = elt('div', 'display:none;margin-top:5px;');
-        if (yes) {
-          names.forEach(function (nm) {
-            const o = c.co[nm]; if (!o) return;
-            if (names.length > 1) detail.appendChild(elt('div', note + 'color:#111827;margin-top:3px;', nm));
-            Object.keys(o.hw).sort(function (a, b) { return o.hw[b] - o.hw[a]; }).forEach(function (t) {
-              detail.appendChild(elt('div', note + 'padding:1px 0;', '• ' + t));
-            });
-          });
-          head.appendChild(mkIcon('☰', 'список заданий', detail));
-        } else {
-          detail.appendChild(elt('div', note, 'В списке проверки ДЗ по этому курсу нет ни одной сданной работы — либо заданий на курсе нет, либо никто их ещё не сдавал.'));
-          head.appendChild(mkIcon('?', 'пояснение', detail));
-        }
         row.appendChild(head); row.appendChild(detail);
-        return row;
+        const set = function (tasks, noText) {
+          const yes = tasks.length > 0;
+          plate.textContent = yes ? 'Да' : 'Нет';
+          plate.style.color = yes ? '#166534' : '#991B1B';
+          plate.style.background = yes ? '#DCFCE7' : '#FEE2E2';
+          detail.innerHTML = ''; slot.innerHTML = ''; detail.style.display = 'none';
+          if (yes) {
+            tasks.forEach(function (t) { detail.appendChild(elt('div', note + 'padding:1px 0;', '• ' + t)); });
+            slot.appendChild(mkIcon('☰', 'список заданий', detail));
+          } else {
+            detail.appendChild(elt('div', note, noText || 'Среди ДЗ, которые студенты уже сдавали, по этому курсу ничего не нашлось — либо заданий на курсе нет, либо их ещё никто не сдавал.'));
+            slot.appendChild(mkIcon('?', 'пояснение', detail));
+          }
+        };
+        return { el: row, set: set };
       };
-      // автоопределение по курсу(ам) выбранной почты
+      // «шум»: одиночные чужие попытки в «компании» (аккаунт курса мог сдать задание с другого курса) — отбрасываем
+      const companyTasks = function (names) {
+        const seenT = {}, list = [];
+        names.forEach(function (nm) {
+          const o = c.co[nm]; if (!o) return;
+          const mn = Math.max(3, Math.round(o.n * 0.05));
+          Object.keys(o.hw).sort(function (a, b) { return o.hw[b] - o.hw[a]; }).forEach(function (t) {
+            if (o.hw[t] >= mn && !seenT[t]) { seenT[t] = 1; list.push(t); }
+          });
+        });
+        return list;
+      };
+      // курс студента: точный способ — уроки учебного плана этого аккаунта ∩ названия сданных ДЗ;
+      // если план не удалось получить — запасной способ по «компании» (с отсевом шума)
+      const courseVerdict = function (cn) {
+        const v = verdictRow(cn);
+        const fallback = function () { v.set(companyTasks(hwMatchCompanies(c, cn))); };
+        const cand = cands.find(function (x) { return x.label === cn && x.uid; });
+        if (!cand || !c.ti) { fallback(); return v.el; }
+        accountLessons(cand.uid, cn).then(function (res) {
+          const inPlan = {};
+          (res.lessons || []).forEach(function (l) { inPlan[docNorm(l.name)] = 1; });
+          const tasks = Object.keys(c.ti).filter(function (t) { return inPlan[docNorm(t)]; })
+            .sort(function (a, b) { return c.ti[b] - c.ti[a]; });
+          v.set(tasks, 'В учебном плане этого курса нет уроков, по которым студенты уже сдавали ДЗ — либо заданий на курсе нет, либо их ещё никто не сдавал.');
+        }).catch(fallback);
+        return v.el;
+      };
       const seen = {};
       courseNames.forEach(function (cn) {
-        if (seen[cn]) return; seen[cn] = 1;
-        coBox.appendChild(verdictRow(cn, hwMatchCompanies(c, cn)));
+        if (seen[cn] || HW_DEMO.test(cn)) return; seen[cn] = 1;
+        coBox.appendChild(courseVerdict(cn));
       });
-      // свободный поиск по «компаниям» (как фильтр «Компания» на странице проверки ДЗ)
-      const q = elt('input', inputCss + 'margin-top:6px;');
-      q.placeholder = 'найти другой курс среди тех, где есть ДЗ…';
-      coBox.appendChild(q);
-      coBox.appendChild(listBox);
-      q.oninput = function () {
-        listBox.innerHTML = '';
-        const s = docNorm(q.value);
-        if (!s) return;
-        const names = Object.keys(c.co).filter(function (nm) { return docNorm(nm).indexOf(s) !== -1; }).slice(0, 12);
-        if (!names.length) { listBox.appendChild(elt('div', note + 'margin-top:5px;', 'Среди курсов со сданными ДЗ такого нет.')); return; }
-        names.forEach(function (nm) { listBox.appendChild(verdictRow(nm, [nm])); });
-      };
     }
 
     function draw() {
@@ -8406,19 +8428,41 @@
         const a = await resolveStudentAccount();
         (a.subs || []).forEach(function (x) {
           const isMain = x.uid === a.uid;
-          addCand(x.email, x.company || '', isMain);
+          addCand(x.email, x.company || '', isMain, false, x.uid);
           if (isMain) mainEm = x.email;
         });
         const mainSub = (a.subs || []).find(function (x) { return x.uid === a.uid; });
         if (mainSub && mainSub.company) { courseNames = [mainSub.company]; }
       } catch (e) { /* ниже запасной вариант */ }
       try { String(readUser().email || '').split(/[,;\s]+/).forEach(function (e2) { addCand(e2, '', false, true); }); } catch (e) {}
+      // курсы «демо» / «демоверсия» не показываем (если других нет — оставляем, чтобы не остаться без выбора)
+      const real = cands.filter(function (x) { return !HW_DEMO.test(x.label); });
+      if (real.length && real.length < cands.length) {
+        cands = real;
+        if (!cands.some(function (x) { return x.email === mainEm; })) mainEm = '';
+      }
       cands.sort(function (x, y) { return (y.main ? 1 : 0) - (x.main ? 1 : 0); });
       if (!mainEm && cands.length) mainEm = cands[0].email;
+      courseNames = courseNames.filter(function (n) { return !HW_DEMO.test(n); });
       baseCourses = courseNames.slice();
       if (alive() && mainEm) pickSel([mainEm]);
       if (alive()) { drawChips(); start(false); }
     })();
+  }
+
+  // Фоновый прогрев списка ДЗ: Наталье не нужно заранее открывать вкладку «ДЗ». Через ~20 с после
+  // загрузки OmniDesk (и потом не чаще раза в 30 мин) смотрим кэш; если он старше HW_STALE_MS — тихо
+  // загружаем заново. Одновременно грузит только одна вкладка (hp_hw_lock); при ошибке молчим.
+  let _hwWarmAt = 0;
+  function warmHomework() {
+    if (document.hidden) return;
+    const now = Date.now();
+    if (!_hwWarmAt) { _hwWarmAt = now + 20000; return; }
+    if (now < _hwWarmAt) return;
+    _hwWarmAt = now + 30 * 60 * 1000;
+    const c = hwCacheGet();
+    if (c && now - c.t < HW_STALE_MS) return;
+    hwRefresh().catch(function () {});
   }
 
   /* ---------- под-вкладка «Подбор курса» (акция 1+1) ----------
@@ -10911,7 +10955,7 @@
     try { fn(); } catch (e) {}
   }
   if (ON_OMNI) {
-    keepSynced(function () { ensureButton(); try { boardApplyMail(); } catch (e) {} try { warmLessons(); } catch (e) {} });
+    keepSynced(function () { ensureButton(); try { boardApplyMail(); } catch (e) {} try { warmLessons(); } catch (e) {} try { warmHomework(); } catch (e) {} });
     startBoardWatch();   // табло посланий: конверт на коробке кота, пока есть послание
   }
   })();
