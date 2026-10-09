@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.57.0
+// @version      1.58.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -5067,7 +5067,7 @@
     makePanelDraggable(p, head);
     p.appendChild(buildBoard());   // табло анонимных посланий (вместо «Здесь могла быть ваша реклама»)
 
-    // вкладки — все 6 в одну строку
+    // вкладки — все 7 в одну строку
     const tabs = elt('div', 'display:flex;gap:4px;margin-bottom:8px;');
     const body = elt('div', '');
     // select(track) отдельно от клика: автооткрытие «Пинги» при открытии панели — это не выбор
@@ -5095,12 +5095,14 @@
     const tCourses = mkTab('Курсы', renderCourses);
     const tProg = mkTab('Прогресс', renderProgressTab);
     const tDoc = mkTab('Документ', renderDoc);
+    const tHw = mkTab('ДЗ', renderHw);
     const tTag = mkTab('Теги', renderTags);
     tabs.appendChild(tPing);
     tabs.appendChild(tQ);
     tabs.appendChild(tCourses);
     tabs.appendChild(tProg);
     tabs.appendChild(tDoc);
+    tabs.appendChild(tHw);
     tabs.appendChild(tTag);
     p.appendChild(tabs);
     p.appendChild(body);
@@ -7983,6 +7985,270 @@
   function renderProgressTab(body) {
     renderSubTabs(body, [['Прогресс 80', renderProgress80, 'progress'], ['ПрогрессБлок', renderProgressBlock, 'block']],
       _progressSub, function (k) { _progressSub = k; });
+  }
+
+  /* ==================== вкладка «ДЗ»: домашние задания студента ====================
+     Источник — страница «Проверка домашних заданий» академии (общий список всех попыток).
+     Весит ~50 МБ и грузится 1–3 минуты (на сервере бывают 500/502 — пробуем ещё раз), а поиск на ней
+     работает уже в браузере: весь список приходит внутри страницы (тег <homework-attempts
+     :homework_attempts="[…]">, HTML-экранированный JSON), отдельного запроса «по одной почте» нет.
+     Поэтому грузим список ОДИН раз, вынимаем из него короткие строки (≈3 МБ) и держим в памяти
+     расширения до HW_STALE_MS; дальше поиск по почте — мгновенный. Только чтение (GET). */
+  const HW_HOST = 'https://academy-business-smm.eduson.tv';
+  const HW_LIST = HW_HOST + '/ru/dashboard/homework_attempts';
+  const HW_KEY = 'hp_hw_cache';
+  const HW_LOCK = 'hp_hw_lock';
+  const HW_STALE_MS = 12 * 3600 * 1000;
+  let _hwMem = null, _hwLoading = null;
+  const HW_COLORS = {
+    sent: ['#92400E', '#FEF3C7'], checking: ['#075985', '#E0F2FE'],
+    in_crosscheck: ['#5B21B6', '#EDE9FE'], recheck: ['#5B21B6', '#EDE9FE'],
+    success_done: ['#166534', '#DCFCE7'], failed_done: ['#991B1B', '#FEE2E2'], archived: ['#4B5563', '#F3F4F6']
+  };
+
+  function hwCacheGet() {
+    if (_hwMem) return _hwMem;
+    try {
+      const raw = GM_getValue(HW_KEY);
+      if (raw) { _hwMem = typeof raw === 'string' ? JSON.parse(raw) : raw; }
+    } catch (e) { _hwMem = null; }
+    return _hwMem;
+  }
+
+  function hwFetchPage() {
+    return new Promise(function (resolve, reject) {
+      GM_xmlhttpRequest({
+        method: 'GET', url: HW_LIST, timeout: 420000, headers: { 'Accept': 'text/html' },
+        onload: function (res) {
+          const t = res.responseText || '';
+          if (res.status === 200 && t.indexOf('<homework-attempts') !== -1) return resolve(t);
+          if (/Вход в Академию|name="user\[password\]"|users\/sign_in/.test(t.slice(0, 200000)) && t.length < 400000) return reject(new Error('NOAUTH'));
+          reject(new Error('RETRY:' + res.status));
+        },
+        onerror: function () { reject(new Error('RETRY:сеть')); },
+        ontimeout: function () { reject(new Error('RETRY:долго')); }
+      });
+    });
+  }
+
+  // страница → короткие строки, сгруппированные по почте
+  function hwParse(html) {
+    const lt = html.indexOf('<homework-attempts');
+    const k = ':homework_attempts="';
+    const a = lt === -1 ? -1 : html.indexOf(k, lt);
+    if (a === -1) throw new Error('на странице нет списка попыток');
+    const s = a + k.length, e = html.indexOf('"', s);
+    let r = html.slice(s, e);
+    r = r.split('&quot;').join('"').split('&#39;').join("'").split('&lt;').join('<').split('&gt;').join('>').split('&amp;').join('&');
+    const arr = JSON.parse(r);
+    r = null;
+    const by = {};
+    let n = 0;
+    arr.forEach(function (x) {
+      const em = String((x.user && x.user.email) || '').toLowerCase().trim();
+      if (!em) return;
+      const hw = x.homework || {}, lec = hw.lecture || {};
+      const ans = typeof x.answer === 'string' && /^https?:\/\//i.test(x.answer.trim()) ? x.answer.trim().slice(0, 300) : '';
+      (by[em] = by[em] || []).push({
+        i: x.id, s: x.status, x: (x.status_with_translate && x.status_with_translate.text) || x.status,
+        k: x.attempt_type === 'rework' ? 'r' : 'f',
+        h: lec.name || '', c: (lec.course && lec.course.name) || '',
+        o: (x.user.company && x.user.company.name) || '',
+        d: x.created_at || '', u: x.updated_at || '',
+        r: (x.reviewer && x.reviewer.email) || '', a: ans
+      });
+      n++;
+    });
+    return { t: Date.now(), n: n, by: by };
+  }
+
+  // Грузит и сохраняет список. Одновременно только одна загрузка (и в других вкладках OmniDesk — по метке времени).
+  function hwRefresh(onTick) {
+    if (_hwLoading) return _hwLoading;
+    _hwLoading = (async function () {
+      try {
+        const lock = +GM_getValue(HW_LOCK, 0) || 0;
+        if (Date.now() - lock < 8 * 60 * 1000) {
+          // уже грузит другая вкладка — ждём, когда появятся свежие данные
+          const t0 = Date.now(), had = (hwCacheGet() || {}).t || 0;
+          while (Date.now() - t0 < 8 * 60 * 1000) {
+            await new Promise(function (r) { setTimeout(r, 4000); });
+            _hwMem = null;
+            const c = hwCacheGet();
+            if (c && c.t > had) return c;
+            if (!(+GM_getValue(HW_LOCK, 0))) break;
+            if (onTick) onTick('идёт загрузка в другой вкладке…');
+          }
+        }
+        GM_setValue(HW_LOCK, Date.now());
+        let html = null, lastErr = null;
+        for (let attempt = 1; attempt <= 3 && !html; attempt++) {
+          try {
+            if (onTick) onTick(attempt === 1 ? 'загружаю список…' : 'сервер ответил ошибкой, пробую ещё раз (' + attempt + ' из 3)…');
+            html = await hwFetchPage();
+          } catch (e) {
+            lastErr = e;
+            if (e && e.message === 'NOAUTH') break;
+            await new Promise(function (r) { setTimeout(r, 5000); });
+          }
+        }
+        if (!html) {
+          if (lastErr && lastErr.message === 'NOAUTH') throw new Error('Нужно войти в академию: открой academy-business-smm.eduson.tv в этом браузере и войди');
+          throw new Error('сервер академии не отдал список (' + ((lastErr && lastErr.message) || '').replace('RETRY:', '') + '). Попробуй позже');
+        }
+        if (onTick) onTick('разбираю список…');
+        await new Promise(function (r) { setTimeout(r, 50); });
+        const cache = hwParse(html);
+        html = null;
+        _hwMem = cache;
+        GM_setValue(HW_KEY, JSON.stringify(cache));
+        return cache;
+      } finally {
+        try { GM_setValue(HW_LOCK, 0); } catch (e) {}
+        _hwLoading = null;
+      }
+    })();
+    return _hwLoading;
+  }
+
+  function hwFmtDate(iso, withTime) {
+    const d = new Date(iso);
+    if (isNaN(d)) return '';
+    const p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return p(d.getDate()) + '.' + p(d.getMonth() + 1) + '.' + d.getFullYear() + (withTime ? ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) : '');
+  }
+
+  function renderHw(body) {
+    const note = 'font-size:11px;font-weight:700;color:#6B7280;line-height:1.5;';
+    const bar = elt('div', 'display:flex;align-items:center;gap:6px;margin-bottom:8px;');
+    const inp = elt('input', inputCss + 'flex:1 1 auto;width:auto;');
+    inp.placeholder = 'почта студента на курсе';
+    const goBtn = elt('div', 'flex:0 0 auto;cursor:pointer;font-weight:800;font-size:11.5px;padding:7px 11px;border-radius:9px;background:' + ACC + ';color:#fff;', 'Найти');
+    bar.appendChild(inp); bar.appendChild(goBtn);
+    body.appendChild(bar);
+    const info = elt('div', note + 'margin-bottom:8px;');
+    const res = elt('div', '');
+    body.appendChild(info);
+    body.appendChild(res);
+
+    const alive = function () { return document.body.contains(body); };
+    const showErr = function (msg) {
+      res.innerHTML = '';
+      res.appendChild(elt('div', 'padding:9px 11px;border-radius:10px;background:#FEF2F2;color:#991B1B;font-weight:700;font-size:12px;line-height:1.5;', '😿 ' + msg));
+    };
+
+    function draw() {
+      const c = hwCacheGet();
+      res.innerHTML = '';
+      info.innerHTML = '';
+      if (!c) return;
+      info.appendChild(document.createTextNode('Список ДЗ на ' + hwFmtDate(new Date(c.t).toISOString(), true) + ' · ' + c.n + ' попыток · '));
+      const rf = elt('span', 'cursor:pointer;color:' + ACC + ';text-decoration:underline;', 'обновить (1–3 мин)');
+      rf.onclick = function () { start(true); };
+      info.appendChild(rf);
+      const em = inp.value.toLowerCase().trim();
+      if (!em) { res.appendChild(elt('div', note, 'Введи почту студента на курсе.')); return; }
+      const rows = (c.by[em] || []).slice().sort(function (a, b) { return a.d < b.d ? 1 : -1; });
+      if (!rows.length) {
+        res.appendChild(elt('div', 'padding:10px 11px;border-radius:10px;background:#F9FAFB;border:1px solid #E5E7EB;' + note,
+          '🐾 По почте «' + em + '» попыток ДЗ нет. Либо студент ещё ничего не сдавал, либо ДЗ сдано после загрузки списка — нажми «обновить».'));
+        return;
+      }
+      const cnt = {};
+      rows.forEach(function (r) { cnt[r.x] = (cnt[r.x] || 0) + 1; });
+      const sum = elt('div', 'display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px;');
+      sum.appendChild(elt('span', 'font-weight:800;font-size:11.5px;color:#111827;padding:3px 0;', 'Попыток: ' + rows.length));
+      Object.keys(cnt).forEach(function (x) {
+        const st = rows.find(function (r) { return r.x === x; }).s;
+        const col = HW_COLORS[st] || ['#4B5563', '#F3F4F6'];
+        sum.appendChild(elt('span', 'font-weight:800;font-size:10.5px;padding:3px 8px;border-radius:999px;color:' + col[0] + ';background:' + col[1] + ';', x + ' · ' + cnt[x]));
+      });
+      res.appendChild(sum);
+      const LIM = 25;
+      const drawRow = function (r) {
+        const col = HW_COLORS[r.s] || ['#4B5563', '#F3F4F6'];
+        const card = elt('div', 'border:1px solid #E5E7EB;border-radius:12px;padding:8px 10px;margin-bottom:6px;');
+        const top = elt('div', 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;');
+        top.appendChild(elt('span', 'font-weight:800;font-size:10.5px;padding:2px 8px;border-radius:999px;color:' + col[0] + ';background:' + col[1] + ';', r.x));
+        if (r.k === 'r') top.appendChild(elt('span', 'font-weight:800;font-size:10.5px;padding:2px 8px;border-radius:999px;color:#9A3412;background:#FFEDD5;', 'доработка'));
+        top.appendChild(elt('span', note + 'margin-left:auto;', 'сдано ' + hwFmtDate(r.d, true)));
+        card.appendChild(top);
+        card.appendChild(elt('div', 'font-weight:800;font-size:12.5px;color:#111827;margin-top:5px;line-height:1.35;', r.c || r.h || 'ДЗ №' + r.i));
+        const sub = [r.h && r.c ? r.h : '', r.o].filter(Boolean).join(' · ');
+        if (sub) card.appendChild(elt('div', note, sub));
+        const meta = [];
+        if ((r.s === 'sent' || r.s === 'checking' || r.s === 'in_crosscheck' || r.s === 'recheck') && r.d) {
+          const days = Math.floor((Date.now() - new Date(r.d).getTime()) / 864e5);
+          meta.push('ждёт проверки ' + days + ' дн.');
+        } else if (r.u && r.s !== 'sent') meta.push('обновлено ' + hwFmtDate(r.u, false));
+        meta.push(r.r ? 'проверяет: ' + r.r : 'проверяющий не назначен');
+        card.appendChild(elt('div', note, meta.join(' · ')));
+        const acts = elt('div', 'display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;');
+        const mkAct = function (label, fn) {
+          const b = elt('div', 'cursor:pointer;font-weight:800;font-size:11px;padding:4px 9px;border-radius:8px;border:1.5px solid ' + ACC_BD + ';color:' + ACC + ';', label);
+          b.onclick = fn;
+          acts.appendChild(b);
+        };
+        const url = HW_HOST + '/ru/dashboard/homework_attempts/' + r.i;
+        mkAct('Открыть ДЗ', function () { window.open(url, '_blank', 'noopener'); });
+        mkAct('Копировать ссылку', function () { copyText(url); toast('😻 Ссылка на ДЗ скопирована'); });
+        if (r.a) mkAct('Работа студента', function () { window.open(r.a, '_blank', 'noopener'); });
+        card.appendChild(acts);
+        res.appendChild(card);
+      };
+      rows.slice(0, LIM).forEach(drawRow);
+      if (rows.length > LIM) {
+        const more = elt('div', 'cursor:pointer;text-align:center;font-weight:800;font-size:11.5px;color:' + ACC + ';padding:6px;', 'Показать ещё ' + (rows.length - LIM));
+        more.onclick = function () { more.remove(); rows.slice(LIM).forEach(drawRow); };
+        res.appendChild(more);
+      }
+    }
+
+    let timer = null;
+    function start(force) {
+      const c = hwCacheGet();
+      if (!force && c && Date.now() - c.t < HW_STALE_MS) { draw(); return; }
+      if (c) draw();
+      const t0 = Date.now();
+      const box = elt('div', 'padding:9px 11px;border-radius:10px;background:#F0F9FF;border:1px solid ' + ACC_BD + ';' + note + 'margin-bottom:8px;');
+      info.innerHTML = '';
+      info.appendChild(box);
+      let step = 'загружаю список…';
+      const paint = function () {
+        const s = Math.floor((Date.now() - t0) / 1000);
+        box.textContent = '🐾 ' + step + ' ' + Math.floor(s / 60) + ':' + (s % 60 < 10 ? '0' : '') + (s % 60) +
+          '. Список большой (1–3 минуты), можно спокойно работать дальше — загрузка идёт сама.';
+      };
+      paint();
+      clearInterval(timer);
+      timer = setInterval(function () { if (!alive()) { clearInterval(timer); return; } paint(); }, 1000);
+      hwRefresh(function (m) { step = m; }).then(function () {
+        clearInterval(timer);
+        if (alive()) draw();
+      }).catch(function (e) {
+        clearInterval(timer);
+        if (alive()) { info.innerHTML = ''; showErr(e && e.message ? e.message : 'не получилось загрузить список'); }
+      });
+    }
+
+    goBtn.onclick = function () {
+      const c = hwCacheGet();
+      if (c) draw(); else start(false);
+    };
+    inp.onkeydown = function (e) { if (e.key === 'Enter') goBtn.onclick(); };
+
+    // Почта КУРСА студента (не из карточки Omni): берём из аккаунта-под-курса в админке; нет — почта из карточки.
+    (async function () {
+      let em = '';
+      try {
+        const a = await resolveStudentAccount();
+        const sub = (a.subs || []).find(function (x) { return x.uid === a.uid; });
+        em = sub && sub.email ? sub.email : '';
+      } catch (e) { /* ниже запасной вариант */ }
+      if (!em) { try { em = (readUser().email || '').split(/[,;\s]+/)[0]; } catch (e) {} }
+      if (alive() && em && !inp.value) inp.value = em;
+      if (alive()) start(false);
+    })();
   }
 
   /* ---------- под-вкладка «Подбор курса» (акция 1+1) ----------
