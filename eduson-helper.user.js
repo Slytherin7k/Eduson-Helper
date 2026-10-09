@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.58.0
+// @version      1.59.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -8011,6 +8011,7 @@
     try {
       const raw = GM_getValue(HW_KEY);
       if (raw) { _hwMem = typeof raw === 'string' ? JSON.parse(raw) : raw; }
+      if (_hwMem && !_hwMem.co) _hwMem = null;   // кэш старого формата (без списка курсов) — загрузим заново
     } catch (e) { _hwMem = null; }
     return _hwMem;
   }
@@ -8042,12 +8043,19 @@
     r = r.split('&quot;').join('"').split('&#39;').join("'").split('&lt;').join('<').split('&gt;').join('>').split('&amp;').join('&');
     const arr = JSON.parse(r);
     r = null;
-    const by = {};
+    const by = {}, co = {};
     let n = 0;
     arr.forEach(function (x) {
       const em = String((x.user && x.user.email) || '').toLowerCase().trim();
       if (!em) return;
       const hw = x.homework || {}, lec = hw.lecture || {};
+      // «компания» = программа/курс; по ней видно, на каких курсах вообще есть ДЗ и какие задания
+      const cname = (x.user.company && x.user.company.name) || '';
+      if (cname) {
+        const o = co[cname] || (co[cname] = { n: 0, hw: {} });
+        const title = (lec.course && lec.course.name) || lec.name || ('ДЗ №' + x.homework_id);
+        o.n++; o.hw[title] = (o.hw[title] || 0) + 1;
+      }
       const ans = typeof x.answer === 'string' && /^https?:\/\//i.test(x.answer.trim()) ? x.answer.trim().slice(0, 300) : '';
       (by[em] = by[em] || []).push({
         i: x.id, s: x.status, x: (x.status_with_translate && x.status_with_translate.text) || x.status,
@@ -8059,7 +8067,7 @@
       });
       n++;
     });
-    return { t: Date.now(), n: n, by: by };
+    return { t: Date.now(), n: n, by: by, co: co };
   }
 
   // Грузит и сохраняет список. Одновременно только одна загрузка (и в других вкладках OmniDesk — по метке времени).
@@ -8118,24 +8126,132 @@
     return p(d.getDate()) + '.' + p(d.getMonth() + 1) + '.' + d.getFullYear() + (withTime ? ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) : '');
   }
 
+  // Какие «компании» списка ДЗ подходят под название курса (то же сопоставление, что у суб-аккаунтов)
+  function hwMatchCompanies(c, course) {
+    const n = docNorm(course);
+    if (!n || !c || !c.co) return [];
+    const cw = n.split(' ').filter(function (w) { return w.length >= 3; });
+    const hit = [];
+    Object.keys(c.co).forEach(function (name) {
+      const co = docNorm(name); if (!co) return;
+      let sc;
+      if (co === n || co.indexOf(n) !== -1 || n.indexOf(co) !== -1) sc = 99;
+      else { const cow = co.split(' '); sc = cw.filter(function (w) { return cow.indexOf(w) !== -1; }).length; }
+      if (sc >= 2) hit.push({ name: name, sc: sc });
+    });
+    if (!hit.length) return [];
+    const best = Math.max.apply(null, hit.map(function (h) { return h.sc; }));
+    return hit.filter(function (h) { return h.sc === best; }).map(function (h) { return h.name; }).slice(0, 6);
+  }
+
   function renderHw(body) {
     const note = 'font-size:11px;font-weight:700;color:#6B7280;line-height:1.5;';
+    const chipCss = function (on, dim) {
+      return 'cursor:pointer;font-weight:800;font-size:10.5px;padding:4px 9px;border-radius:999px;border:1.5px solid ' + (on ? ACC : ACC_BD) +
+        ';background:' + (on ? ACC : '#fff') + ';color:' + (on ? '#fff' : (dim ? '#9CA3AF' : ACC)) + ';';
+    };
+    const chipsBox = elt('div', 'display:flex;flex-wrap:wrap;gap:5px;margin-bottom:7px;');
     const bar = elt('div', 'display:flex;align-items:center;gap:6px;margin-bottom:8px;');
     const inp = elt('input', inputCss + 'flex:1 1 auto;width:auto;');
     inp.placeholder = 'почта студента на курсе';
     const goBtn = elt('div', 'flex:0 0 auto;cursor:pointer;font-weight:800;font-size:11.5px;padding:7px 11px;border-radius:9px;background:' + ACC + ';color:#fff;', 'Найти');
     bar.appendChild(inp); bar.appendChild(goBtn);
+    body.appendChild(chipsBox);
     body.appendChild(bar);
     const info = elt('div', note + 'margin-bottom:8px;');
     const res = elt('div', '');
+    const coBox = elt('div', 'margin-top:10px;border-top:1px solid #E5E7EB;padding-top:8px;');
     body.appendChild(info);
     body.appendChild(res);
+    body.appendChild(coBox);
 
     const alive = function () { return document.body.contains(body); };
     const showErr = function (msg) {
       res.innerHTML = '';
       res.appendChild(elt('div', 'padding:9px 11px;border-radius:10px;background:#FEF2F2;color:#991B1B;font-weight:700;font-size:12px;line-height:1.5;', '😿 ' + msg));
     };
+
+    // кандидаты-почты: аккаунты студента (по курсам) + почта из карточки OmniDesk
+    let cands = [];          // [{email, label, main}]
+    let sel = [];            // какие почты показываем сейчас
+    let courseNames = [];    // названия курсов студента (для блока «ДЗ на курсе»)
+    const addCand = function (email, label, main) {
+      email = String(email || '').toLowerCase().trim();
+      if (!email || email.indexOf('@') === -1) return;
+      const ex = cands.find(function (x) { return x.email === email; });
+      if (ex) { if (label && ex.label.indexOf(label) === -1) ex.label += ' · ' + label; if (main) ex.main = true; return; }
+      cands.push({ email: email, label: label || '', main: !!main });
+    };
+
+    function drawChips() {
+      chipsBox.innerHTML = '';
+      if (cands.length < 2) return;
+      const c = hwCacheGet();
+      cands.forEach(function (x) {
+        const cnt = c ? (c.by[x.email] || []).length : null;
+        const on = sel.length === 1 && sel[0] === x.email;
+        const short = x.email.length > 26 ? x.email.slice(0, 24) + '…' : x.email;
+        const b = elt('div', chipCss(on, cnt === 0), short + (x.label ? ' · ' + x.label : '') + (cnt === null ? '' : ' · ' + cnt));
+        b.title = x.email + (x.label ? ' — ' + x.label : '') + (cnt === null ? '' : ' (попыток ДЗ: ' + cnt + ')');
+        b.onclick = function () { sel = [x.email]; inp.value = x.email; drawChips(); draw(); };
+        chipsBox.appendChild(b);
+      });
+      const all = elt('div', chipCss(sel.length > 1, false), 'все почты');
+      all.onclick = function () { sel = cands.map(function (x) { return x.email; }); drawChips(); draw(); };
+      chipsBox.appendChild(all);
+    }
+
+    function drawCourses() {
+      coBox.innerHTML = '';
+      const c = hwCacheGet();
+      if (!c || !c.co) return;
+      coBox.appendChild(elt('div', 'font-weight:800;font-size:11.5px;color:#111827;margin-bottom:5px;', 'Есть ли ДЗ на курсе'));
+      const listBox = elt('div', '');
+      const showTasks = function (name, holder) {
+        const o = c.co[name]; if (!o) return;
+        holder.innerHTML = '';
+        Object.keys(o.hw).sort(function (a, b) { return o.hw[b] - o.hw[a]; }).forEach(function (t) {
+          holder.appendChild(elt('div', note + 'padding:1px 0;', '• ' + t + ' (' + o.hw[t] + ')'));
+        });
+      };
+      const companyRow = function (name, open) {
+        const o = c.co[name];
+        const row = elt('div', 'border:1px solid #E5E7EB;border-radius:10px;padding:6px 9px;margin-bottom:5px;');
+        const head = elt('div', 'cursor:pointer;font-weight:800;font-size:12px;color:#111827;display:flex;gap:6px;align-items:baseline;');
+        head.appendChild(elt('span', '', '✅ ' + name));
+        head.appendChild(elt('span', note + 'margin-left:auto;white-space:nowrap;', Object.keys(o.hw).length + ' заданий · ' + o.n + ' попыток'));
+        const tasks = elt('div', 'margin-top:4px;display:' + (open ? 'block' : 'none') + ';');
+        if (open) showTasks(name, tasks);
+        head.onclick = function () {
+          if (tasks.style.display === 'none') { showTasks(name, tasks); tasks.style.display = 'block'; } else tasks.style.display = 'none';
+        };
+        row.appendChild(head); row.appendChild(tasks);
+        return row;
+      };
+      // автоопределение по курсам студента
+      const shown = {};
+      courseNames.forEach(function (cn) {
+        const m = hwMatchCompanies(c, cn).filter(function (x) { return !shown[x]; });
+        if (!m.length) {
+          if (!shown['~' + cn]) { shown['~' + cn] = 1; coBox.appendChild(elt('div', note + 'margin-bottom:5px;', '🐾 «' + cn + '»: в списке проверки ДЗ по этому курсу ещё нет ни одной сданной работы — либо заданий на курсе нет, либо никто их не сдавал.')); }
+          return;
+        }
+        m.forEach(function (name) { shown[name] = 1; coBox.appendChild(companyRow(name, m.length === 1 && courseNames.length === 1)); });
+      });
+      // свободный поиск по «компаниям» (как фильтр «Компания» на странице проверки ДЗ)
+      const q = elt('input', inputCss + 'margin-top:6px;');
+      q.placeholder = 'найти другой курс среди тех, где есть ДЗ…';
+      coBox.appendChild(q);
+      coBox.appendChild(listBox);
+      q.oninput = function () {
+        listBox.innerHTML = '';
+        const s = docNorm(q.value);
+        if (!s) return;
+        const names = Object.keys(c.co).filter(function (nm) { return docNorm(nm).indexOf(s) !== -1; }).slice(0, 12);
+        if (!names.length) { listBox.appendChild(elt('div', note + 'margin-top:5px;', 'Среди курсов со сданными ДЗ такого нет.')); return; }
+        names.forEach(function (nm) { listBox.appendChild(companyRow(nm, false)); });
+      };
+    }
 
     function draw() {
       const c = hwCacheGet();
@@ -8146,12 +8262,17 @@
       const rf = elt('span', 'cursor:pointer;color:' + ACC + ';text-decoration:underline;', 'обновить (1–3 мин)');
       rf.onclick = function () { start(true); };
       info.appendChild(rf);
-      const em = inp.value.toLowerCase().trim();
-      if (!em) { res.appendChild(elt('div', note, 'Введи почту студента на курсе.')); return; }
-      const rows = (c.by[em] || []).slice().sort(function (a, b) { return a.d < b.d ? 1 : -1; });
+      drawChips();
+      drawCourses();
+      if (!sel.length) { res.appendChild(elt('div', note, 'Введи почту студента на курсе.')); return; }
+      const multi = sel.length > 1;
+      let rows = [];
+      sel.forEach(function (em) { (c.by[em] || []).forEach(function (r) { rows.push(Object.assign({ e: em }, r)); }); });
+      rows.sort(function (a, b) { return a.d < b.d ? 1 : -1; });
       if (!rows.length) {
         res.appendChild(elt('div', 'padding:10px 11px;border-radius:10px;background:#F9FAFB;border:1px solid #E5E7EB;' + note,
-          '🐾 По почте «' + em + '» попыток ДЗ нет. Либо студент ещё ничего не сдавал, либо ДЗ сдано после загрузки списка — нажми «обновить».'));
+          '🐾 По ' + (multi ? 'этим почтам' : 'почте «' + sel[0] + '»') + ' попыток ДЗ нет. Либо студент ещё ничего не сдавал, либо ДЗ сдано после загрузки списка — нажми «обновить».' +
+          (cands.length > 1 && !multi ? ' Попробуй другую почту выше.' : '')));
         return;
       }
       const cnt = {};
@@ -8174,7 +8295,7 @@
         top.appendChild(elt('span', note + 'margin-left:auto;', 'сдано ' + hwFmtDate(r.d, true)));
         card.appendChild(top);
         card.appendChild(elt('div', 'font-weight:800;font-size:12.5px;color:#111827;margin-top:5px;line-height:1.35;', r.c || r.h || 'ДЗ №' + r.i));
-        const sub = [r.h && r.c ? r.h : '', r.o].filter(Boolean).join(' · ');
+        const sub = [r.h && r.c ? r.h : '', r.o, multi ? r.e : ''].filter(Boolean).join(' · ');
         if (sub) card.appendChild(elt('div', note, sub));
         const meta = [];
         if ((r.s === 'sent' || r.s === 'checking' || r.s === 'in_crosscheck' || r.s === 'recheck') && r.d) {
@@ -8232,22 +8353,33 @@
     }
 
     goBtn.onclick = function () {
+      const v = inp.value.toLowerCase().trim();
+      if (v) sel = [v];
       const c = hwCacheGet();
       if (c) draw(); else start(false);
     };
     inp.onkeydown = function (e) { if (e.key === 'Enter') goBtn.onclick(); };
 
-    // Почта КУРСА студента (не из карточки Omni): берём из аккаунта-под-курса в админке; нет — почта из карточки.
+    // Почты студента: ВСЕ аккаунты суперюзера (у каждого курса своя почта) + почта из карточки Omni.
+    // По умолчанию — почта аккаунта под курс обращения.
     (async function () {
-      let em = '';
+      let mainEm = '';
+      try { const cn = readCourse(); if (cn) courseNames.push(cn); } catch (e) {}
       try {
         const a = await resolveStudentAccount();
-        const sub = (a.subs || []).find(function (x) { return x.uid === a.uid; });
-        em = sub && sub.email ? sub.email : '';
+        (a.subs || []).forEach(function (x) {
+          const isMain = x.uid === a.uid;
+          addCand(x.email, x.company || '', isMain);
+          if (isMain) mainEm = x.email;
+        });
+        const mainSub = (a.subs || []).find(function (x) { return x.uid === a.uid; });
+        if (mainSub && mainSub.company) { courseNames = [mainSub.company]; }
       } catch (e) { /* ниже запасной вариант */ }
-      if (!em) { try { em = (readUser().email || '').split(/[,;\s]+/)[0]; } catch (e) {} }
-      if (alive() && em && !inp.value) inp.value = em;
-      if (alive()) start(false);
+      try { String(readUser().email || '').split(/[,;\s]+/).forEach(function (e2) { addCand(e2, 'карточка', false); }); } catch (e) {}
+      cands.sort(function (x, y) { return (y.main ? 1 : 0) - (x.main ? 1 : 0); });
+      if (!mainEm && cands.length) mainEm = cands[0].email;
+      if (alive() && mainEm) { sel = [mainEm]; inp.value = mainEm; }
+      if (alive()) { drawChips(); start(false); }
     })();
   }
 
