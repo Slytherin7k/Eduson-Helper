@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.59.1
+// @version      1.59.2
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -8183,6 +8183,33 @@
       cands.push({ email: email, label: label || '', main: !!main, card: !!card });
     };
 
+    // маленький круглый значок: клик раскрывает / сворачивает спрятанный блок target
+    const mkIcon = function (sym, tip, target) {
+      const b = elt('span', 'cursor:pointer;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;border:1.5px solid ' + ACC_BD + ';background:#fff;color:' + ACC + ';font-weight:800;font-size:10.5px;line-height:1;user-select:none;', sym);
+      b.title = tip;
+      b.onclick = function (e) {
+        e.stopPropagation();
+        const open = target.style.display === 'none';
+        target.style.display = open ? 'block' : 'none';
+        b.style.background = open ? ACC : '#fff';
+        b.style.color = open ? '#fff' : ACC;
+      };
+      return b;
+    };
+
+    // выбор почт: sel — какие почты показываем, courseNames — курсы этих почт (для блока «Есть ли ДЗ на курсе»)
+    let baseCourses = [];
+    const pickSel = function (emails) {
+      sel = emails;
+      const labs = [];
+      emails.forEach(function (em) {
+        const k = cands.find(function (x) { return x.email === em; });
+        if (k && k.label && labs.indexOf(k.label) === -1) labs.push(k.label);
+      });
+      courseNames = labs.length ? labs : baseCourses.slice();
+      if (emails.length === 1) inp.value = emails[0];
+    };
+
     function drawChips() {
       chipsBox.innerHTML = '';
       if (cands.length < 2) return;
@@ -8193,11 +8220,11 @@
         const short = x.email.length > 26 ? x.email.slice(0, 24) + '…' : x.email;
         const b = elt('div', chipCss(on, cnt === 0), x.label || (x.card ? 'почта из карточки' : short));
         b.title = x.email + (x.label ? ' — ' + x.label : '');
-        b.onclick = function () { sel = [x.email]; inp.value = x.email; drawChips(); draw(); };
+        b.onclick = function () { pickSel([x.email]); draw(); };
         chipsBox.appendChild(b);
       });
       const all = elt('div', chipCss(sel.length > 1, false), 'все почты');
-      all.onclick = function () { sel = cands.map(function (x) { return x.email; }); drawChips(); draw(); };
+      all.onclick = function () { pickSel(cands.map(function (x) { return x.email; })); draw(); };
       chipsBox.appendChild(all);
     }
 
@@ -8207,36 +8234,35 @@
       if (!c || !c.co) return;
       coBox.appendChild(elt('div', 'font-weight:800;font-size:11.5px;color:#111827;margin-bottom:5px;', 'Есть ли ДЗ на курсе'));
       const listBox = elt('div', '');
-      const showTasks = function (name, holder) {
-        const o = c.co[name]; if (!o) return;
-        holder.innerHTML = '';
-        Object.keys(o.hw).sort(function (a, b) { return o.hw[b] - o.hw[a]; }).forEach(function (t) {
-          holder.appendChild(elt('div', note + 'padding:1px 0;', '• ' + t + ''));
-        });
-      };
-      const companyRow = function (name, open) {
-        const o = c.co[name];
+      // строка-ответ «Да / Нет» по курсу; список заданий (☰) или пояснение (?) спрятаны под значком
+      const verdictRow = function (title, names) {
+        const yes = names.length > 0;
         const row = elt('div', 'border:1px solid #E5E7EB;border-radius:10px;padding:6px 9px;margin-bottom:5px;');
-        const head = elt('div', 'cursor:pointer;font-weight:800;font-size:12px;color:#111827;display:flex;gap:6px;align-items:baseline;');
-        head.appendChild(elt('span', '', '✅ ' + name));
-        head.appendChild(elt('span', note + 'margin-left:auto;white-space:nowrap;', 'заданий: ' + Object.keys(o.hw).length));
-        const tasks = elt('div', 'margin-top:4px;display:' + (open ? 'block' : 'none') + ';');
-        if (open) showTasks(name, tasks);
-        head.onclick = function () {
-          if (tasks.style.display === 'none') { showTasks(name, tasks); tasks.style.display = 'block'; } else tasks.style.display = 'none';
-        };
-        row.appendChild(head); row.appendChild(tasks);
+        const head = elt('div', 'display:flex;gap:7px;align-items:center;font-weight:800;font-size:12px;color:#111827;');
+        head.appendChild(elt('span', 'flex:0 0 auto;padding:1px 9px;border-radius:999px;font-size:11px;color:' + (yes ? '#166534' : '#991B1B') + ';background:' + (yes ? '#DCFCE7' : '#FEE2E2') + ';', yes ? 'Да' : 'Нет'));
+        head.appendChild(elt('span', 'flex:1 1 auto;min-width:0;line-height:1.35;', title));
+        const detail = elt('div', 'display:none;margin-top:5px;');
+        if (yes) {
+          names.forEach(function (nm) {
+            const o = c.co[nm]; if (!o) return;
+            if (names.length > 1) detail.appendChild(elt('div', note + 'color:#111827;margin-top:3px;', nm));
+            Object.keys(o.hw).sort(function (a, b) { return o.hw[b] - o.hw[a]; }).forEach(function (t) {
+              detail.appendChild(elt('div', note + 'padding:1px 0;', '• ' + t));
+            });
+          });
+          head.appendChild(mkIcon('☰', 'список заданий', detail));
+        } else {
+          detail.appendChild(elt('div', note, 'В списке проверки ДЗ по этому курсу нет ни одной сданной работы — либо заданий на курсе нет, либо никто их ещё не сдавал.'));
+          head.appendChild(mkIcon('?', 'пояснение', detail));
+        }
+        row.appendChild(head); row.appendChild(detail);
         return row;
       };
-      // автоопределение по курсам студента
-      const shown = {};
+      // автоопределение по курсу(ам) выбранной почты
+      const seen = {};
       courseNames.forEach(function (cn) {
-        const m = hwMatchCompanies(c, cn).filter(function (x) { return !shown[x]; });
-        if (!m.length) {
-          if (!shown['~' + cn]) { shown['~' + cn] = 1; coBox.appendChild(elt('div', note + 'margin-bottom:5px;', '🐾 «' + cn + '»: в списке проверки ДЗ по этому курсу ещё нет ни одной сданной работы — либо заданий на курсе нет, либо никто их не сдавал.')); }
-          return;
-        }
-        m.forEach(function (name) { shown[name] = 1; coBox.appendChild(companyRow(name, m.length === 1 && courseNames.length === 1)); });
+        if (seen[cn]) return; seen[cn] = 1;
+        coBox.appendChild(verdictRow(cn, hwMatchCompanies(c, cn)));
       });
       // свободный поиск по «компаниям» (как фильтр «Компания» на странице проверки ДЗ)
       const q = elt('input', inputCss + 'margin-top:6px;');
@@ -8249,7 +8275,7 @@
         if (!s) return;
         const names = Object.keys(c.co).filter(function (nm) { return docNorm(nm).indexOf(s) !== -1; }).slice(0, 12);
         if (!names.length) { listBox.appendChild(elt('div', note + 'margin-top:5px;', 'Среди курсов со сданными ДЗ такого нет.')); return; }
-        names.forEach(function (nm) { listBox.appendChild(companyRow(nm, false)); });
+        names.forEach(function (nm) { listBox.appendChild(verdictRow(nm, [nm])); });
       };
     }
 
@@ -8270,9 +8296,15 @@
       sel.forEach(function (em) { (c.by[em] || []).forEach(function (r) { rows.push(Object.assign({ e: em }, r)); }); });
       rows.sort(function (a, b) { return a.d < b.d ? 1 : -1; });
       if (!rows.length) {
-        res.appendChild(elt('div', 'padding:10px 11px;border-radius:10px;background:#F9FAFB;border:1px solid #E5E7EB;' + note,
-          '🐾 По ' + (multi ? 'этим почтам' : 'почте «' + sel[0] + '»') + ' попыток ДЗ нет. Либо студент ещё ничего не сдавал, либо ДЗ сдано после загрузки списка — нажми «обновить».' +
-          (cands.length > 1 && !multi ? ' Попробуй другую почту выше.' : '')));
+        const emptyBox = elt('div', 'padding:9px 11px;border-radius:10px;background:#F9FAFB;border:1px solid #E5E7EB;');
+        const line = elt('div', 'display:flex;gap:7px;align-items:flex-start;');
+        line.appendChild(elt('span', note + 'flex:1 1 auto;min-width:0;', '🐾 По ' + (multi ? 'этим почтам' : 'почте «' + sel[0] + '»') + ' попыток ДЗ нет.'));
+        const why = elt('div', note + 'display:none;margin-top:5px;',
+          'Либо студент ещё ничего не сдавал, либо ДЗ сдано после загрузки списка — нажми «обновить».' +
+          (cands.length > 1 && !multi ? ' Попробуй другую почту выше.' : ''));
+        line.appendChild(mkIcon('?', 'пояснение', why));
+        emptyBox.appendChild(line); emptyBox.appendChild(why);
+        res.appendChild(emptyBox);
         return;
       }
       const cnt = {};
@@ -8294,16 +8326,18 @@
         top.appendChild(elt('span', note + 'margin-left:auto;', 'сдано ' + hwFmtDate(r.d, true)));
         card.appendChild(top);
         card.appendChild(elt('div', 'font-weight:800;font-size:12.5px;color:#111827;margin-top:5px;line-height:1.35;', r.c || r.h || 'ДЗ №' + r.i));
+        // подробности (описание, курс, почта, кто проверяет) спрятаны под значком «?»
+        const det = elt('div', 'display:none;margin-top:6px;');
         const sub = [r.h && r.c ? r.h : '', r.o, multi ? r.e : ''].filter(Boolean).join(' · ');
-        if (sub) card.appendChild(elt('div', note, sub));
+        if (sub) det.appendChild(elt('div', note, sub));
         const meta = [];
         if ((r.s === 'sent' || r.s === 'checking' || r.s === 'in_crosscheck' || r.s === 'recheck') && r.d) {
           const days = Math.floor((Date.now() - new Date(r.d).getTime()) / 864e5);
           meta.push('ждёт проверки ' + days + ' дн.');
         } else if (r.u && r.s !== 'sent') meta.push('обновлено ' + hwFmtDate(r.u, false));
         meta.push(r.r ? 'проверяет: ' + r.r : 'проверяющий не назначен');
-        card.appendChild(elt('div', note, meta.join(' · ')));
-        const acts = elt('div', 'display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;');
+        det.appendChild(elt('div', note, meta.join(' · ')));
+        const acts = elt('div', 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px;');
         const mkAct = function (label, fn) {
           const b = elt('div', 'cursor:pointer;font-weight:800;font-size:11px;padding:4px 9px;border-radius:8px;border:1.5px solid ' + ACC_BD + ';color:' + ACC + ';', label);
           b.onclick = fn;
@@ -8313,7 +8347,11 @@
         mkAct('Открыть ДЗ', function () { window.open(url, '_blank', 'noopener'); });
         mkAct('Копировать ссылку', function () { copyText(url); toast('😻 Ссылка на ДЗ скопирована'); });
         if (r.a) mkAct('Работа студента', function () { window.open(r.a, '_blank', 'noopener'); });
+        const qi = mkIcon('?', 'подробности', det);
+        qi.style.marginLeft = 'auto';
+        acts.appendChild(qi);
         card.appendChild(acts);
+        card.appendChild(det);
         res.appendChild(card);
       };
       rows.slice(0, LIM).forEach(drawRow);
@@ -8353,7 +8391,7 @@
 
     goBtn.onclick = function () {
       const v = inp.value.toLowerCase().trim();
-      if (v) sel = [v];
+      if (v) pickSel([v]);
       const c = hwCacheGet();
       if (c) draw(); else start(false);
     };
@@ -8377,7 +8415,8 @@
       try { String(readUser().email || '').split(/[,;\s]+/).forEach(function (e2) { addCand(e2, '', false, true); }); } catch (e) {}
       cands.sort(function (x, y) { return (y.main ? 1 : 0) - (x.main ? 1 : 0); });
       if (!mainEm && cands.length) mainEm = cands[0].email;
-      if (alive() && mainEm) { sel = [mainEm]; inp.value = mainEm; }
+      baseCourses = courseNames.slice();
+      if (alive() && mainEm) pickSel([mainEm]);
       if (alive()) { drawChips(); start(false); }
     })();
   }
