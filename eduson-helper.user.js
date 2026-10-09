@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.60.1
+// @version      1.60.2
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -8217,20 +8217,18 @@
 
     function drawChips() {
       chipsBox.innerHTML = '';
-      if (cands.length < 2) return;
+      // кнопки — только курсы студента (по аккаунтам); «почта из карточки» и «все почты» не показываем
+      const shownC = cands.filter(function (x) { return x.label; });
+      if (shownC.length < 2) return;
       const c = hwCacheGet();
-      cands.forEach(function (x) {
+      shownC.forEach(function (x) {
         const cnt = c ? (c.by[x.email] || []).length : null;
         const on = sel.length === 1 && sel[0] === x.email;
-        const short = x.email.length > 26 ? x.email.slice(0, 24) + '…' : x.email;
-        const b = elt('div', chipCss(on, cnt === 0), x.label || (x.card ? 'почта из карточки' : short));
-        b.title = x.email + (x.label ? ' — ' + x.label : '');
+        const b = elt('div', chipCss(on, cnt === 0), x.label);
+        b.title = x.email + ' — ' + x.label;
         b.onclick = function () { pickSel([x.email]); draw(); };
         chipsBox.appendChild(b);
       });
-      const all = elt('div', chipCss(sel.length > 1, false), 'все почты');
-      all.onclick = function () { pickSel(cands.map(function (x) { return x.email; })); draw(); };
-      chipsBox.appendChild(all);
     }
 
     function drawCourses() {
@@ -8271,27 +8269,18 @@
         const seenT = {}, list = [];
         names.forEach(function (nm) {
           const o = c.co[nm]; if (!o) return;
-          const mn = Math.max(3, Math.round(o.n * 0.05));
+          const mn = 2;   // одиночная попытка (1) — случайный «чужой» след
           Object.keys(o.hw).sort(function (a, b) { return o.hw[b] - o.hw[a]; }).forEach(function (t) {
             if (o.hw[t] >= mn && !seenT[t]) { seenT[t] = 1; list.push(t); }
           });
         });
         return list;
       };
-      // курс студента: точный способ — уроки учебного плана этого аккаунта ∩ названия сданных ДЗ;
-      // если план не удалось получить — запасной способ по «компании» (с отсевом шума)
+      // курс студента: задания «компании» (= курс аккаунта) из списка проверки ДЗ, без одиночных случайных попыток.
+      // По учебному плану не сверяем: часть ДЗ спрятана внутри уроков и в плане может не значиться.
       const courseVerdict = function (cn) {
         const v = verdictRow(cn);
-        const fallback = function () { v.set(companyTasks(hwMatchCompanies(c, cn))); };
-        const cand = cands.find(function (x) { return x.label === cn && x.uid; });
-        if (!cand || !c.ti) { fallback(); return v.el; }
-        accountLessons(cand.uid, cn).then(function (res) {
-          const inPlan = {};
-          (res.lessons || []).forEach(function (l) { inPlan[docNorm(l.name)] = 1; });
-          const tasks = Object.keys(c.ti).filter(function (t) { return inPlan[docNorm(t)]; })
-            .sort(function (a, b) { return c.ti[b] - c.ti[a]; });
-          v.set(tasks, 'В учебном плане этого курса нет уроков, по которым студенты уже сдавали ДЗ — либо заданий на курсе нет, либо их ещё никто не сдавал.');
-        }).catch(fallback);
+        v.set(companyTasks(hwMatchCompanies(c, cn)));
         return v.el;
       };
       const seen = {};
