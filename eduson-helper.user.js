@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.60.7
+// @version      1.60.8
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -2668,7 +2668,7 @@
   // другую строку → адрес вписывается второй раз. Чистим до сверки.
   function cleanEmailValue(e) {
     return String(e || '')
-      .replace(/[​-‏ - ⁠-⁯﻿ ­]/g, '')
+      .replace(new RegExp("[" + [8203,8204,8205,8206,8207,8232,8233,8234,8235,8236,8237,8238,8239,8288,8289,8290,8291,8292,65279,160,173].map(function (c) { return String.fromCharCode(c); }).join("") + "]", "g"), "")
       .replace(/\s+/g, '')
       .replace(/^mailto:/i, '')
       .replace(/^[<(\[]+|[>)\],;.]+$/g, '');
