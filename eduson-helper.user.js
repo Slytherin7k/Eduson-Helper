@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.60.2
+// @version      1.60.3
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -5372,6 +5372,12 @@
             mopName = r.name;
             const src = r.rank >= 2 ? 'из амо — кто продал сделку' : 'по данным амо — проверь, тот ли это МОП';
             mopNote.textContent = src + (r.dealNum ? ' (сделка ' + r.dealNum + ')' : '');
+            // ссылка на сделку = та же сделка, по которой нашёлся МОП (а не первая попавшаяся на странице),
+            // если куратор не успел поправить её руками
+            if (r.dealNum && ping.linkKind === 'amo' && linkInput && linkInput.value === autoLink('amo')) {
+              linkInput.value = 'https://eduson.amocrm.ru/leads/detail/' + r.dealNum;
+              if (linkInput.oninput) linkInput.oninput();
+            }
             applyMopTag(r.name);
             recompute();
           } else if (r.err === 'NOAUTH') {
