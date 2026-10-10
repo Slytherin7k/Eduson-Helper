@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.60.6
+// @version      1.60.7
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -2491,7 +2491,9 @@
         'if(!ch){res.err="S2_BAD_VALUE:"+v;return;}}' +
         'if(!ch)ch={id:v,text:v};' +
         's2.onSelect(ch);have.push(norm(v));res.okCount++;}catch(e2){res.err=(e2&&e2.message)||String(e2);}});' +
-        'try{$o.trigger("change");}catch(e3){}' +
+        // НЕ вызываем $o.trigger("change") вручную: s2.onSelect уже сам шлёт change, а OmniDesk на
+        // каждый change отправляет на сервер «создать профиль почты». Два change подряд = два запроса
+        // create с разницей в ~60 мс = две одинаковые почты в карточке (проверено по запросам, 10.10).
         '}catch(e){res.err=(e&&e.message)||String(e);}return fin();' +
         'function fin(){document.documentElement.setAttribute("data-eduson-s2-result",JSON.stringify(res));}})();';
       try {
