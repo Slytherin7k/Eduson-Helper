@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.60.3
+// @version      1.60.4
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -4279,6 +4279,18 @@
       return fetchMopName(id).catch(function (e) { return { name: '', sure: false, err: e.message, rank: 0, dealNum: id }; });
     }));
     let best = results.reduce(function (a, b) { return (b.rank || 0) > (a.rank || 0) ? b : a; });
+    // При равной надёжности «Автосделка» (создаётся сама, цена 0) не должна побеждать настоящую сделку:
+    // из всех равных берём ту, что не автосделка, с ценой и по возможности успешно закрытую.
+    const tied = results.filter(function (r) { return r.name && r.rank === best.rank; });
+    if (tied.length > 1) {
+      const info = await Promise.all(tied.map(function (r) {
+        return gmFetch('https://eduson.amocrm.ru/api/v4/leads/' + r.dealNum).then(function (l) {
+          const score = (/автосделк/i.test(l.name || '') ? 0 : 4) + (l.price > 0 ? 2 : 0) + (l.status_id === 142 ? 1 : 0);
+          return { r: r, score: score };
+        }).catch(function () { return { r: r, score: -1 }; });
+      }));
+      best = info.reduce(function (a, b) { return b.score > a.score ? b : a; }).r;
+    }
     if (!best.name) {
       const noauth = results.find(function (r) { return r.err === 'NOAUTH'; });
       if (noauth) return noauth;
