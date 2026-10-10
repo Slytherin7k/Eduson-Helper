@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.60.4
+// @version      1.60.5
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -8158,7 +8158,12 @@
       const co = docNorm(name); if (!co) return;
       let sc;
       if (co === n || co.indexOf(n) !== -1 || n.indexOf(co) !== -1) sc = 99;
-      else { const cow = co.split(' '); sc = cw.filter(function (w) { return cow.indexOf(w) !== -1; }).length; }
+      else {
+        // строго: почти все слова обоих названий должны совпасть (общие «для», «бизнеса» курсы не роднят)
+        const cow = co.split(' ').filter(function (w) { return w.length >= 3; });
+        const common = cw.filter(function (w) { return cow.indexOf(w) !== -1; }).length;
+        sc = (common >= 2 && common / Math.max(cw.length, cow.length) >= 0.85) ? common : 0;
+      }
       if (sc >= 2) hit.push({ name: name, sc: sc });
     });
     if (!hit.length) return [];
@@ -8344,7 +8349,7 @@
         const col = HW_COLORS[st] || ['#4B5563', '#F3F4F6'];
         sum.appendChild(elt('span', 'font-weight:800;font-size:10.5px;padding:3px 8px;border-radius:999px;color:' + col[0] + ';background:' + col[1] + ';', x));
       });
-      if (Object.keys(cnt).length > 1) res.appendChild(sum);
+      // сводка статусов («Успешно выполнено / Не выполнено») убрана — кнопки были неактивными
       const LIM = 25;
       const drawRow = function (r) {
         const col = HW_COLORS[r.s] || ['#4B5563', '#F3F4F6'];
