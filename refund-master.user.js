@@ -1,7 +1,7 @@
-// ==UserScript==
+﻿// ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.45.0
+// @version      1.45.1
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -1196,7 +1196,7 @@
   function cplForDate(d, rows) {
     if (!d || !rows || !rows.length) return null;
     let idx = (d.getFullYear() - CPL_BASE_YEAR) * 12 + d.getMonth();
-    if (idx < 0) idx = 0;
+    if (idx < 0) return { tooOld: true };   // таблица CPL начинается с января 2026: за более ранние даты CPL не подставляем
     let fallback = false;
     if (idx > rows.length - 1) { idx = rows.length - 1; fallback = true; }
     const y = CPL_BASE_YEAR + Math.floor(idx / 12), m = idx % 12;
@@ -3123,12 +3123,14 @@
       const D = numIn(T.calcDays), S0 = numIn(T.amount);
 
       // CPL по месяцу покупки (пока куратор сам не вписал)
-      const ci = cplForDate(p, cplRows);
+      const ci0 = cplForDate(p, cplRows), ci = (ci0 && !ci0.tooOld) ? ci0 : null;
+      if (ci0 && ci0.tooOld && !T.calcCplTouched) { T.calcCpl = ''; cplInp.value = ''; }
       if (ci && !T.calcCplTouched) { T.calcCpl = String(ci.cpl); cplInp.value = T.calcCpl; }
       if (ci) {
         cplNote.textContent = (T.calcCplTouched ? 'вписано вручную · ' : '') + 'по таблице: CPL за ' + ci.label + ' = ' + ci.cpl +
           (ci.fallback ? ' (за месяц покупки ещё не рассчитан — взят последний известный)' : '') + (cplFailed ? ' · таблица недоступна, запасные данные' : '');
-      } else cplNote.textContent = p ? 'загружаю таблицу CPL…' : 'впиши дату выдачи доступа — подставлю CPL';
+      } else if (ci0 && ci0.tooOld) cplNote.textContent = (T.calcCplTouched ? 'вписано вручную · ' : '') + 'в таблице CPL есть только с января 2026, за более раннюю покупку впиши CPL вручную';
+      else cplNote.textContent = p ? 'загружаю таблицу CPL…' : 'впиши дату выдачи доступа — подставлю CPL';
       const cpl = numIn(T.calcCpl);
 
       // способ оплаты по «Форме оплаты» из амо — пока куратор сам не выбирал
