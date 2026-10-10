@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.44.0
+// @version      1.45.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
 // @updateURL    https://raw.githubusercontent.com/Slytherin7k/Eduson-Helper/main/refund-master.user.js
 // @downloadURL  https://raw.githubusercontent.com/Slytherin7k/Eduson-Helper/main/refund-master.user.js
 // @match        https://*.omnidesk.ru/*
+// @match        https://docs.google.com/spreadsheets/d/11GNvwRy-fJwL2zg1KZbGouXzy5XXvJBlKXvtCHdgFfg/*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_addValueChangeListener
@@ -381,6 +382,178 @@
       waitAlive();
     });
   }
+  /* ============ ЗАПИСЬ В GOOGLE-КАЛЬКУЛЯТОР (лист куратора) ============
+     Тот же приём, что и для таблицы возвратов: мастер на OmniDesk кладёт задание в GM_setValue, а вкладка калькулятора
+     (открытая мастером, rmauto=1) встаёт на ячейку, вставляет столбец значений «как Ctrl+V» и сверяет «Итого к возврату».
+     Ключи rm3_calc_*. Один лист на куратора (название листа = ФИО; у Нины Пилипенко лист «Валикова Нина»). */
+  const CALC_ID = '11GNvwRy-fJwL2zg1KZbGouXzy5XXvJBlKXvtCHdgFfg';
+  const CALC_SHEET_GIDS = {
+    'Астанина Наталья': '0', 'Перова Кристина': '275787535', 'Хациева Расита': '1063839769', 'Руденко Диана': '1477527828',
+    'Донцова Ольга': '626782997', 'Пилипенко Нина': '2028694928', 'Косьянова Юлия': '1653698740', 'Цурикова Юлия': '1613973097',
+    'Фомина Дарья': '107345549', 'Романенко Вадим': '2011870216', 'Белякова Валерия': '1133222434', 'Емельянова Дина': '177768578',
+  };
+
+  function calcWorker() {
+    if (!/[?&]rmauto=1/.test(location.search)) return;   // работает только вкладка, которую открыл мастер
+    const tok = Math.random().toString(36).slice(2);
+    const beat = function () { try { GM_setValue('rm3_calc_alive', JSON.stringify({ t: Date.now(), tok: tok })); } catch (e) { /* ignore */ } };
+    beat(); setInterval(beat, 2000);
+    const imGone = function () { try { GM_setValue('rm3_calc_alive', JSON.stringify({ t: 0, tok: tok })); } catch (e) { /* ignore */ } };
+    window.addEventListener('pagehide', imGone); window.addEventListener('beforeunload', imGone);
+    let busy = false, jobsDone = 0, lastAct = Date.now();
+    setInterval(function () {
+      if (busy) return;
+      if (Date.now() - lastAct > (jobsDone ? 20000 : 240000)) { imGone(); try { window.close(); } catch (e) { /* ignore */ } }
+    }, 5000);
+    const seen = {};
+    const nameVal = function () {
+      const e = document.querySelector('#t-name-box'); if (!e) return '';
+      return String((e.value !== undefined && e.value !== '') ? e.value : (e.innerText || e.textContent || '')).trim().toUpperCase();
+    };
+    async function gotoCell(gid, addr) {
+      if (nameVal() === addr) return true;
+      location.hash = 'gid=' + gid + '&range=' + addr;
+      for (let i = 0; i < 16; i++) { await shSleep(250); if (nameVal() === addr) return true; }
+      const e = document.querySelector('#t-name-box');
+      if (e) {
+        try {
+          e.focus(); if (e.select) e.select();
+          document.execCommand('selectAll'); document.execCommand('insertText', false, addr);
+          ['keydown', 'keypress', 'keyup'].forEach(function (t) {
+            e.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+          });
+        } catch (x) { /* ignore */ }
+        for (let i = 0; i < 14; i++) { await shSleep(250); if (nameVal() === addr) return true; }
+      }
+      return nameVal() === addr;
+    }
+    function pasteText(text) {
+      const ed = document.querySelector('#waffle-rich-text-editor');
+      if (!ed) return false;
+      try { ed.focus(); } catch (e) { /* ignore */ }
+      const dt = new DataTransfer(); dt.setData('text/plain', text);
+      const ev = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+      ed.dispatchEvent(ev);
+      return ev.defaultPrevented;
+    }
+    function readCell(gid, addr) {
+      const u = 'https://docs.google.com/spreadsheets/d/' + CALC_ID + '/gviz/tq?tqx=out:csv&gid=' + gid + '&range=' + addr + ':' + addr + '&_cb=' + Date.now();
+      const fetched = fetch(u, { credentials: 'include' }).then(function (r) { return r.text(); });
+      const timeout = shSleep(15000).then(function () { throw new Error('таблица не отдала ячейку за 15 секунд'); });
+      return Promise.race([fetched, timeout]).then(function (t) {
+        if (/<!doctype|<html|accounts\.google\.com/i.test(String(t).slice(0, 400))) throw new Error('нужен вход в Google');
+        return (shParseCsvRow(t)[0] || '').trim();
+      });
+    }
+    async function runJob(j) {
+      if (!(await gotoCell(j.gid, j.cell))) return { ok: false, msg: 'не смогла встать на ' + j.cell + ' (поле имени показывает «' + nameVal() + '»).' };
+      if (!pasteText(j.text)) return { ok: false, msg: 'калькулятор не принял вставку.' };
+      let got = '';
+      for (let i = 0; i < 8; i++) {
+        await shSleep(1300);
+        got = await readCell(j.gid, j.expectCell);
+        const v = shNum(got);
+        if (isFinite(v) && Math.abs(v - j.expect) < 0.02) return { ok: true, msg: 'записано и сверено' };
+      }
+      return { ok: false, msg: 'записала, но «Итого» в калькуляторе ' + (got || 'пусто') + ' вместо ' + j.expect + ' — проверь лист.' };
+    }
+    GM_addValueChangeListener('rm3_calc_job', function (name, oldV, newV) {
+      let j; try { j = JSON.parse(newV); } catch (e) { return; }
+      if (!j || !j.id || seen[j.id]) return;
+      if (j.to && j.to !== tok) return;
+      seen[j.id] = 1;
+      try { GM_setValue('rm3_calc_ack', JSON.stringify({ id: j.id, t: Date.now() })); } catch (e) { /* ignore */ }
+      (async function () {
+        busy = true;
+        let r;
+        try {
+          const guard = shSleep(45000).then(function () { return { ok: false, msg: 'вкладка калькулятора зависла.' }; });
+          r = await Promise.race([runJob(j), guard]);
+        } catch (e) { r = { ok: false, msg: 'ошибка: ' + ((e && e.message) || e) }; }
+        r.id = j.id;
+        try { GM_setValue('rm3_calc_res', JSON.stringify(r)); } catch (e) { /* ignore */ }
+        busy = false; jobsDone++; lastAct = Date.now();
+      })();
+    });
+  }
+
+  const _calcPending = {}, _calcAck = {};
+  let _calcListening = false;
+  function calcBeat() {
+    let v = GM_getValue('rm3_calc_alive', 0);
+    try { if (typeof v === 'string') v = JSON.parse(v); } catch (e) { v = { t: 0 }; }
+    if (v && typeof v === 'object') return { t: parseInt(v.t, 10) || 0, tok: v.tok || '' };
+    return { t: 0, tok: '' };
+  }
+  function calcAlive() { return Date.now() - calcBeat().t < 12000; }
+  function ensureCalcTab(gid, force) {
+    if (!force) {
+      if (calcAlive()) return;
+      const b = calcBeat(), closed = !!b.tok && b.t === 0;
+      const last = parseInt(GM_getValue('rm3_calc_opened', 0), 10) || 0;
+      if (!closed && Date.now() - last < 60000) return;
+    }
+    try { GM_setValue('rm3_calc_opened', Date.now()); } catch (e) { /* ignore */ }
+    const url = 'https://docs.google.com/spreadsheets/d/' + CALC_ID + '/edit?rmauto=1#gid=' + gid;
+    try { GM_openInTab(url, { active: false, insert: true }); }
+    catch (e) { try { window.open(url, '_blank'); } catch (e2) { /* ignore */ } }
+  }
+  // job: {gid, cell, text, expectCell, expect} → Promise<{ok,msg}>
+  function calcSheetSend(job) {
+    if (!_calcListening) {
+      _calcListening = true;
+      GM_addValueChangeListener('rm3_calc_res', function (n, o, v) {
+        let r; try { r = JSON.parse(v); } catch (e) { return; }
+        const cb = r && _calcPending[r.id]; if (cb) { delete _calcPending[r.id]; cb(r); }
+      });
+      GM_addValueChangeListener('rm3_calc_ack', function (n, o, v) {
+        let r; try { r = JSON.parse(v); } catch (e) { return; }
+        const cb = r && _calcAck[r.id]; if (cb) cb();
+      });
+    }
+    return new Promise(function (resolve) {
+      job.id = Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+      job.n = 0;
+      let finished = false, resT = 0, poll = 0, ackT = 0, acked = false, retries = 0;
+      const done = function (r) {
+        if (finished) return; finished = true;
+        clearTimeout(resT); clearTimeout(ackT); clearInterval(poll);
+        delete _calcPending[job.id]; delete _calcAck[job.id];
+        resolve(r);
+      };
+      _calcPending[job.id] = done;
+      _calcAck[job.id] = function () { acked = true; clearTimeout(ackT); };
+      const post = function () {
+        job.n++;
+        job.to = calcBeat().tok;
+        try { GM_setValue('rm3_calc_job', JSON.stringify(job)); } catch (e) { done({ ok: false, msg: 'не смогла передать задание.' }); return; }
+        clearTimeout(resT);
+        resT = setTimeout(function () { done({ ok: false, msg: 'калькулятор не ответил за 60 секунд.' }); }, 60000);
+        ackT = setTimeout(function () {
+          if (acked || finished) return;
+          if (retries >= 2) { done({ ok: false, msg: 'вкладка калькулятора не отвечает.' }); return; }
+          retries++;
+          clearTimeout(resT);
+          try { GM_setValue('rm3_calc_alive', JSON.stringify({ t: 0, tok: '' })); } catch (e) { /* ignore */ }
+          ensureCalcTab(job.gid, true);
+          waitAlive();
+        }, 10000);
+      };
+      const waitAlive = function () {
+        clearInterval(poll);
+        let waited = 0;
+        poll = setInterval(function () {
+          waited += 500;
+          if (calcAlive()) { clearInterval(poll); setTimeout(post, 1200); }
+          else if (waited > 90000) done({ ok: false, msg: 'калькулятор не открылся за 90 секунд (или в нём не работает скрипт).' });
+        }, 500);
+      };
+      if (calcAlive()) { post(); return; }
+      ensureCalcTab(job.gid);
+      waitAlive();
+    });
+  }
+
   // Запрос в API Асаны от имени куратора (нужен вход в app.asana.com в этом же браузере).
   // Заголовок X-Allow-Asana-Client — как у самого сайта Асаны.
   function asanaApi(method, path, bodyObj) {
@@ -989,6 +1162,103 @@
   function fetchCourseDuration(courseName) {
     return fetchDurationRows().then(rows => pickDuration(courseName, rows));
   }
+
+  /* ---------- расчёт возврата прямо в мастере (вместо Google-калькулятора) ----------
+     Формула калькулятора: Итого = Сумма − Сумма ÷ Дней курса × (дни от доступа до обращения)
+                                    − Комиссия − CPL − Прочие расходы (15% от суммы).
+     Предварительно комиссия = 3% от суммы. Окончательно — ставка по способу оплаты × ТОЧНАЯ сумма оплаты (от РГ). */
+  const CPL_SHEET_ID = '1TGEuWE6o23MCo-zjhBHMaP1nG17eeyTXtU_-9Rv7-ac';   // «Месяц · CPL», строки идут подряд с января 2026
+  const CPL_CSV_URL = 'https://docs.google.com/spreadsheets/d/' + CPL_SHEET_ID + '/gviz/tq?tqx=out:csv&gid=0';
+  const CPL_BASE_YEAR = 2026;
+  const CPL_FALLBACK = [3142, 3575, 3824, 3634, 3505, 3723, 3447, 3453, 3317];   // янв–сен 2026 (запас, если таблица недоступна)
+  const MONTHS_RU = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
+  const OTHER_COSTS_PCT = 0.15;
+  const PRELIM_COMM_PCT = 0.03;
+
+  let _cplRows = null;
+  function fetchCplRows() {
+    if (_cplRows) return Promise.resolve(_cplRows);
+    return gmFetchText(CPL_CSV_URL + '&_cb=' + Date.now()).then(text => {
+      if (looksLikeLoginPage(text)) throw new Error('нужен вход в Google');
+      const out = [];
+      parseCsvRows(text).slice(1).forEach(r => {
+        let s = String(r[1] || '').replace(/\s/g, '');
+        if (/^\d{1,3}(,\d{3})+$/.test(s)) s = s.replace(/,/g, '');
+        const v = parseFloat(s.replace(',', '.'));
+        if (isFinite(v) && v > 0) out.push(v);
+      });
+      if (!out.length) throw new Error('таблица CPL пустая');
+      _cplRows = out;
+      return out;
+    });
+  }
+  // CPL за месяц покупки; если за него ещё не рассчитан — за предыдущий (последний известный).
+  function cplForDate(d, rows) {
+    if (!d || !rows || !rows.length) return null;
+    let idx = (d.getFullYear() - CPL_BASE_YEAR) * 12 + d.getMonth();
+    if (idx < 0) idx = 0;
+    let fallback = false;
+    if (idx > rows.length - 1) { idx = rows.length - 1; fallback = true; }
+    const y = CPL_BASE_YEAR + Math.floor(idx / 12), m = idx % 12;
+    return { cpl: rows[idx], label: MONTHS_RU[m] + ' ' + y, fallback: fallback };
+  }
+
+  // Ставки приёма платежей (таблица «Ставки эквайеров»: https://docs.google.com/spreadsheets/d/1NrZbQ1FIqmpsvWNRWSza6o-k2hRo5siK).
+  // Если ставки в таблице поменяются — обновить здесь (или поправить ставку руками в поле «Ставка»).
+  const PAY_RATES = (function () {
+    const L = [];
+    // проценты — только до сотой (2,806 → 2,81)
+    const add = (g, name, rate, extra) => L.push(Object.assign({ g: g, name: name, rate: Math.round(rate * 10000) / 10000 }, extra || {}));
+    [['Юкасса', [['СБП', 0.004], ['SberPay', 0.0183], ['Банковские карты', 0.0183], ['Кредит Сбер (через Юкассу)', 0.061]]],
+     ['CloudPayments', [['T-Pay', 0.03], ['МИР Pay', 0.0366], ['Банковские карты', 0.0366], ['Рассрочка (без процентов)', 0], ['Рассрочка', 0.15006]]],
+     ['Т-Банк', [['T-Pay', 0.011], ['AlfaPay и SberPay', 0.01342], ['Банковские карты', 0.01342], ['UnionPay', 0.038918], ['Банковские карты (зарубежные)', 0.038918], ['СБП', 0.004]]],
+     ['ГПБ', [['Банковские карты', 0.01159], ['СБП', 0.0085], ['SberPay', 0.01159], ['T-Pay', 0.0095]]],
+     ['Точка', [['Банковские карты', 0.01037], ['СБП', 0.0035]]],
+     ['TipTop', [['Банковские карты', 0.035], ['GooglePay', 0.035], ['Apple Pay', 0.035], ['MasterPass', 0.035]]],
+     ['Яндекс Сплит', [['Полная или частичная оплата', 0.02196]]],
+     ['Сбер Кредит', [['Рассрочка Сбер / Сбер рассрочка (любой срок)', 0.02806]]],
+     ['Т-Банк Долями', [['Рассрочка 6 недель', 0.08418], ['Рассрочка 3, 6, 10 мес', 0.069]]],
+     ['Ванта', [['Рассрочка Ванта (комиссия — скидкой)', 0]]],
+     ['Фреш Кредит', [['Фреш-кредит (комиссия — скидкой)', 0]]],
+     ['Т-Банк Кредит', [['Рассрочка Т-банк / кредит (комиссия — скидкой)', 0]]],
+     ['Всегда ДА', [['Рассрочка / кредит (комиссия — скидкой)', 0]]],
+    ].forEach(p => p[1].forEach(m => add(p[0], m[0], m[1])));
+    // Ресурс Развития: сначала комиссия БАНКА со всей суммы, потом комиссия БРОКЕРА с суммы, поступившей из банка
+    // (10% если поступило до 50 000 ₽, 8% если от 50 000 ₽).
+    const RR = [
+      ['Альфа банк', 'Беларусь', 'Р:12=.105,18=.16,24=.22;К:6=.0483,12=.0873,24=.1548,36=.2176,48=.2741'],
+      ['Поритет банк', 'Беларусь', 'Р:6=.075,9=.105,12=.12;К:12=.1004,18=.1421,24=.1813,36=.2525'],
+      ['РРБ Банк', 'Беларусь', 'Р:6=.0677,9=.0919,12=.105;К:24=.1813,36=.2525'],
+      ['СберБанк', 'Беларусь', 'К:6=.0497,9=.07,12=.0897,18=.1274,24=.1631,36=.2285,48=.2871,60=.3396'],
+      ['Добрабыт', 'Беларусь', 'Р:12=.09,18=.12;К:6=.0558,12=.1004,18=.1421,24=.1813,36=.2525'],
+      ['Банк БТА', 'Беларусь', 'К:12=.1004,18=.1421,24=.1813,36=.2525,48=.3153,60=.3709'],
+      ['Решение', 'Беларусь', 'К:6=.0878,9=.107,12=.1262,24=.1966,36=.2592,48=.3158'],
+      ['Статус', 'Беларусь', 'К:6=.047,12=.0863,18=.1241,24=.163,36=.2525'],
+      ['МТБанк', 'Беларусь', 'Р:6=.048,9=.0677,12=.0868,18=.1234,24=.158,36=.2119,48=.2792,60=.3307'],
+      ['БАПБ', 'Беларусь', 'К:6=.0451,12=.0815,18=.1162,24=.149,36=.2099'],
+      ['Halyk', 'Казахстан', 'К:3=.1,6=.1,12=.1,24=.1,36=.1,48=.1,60=.1;Р:3=.1,6=.1,12=.13,24=.19'],
+      ['Jusan', 'Казахстан', 'К:3=.11,6=.11,12=.11,24=.11,36=.11,48=.11,60=.11;Р:3=.15,6=.16,12=.17,24=.19'],
+      ['Home', 'Казахстан', 'Р:3=.05,6=.08,12=.14,14=.14,18=.15,24=.15'],
+      ['Евразийский', 'Казахстан', 'К:3=.06,6=.075,9=.1,12=.14'],
+      ['Anobank', 'Узбекистан', 'Р:3=.075,6=.12,9=.17,12=.22,24=.27'],
+      ['MBANK', 'Кыргызстан', 'Р:3=.05,6=.085,9=.115,12=.145,18=.21,24=.27'],
+      ['BakaiBank', 'Кыргызстан', 'Р:3=.04,6=.07,9=.09,12=.13,18=.17,24=.22'],
+      ['Оптима банк', 'Кыргызстан', 'Р:3=.045,6=.07,9=.1,12=.13'],
+    ];
+    RR.forEach(b => b[2].split(';').forEach(grp => {
+      const kind = grp.charAt(0) === 'К' ? 'Кредит' : 'Рассрочка';
+      grp.slice(2).split(',').forEach(t => {
+        const kv = t.split('=');
+        add('Ресурс Развития', b[0] + ' (' + b[1] + ') · ' + kind + ' ' + kv[0] + ' мес', parseFloat(kv[1]), { rr: true });
+      });
+    }));
+    L.forEach(x => {
+      const pct = (x.rate * 100).toFixed(2).replace('.', ',');
+      x.label = x.g + ' · ' + x.name + ' — ' + pct + '%' + (x.rr ? ' банк + брокер' : '');
+    });
+    return L;
+  })();
+  const rrBrokerPct = received => (received < 50000 ? 0.10 : 0.08);
 
   // Таблица «Заявления на возврат» (тип оплаты → нужно ли заявление). Публичная, gviz-CSV.
   // Столбцы: A Тип оплаты | B Рассрочка/Полная | C Нужно заявление? | D Комментарий | E Файл с заявлением.
@@ -1798,6 +2068,8 @@
       rgTag: pick('rgTag', ''),
       deals: [], dealId: pick('dealId', ''),
       calcHours: pick('calcHours', ''), calcDays: pick('calcDays', ''),
+      calcCpl: pick('calcCpl', ''), calcCplTouched: !!cs.calcCplTouched,   // CPL: сам по месяцу покупки, пока куратор не поправил
+      calcPay: pick('calcPay', ''), calcPayTouched: !!cs.calcPayTouched, calcPaid: pick('calcPaid', ''), calcRate: pick('calcRate', ''),   // окончательный расчёт
       payTypeSel: pick('payTypeSel', ''),
       scenOverride: '',   // сценарий при каждом открытии — «авто»; ручной выбор не запоминаем
     };
@@ -1812,7 +2084,7 @@
       clearTimeout(saveT);
       saveT = setTimeout(() => {
         const keep = {};
-        ['curator', 'status', 'claimDate', 'progress', 'reason', 'clientComment', 'result', 'agreedSum', 'rowNumber', 'sentRow', 'approveLink', 'asanaUrl', 'asanaGid', 'asanaDate', 'rgTag', 'dealId', 'calcHours', 'calcDays', 'payTypeSel']
+        ['curator', 'status', 'claimDate', 'progress', 'reason', 'clientComment', 'result', 'agreedSum', 'rowNumber', 'sentRow', 'approveLink', 'asanaUrl', 'asanaGid', 'asanaDate', 'rgTag', 'dealId', 'calcHours', 'calcDays', 'calcCpl', 'calcCplTouched', 'calcPay', 'calcPayTouched', 'calcPaid', 'calcRate', 'payTypeSel']
           .forEach(k => { keep[k] = T[k]; });
         try { GM_setValue(CASE_KEY, JSON.stringify(keep)); } catch (e) { /* ignore */ }
       }, 300);
@@ -2178,7 +2450,7 @@
 
     /* ---- сценарий: текст + видимость блоков ---- */
     let tableBlock = null, calcBlock = null, rgBlock = null, tgBlock = null, tgHdr = null, rowLinkBtn = null, negBox = null, payTypeBlock = null;
-    let sumWrap = null, errBox = null, tgRefreshHook = null;
+    let sumWrap = null, errBox = null, tgRefreshHook = null, calcRecalc = null;
     const dateWarn = el('div', S.warn);
     const show = (elm, v) => { if (elm) elm.style.display = v ? 'block' : 'none'; };
     // При результате «Возврат» сумма обязательна: конкретное число больше нуля.
@@ -2280,6 +2552,7 @@
       show(rowLinkBtn, true);
       if (tgHdr && tgHdr.titleEl) tgHdr.titleEl.textContent = (scen === 'resale' || scen === 'kids') ? 'Сообщение в ТГ' : 'Сообщение продакту в Телеграм';
       if (tgRefreshHook) tgRefreshHook();
+      if (calcRecalc) calcRecalc();
     };
     const onDate = () => updateScenario();
     const syncAgreed = () => {
@@ -2716,7 +2989,6 @@
     const durWrap = el('div', 'margin:6px 0 2px;padding:8px 10px;background:#FFF7ED;border:1px solid #FED7AA;border-radius:10px;');
     durWrap.appendChild(el('div', 'font-size:11.5px;font-weight:800;color:' + ACC_DK + ';margin-bottom:8px;line-height:1.4;',
       'ПРОВЕРЬ длительность курса'));
-    durWrap.appendChild(el('div', 'font-size:10px;color:#374151;font-weight:700;margin-bottom:3px;', 'Курс в таблице длительности (по умолчанию из амо, можно сменить):'));
     const durCombo = combo([], 'загружаю список курсов…', clean(T.course) || '');
     durCombo.el.style.marginBottom = '6px';
     durCombo.input.style.border = '1px solid #FED7AA';
@@ -2743,6 +3015,210 @@
     const durNote = el('div', 'font-size:10px;color:#6B7280;margin-top:6px;line-height:1.4;font-weight:600;', '');
     durWrap.appendChild(durNote);
     calcBlock.appendChild(durWrap);
+
+    /* ---- расчёт прямо здесь: CPL → предварительный → окончательный ---- */
+    const fmtRub = n => (Math.round(n * 100) / 100).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ₽';
+    const fmtPct = r => (r * 100).toFixed(2).replace('.', ',') + '%';
+    const numIn = v => { const n = parseFloat(String(v || '').replace(/[\s ]/g, '').replace(',', '.')); return isFinite(n) ? n : NaN; };
+    const rcWrap = el('div', 'margin-top:8px;');
+    calcBlock.appendChild(rcWrap);
+    const rcLab = t => el('div', 'font-size:10px;color:#374151;font-weight:700;margin:6px 0 3px;', t);
+    const rcLines = (card, rows) => {
+      card.innerHTML = '';
+      rows.forEach(r => {
+        if (r.warn) { card.appendChild(el('div', 'font-size:11px;color:#B45309;font-weight:600;line-height:1.4;margin-top:2px;', r.warn)); return; }
+        const line = el('div', 'display:flex;justify-content:space-between;gap:8px;font-size:11.5px;line-height:1.5;color:#374151;' +
+          (r.total ? 'border-top:1px solid #E5E7EB;margin-top:4px;padding-top:4px;font-weight:800;font-size:13px;color:#111827;' : ''));
+        line.appendChild(el('span', 'min-width:0;', r.l));
+        line.appendChild(el('span', 'white-space:nowrap;font-variant-numeric:tabular-nums;', r.v));
+        card.appendChild(line);
+      });
+    };
+    const rcPush = (btn, total) => {
+      if (!isFinite(total)) return;
+      T.agreedSum = String(Math.round(Math.max(total, 0) * 100) / 100);
+      if (inputs.agreedSum) inputs.agreedSum.value = T.agreedSum;
+      saveCase(); updateScenario();
+      const old = btn.textContent; btn.textContent = '✓ Подставлено в «Сумму возврата»';
+      setTimeout(() => { btn.textContent = old; }, 2200);
+    };
+
+    // CPL
+    rcWrap.appendChild(rcLab('CPL — стоимость привлечения клиента, ₽'));
+    const cplInp = el('input', S.input);
+    cplInp.placeholder = 'подставится по месяцу покупки';
+    cplInp.value = T.calcCpl || '';
+    cplInp.addEventListener('input', () => { T.calcCpl = cplInp.value; T.calcCplTouched = true; saveCase(); calcRecalc(); });
+    rcWrap.appendChild(cplInp);
+    const cplNote = el('div', 'font-size:10px;color:#6B7280;margin-top:3px;line-height:1.4;font-weight:600;', '');
+    rcWrap.appendChild(cplNote);
+
+    // предварительный
+    const preCard = el('div', 'margin-top:8px;padding:8px 10px;background:#fff;border:1px solid #E5E7EB;border-radius:10px;');
+    preCard.appendChild(el('div', 'font-size:11.5px;font-weight:800;color:' + ACC_DK + ';margin-bottom:4px;', 'Предварительный расчёт'));
+    const preBody = el('div', ''); preCard.appendChild(preBody);
+    const prePush = el('button', S.big + 'margin-top:6px;', 'Подставить в таблицу калькулятора');
+    const preMsg = el('div', 'font-size:10.5px;line-height:1.4;font-weight:600;margin-top:4px;display:none;', '');
+    preCard.appendChild(prePush); preCard.appendChild(preMsg);
+    rcWrap.appendChild(preCard);
+
+    // окончательный
+    const finCard = el('div', 'margin-top:8px;padding:8px 10px;background:#fff;border:1px solid #E5E7EB;border-radius:10px;');
+    finCard.appendChild(el('div', 'font-size:11.5px;font-weight:800;color:' + ACC_DK + ';margin-bottom:2px;', 'Окончательный расчёт'));
+    finCard.appendChild(el('div', 'font-size:10px;color:#6B7280;line-height:1.4;font-weight:600;', 'Сначала уточни у РГ точный способ оплаты и точную сумму до копеек — в амо МОПы часто ошибаются.'));
+    finCard.appendChild(rcLab('Способ оплаты'));
+    const payCombo = combo(PAY_RATES.map(x => ({ label: x.label, value: x.label })), 'печатай: Юкасса, Сплит, Halyk…', T.calcPay || '');
+    finCard.appendChild(payCombo.el);
+    const fRow = el('div', 'display:flex;gap:8px;');
+    const fW1 = el('div', 'flex:1 1 0;min-width:0;'), fW2 = el('div', 'flex:1 1 0;min-width:0;');
+    fW1.appendChild(rcLab('Точная сумма оплаты, ₽'));
+    const paidInp = el('input', S.input); paidInp.placeholder = 'от РГ'; paidInp.value = T.calcPaid || '';
+    fW1.appendChild(paidInp);
+    fW2.appendChild(rcLab('Ставка, %'));
+    const rateInp = el('input', S.input); rateInp.placeholder = '—'; rateInp.value = T.calcRate || '';
+    fW2.appendChild(rateInp);
+    fRow.appendChild(fW1); fRow.appendChild(fW2);
+    finCard.appendChild(fRow);
+    const finBody = el('div', 'margin-top:6px;'); finCard.appendChild(finBody);
+    const finPush = el('button', S.big + 'margin-top:6px;', 'Подставить в таблицу калькулятора');
+    const finPushSum = el('button', S.big + 'margin-top:6px;', 'Подставить в «Сумму возврата»');
+    const finMsg = el('div', 'font-size:10.5px;line-height:1.4;font-weight:600;margin-top:4px;display:none;', '');
+    finCard.appendChild(finPush); finCard.appendChild(finPushSum); finCard.appendChild(finMsg);
+    rcWrap.appendChild(finCard);
+    // оба расчёта сворачиваются по клику на заголовок
+    [preCard, finCard].forEach(card => {
+      const hdr = card.firstChild, base = hdr.textContent;
+      const content = el('div', '');
+      while (hdr.nextSibling) content.appendChild(hdr.nextSibling);
+      card.appendChild(content);
+      hdr.style.cursor = 'pointer'; hdr.style.userSelect = 'none';
+      const paint = open => { content.style.display = open ? 'block' : 'none'; hdr.textContent = base + (open ? ' ▴' : ' ▾'); hdr.style.marginBottom = open ? '4px' : '0'; };
+      let open = true; paint(true);
+      hdr.onclick = () => { open = !open; paint(open); };
+    });
+
+    const payItem = () => PAY_RATES.find(x => x.label === (T.calcPay || '').trim()) || null;
+    const setPay = (it) => {
+      T.calcPay = it.label; payCombo.value = it.label;
+      T.calcRate = (it.rate * 100).toFixed(2).replace('.', ','); rateInp.value = T.calcRate;
+    };
+    payCombo.onPick(() => {
+      T.calcPay = payCombo.value.trim(); T.calcPayTouched = true;
+      const it = payItem();
+      if (it) { T.calcRate = (it.rate * 100).toFixed(2).replace('.', ','); rateInp.value = T.calcRate; }
+      saveCase(); calcRecalc();
+    });
+    // способ оплаты из амо («Форма оплаты») → сразу выбираем подходящий пункт (если однозначно)
+    const PAYFORM_TO_GROUP = { 'Сбер рассрочка': 'Сбер Кредит', 'Рассрочка Т-банк': 'Т-Банк Кредит', 'Рассрочка Ванта': 'Ванта',
+      'Фреш-кредит': 'Фреш Кредит', 'Яндекс Сплит': 'Яндекс Сплит' };
+    paidInp.addEventListener('input', () => { T.calcPaid = paidInp.value; saveCase(); calcRecalc(); });
+    rateInp.addEventListener('input', () => { T.calcRate = rateInp.value; saveCase(); calcRecalc(); });
+
+    let cplRows = null, cplFailed = false, lastPre = NaN, lastFin = NaN, lastPreCol = null, lastFinCol = null;
+    fetchCplRows().then(r => { cplRows = r; calcRecalc(); }).catch(() => { cplRows = CPL_FALLBACK; cplFailed = true; calcRecalc(); });
+
+    calcRecalc = () => {
+      const p = parseRu(T.accessDate), c = parseRu(T.claimDate);
+      const used = (p && c) ? Math.round((c - p) / 86400000) : NaN;
+      const D = numIn(T.calcDays), S0 = numIn(T.amount);
+
+      // CPL по месяцу покупки (пока куратор сам не вписал)
+      const ci = cplForDate(p, cplRows);
+      if (ci && !T.calcCplTouched) { T.calcCpl = String(ci.cpl); cplInp.value = T.calcCpl; }
+      if (ci) {
+        cplNote.textContent = (T.calcCplTouched ? 'вписано вручную · ' : '') + 'по таблице: CPL за ' + ci.label + ' = ' + ci.cpl +
+          (ci.fallback ? ' (за месяц покупки ещё не рассчитан — взят последний известный)' : '') + (cplFailed ? ' · таблица недоступна, запасные данные' : '');
+      } else cplNote.textContent = p ? 'загружаю таблицу CPL…' : 'впиши дату выдачи доступа — подставлю CPL';
+      const cpl = numIn(T.calcCpl);
+
+      // способ оплаты по «Форме оплаты» из амо — пока куратор сам не выбирал
+      if (!T.calcPay && !T.calcPayTouched && PAYFORM_TO_GROUP[T.payType]) {
+        const it = PAY_RATES.find(x => x.g === PAYFORM_TO_GROUP[T.payType]);
+        if (it) { setPay(it); saveCase(); }
+      }
+
+      // общая часть формулы
+      const need = (paid) => {
+        const miss = [];
+        if (!(paid > 0)) miss.push('сумма оплаты');
+        if (!(D > 0)) miss.push('срок курса, дней');
+        if (!isFinite(used)) miss.push('даты доступа и заявки');
+        if (!isFinite(cpl)) miss.push('CPL');
+        return miss;
+      };
+      const rowsFor = (paid, commRows, comm) => {
+        const usedCost = paid / D * used, other = paid * OTHER_COSTS_PCT;
+        const total = paid - usedCost - comm - cpl - other;
+        const rows = [
+          { l: 'Оплачено', v: fmtRub(paid) },
+          { l: '− за использованное время (' + used + ' из ' + D + ' дн.)', v: fmtRub(usedCost) },
+        ].concat(commRows, [
+          { l: '− CPL', v: fmtRub(cpl) },
+          { l: '− прочие расходы 15%', v: fmtRub(other) },
+          { l: 'Итого к возврату', v: fmtRub(total), total: true },
+        ]);
+        if (total < 0) rows.push({ warn: 'Получается меньше нуля — по формуле возвращать нечего. Проверь даты и срок курса.' });
+        return { rows: rows, total: total };
+      };
+
+      // предварительный
+      const miss1 = need(S0);
+      const cn = v => (Math.round(v * 100) / 100).toString().replace('.', ',');
+      const colOf = (paid, comm) => [cn(paid), clean(T.calcHours), clean(T.calcDays), clean(T.accessDate), clean(T.claimDate), comm, cn(cpl)];
+      if (miss1.length) { rcLines(preBody, [{ warn: 'Не хватает: ' + miss1.join(', ') + '.' }]); lastPre = NaN; }
+      else {
+        const r = rowsFor(S0, [{ l: '− комиссия 3%', v: fmtRub(S0 * PRELIM_COMM_PCT) }], S0 * PRELIM_COMM_PCT);
+        rcLines(preBody, r.rows); lastPre = r.total; lastPreCol = colOf(S0, '=C5*0,03');
+      }
+      prePush.disabled = !isFinite(lastPre);
+
+      // окончательный
+      const paid = numIn(T.calcPaid);
+      const rate = Math.round(numIn(T.calcRate) * 100) / 10000;   // ставка — только до сотой доли процента
+      const miss2 = need(paid);
+      if (!isFinite(rate)) miss2.push('способ оплаты / ставка');
+      if (miss2.length) { rcLines(finBody, [{ warn: 'Не хватает: ' + miss2.join(', ') + '.' }]); lastFin = NaN; }
+      else {
+        const it = payItem();
+        let comm, commRows;
+        if (it && it.rr) {
+          const bank = paid * rate, recv = paid - bank, bp = rrBrokerPct(recv), brk = recv * bp;
+          comm = bank + brk;
+          commRows = [
+            { l: '− комиссия банка ' + fmtPct(rate) + ' с ' + fmtRub(paid), v: fmtRub(bank) },
+            { l: '− комиссия брокера ' + fmtPct(bp) + ' с поступивших ' + fmtRub(recv), v: fmtRub(brk) },
+          ];
+        } else {
+          comm = paid * rate;
+          commRows = [{ l: '− комиссия ' + fmtPct(rate) + ' с ' + fmtRub(paid), v: fmtRub(comm) }];
+        }
+        const r = rowsFor(paid, commRows, comm); rcLines(finBody, r.rows); lastFin = r.total; lastFinCol = colOf(paid, cn(comm));
+      }
+      finPush.disabled = !isFinite(lastFin);
+      finPushSum.disabled = !isFinite(lastFin);
+    };
+    prePush.onclick = () => rcToSheet(prePush, preMsg, 'pre');
+    finPush.onclick = () => rcToSheet(finPush, finMsg, 'fin');
+    finPushSum.onclick = () => rcPush(finPushSum, lastFin);
+
+    // Запись в Google-калькулятор: на листе куратора (лист называется по ФИО) — предв. C5:C11, оконч. C23:C29;
+    // вставляет вкладка-«работник» (открывается сама), потом сверяет «Итого к возврату» (C14 / C32) с нашим расчётом.
+    function rcToSheet(btn, msgEl, kind) {
+      const col = kind === 'pre' ? lastPreCol : lastFinCol, total = kind === 'pre' ? lastPre : lastFin;
+      if (!col || !isFinite(total)) return;
+      const gid = CALC_SHEET_GIDS[T.curator];
+      const say = (t, bad) => { msgEl.style.display = 'block'; msgEl.style.color = bad ? '#B45309' : '#15803D'; msgEl.textContent = t; };
+      if (gid == null) { copy(col.join('\n'), 'Для куратора «' + T.curator + '» нет листа в калькуляторе — значения в буфере.'); say('⚠️ Нет листа калькулятора для «' + T.curator + '» — значения в буфере (Ctrl+V в «Оплаченная сумма»).', true); return; }
+      btn.disabled = true; const old = btn.textContent; btn.textContent = 'Записываю в калькулятор…';
+      say('Открываю калькулятор в фоне, это 5–20 секунд…', false);
+      calcSheetSend({ gid: gid, cell: kind === 'pre' ? 'C5' : 'C23', text: col.join('\n'),
+        expectCell: kind === 'pre' ? 'C14' : 'C32', expect: Math.round(total * 100) / 100 }).then(r => {
+        btn.disabled = false; btn.textContent = old;
+        if (r.ok) say('✓ Записано в лист «' + T.curator + '». Итого в таблице сошлось: ' + fmtRub(total), false);
+        else { copy(col.join('\n'), 'Не вышло записать — значения в буфере.'); say('⚠️ ' + r.msg + ' Значения в буфере: вставь Ctrl+V в «Оплаченная сумма» вручную.', true); }
+      });
+    }
+    calcRecalc();
 
     // Список курсов таблицы длительности → в комбо (один раз).
     let _durSelectFilled = false;
@@ -2771,7 +3247,7 @@
       if (inputs.calcHours) { inputs.calcHours.value = r.hours; inputs.calcHours.style.background = '#FFFBF7'; }
       if (inputs.calcDays) { inputs.calcDays.value = r.days; inputs.calcDays.style.background = '#FFFBF7'; }
       durNote.style.color = '#15803D';
-      durNote.textContent = '✓ Взято: «' + name + '» — ' + (r.hours || '?') + ' ак.ч., ' + (r.days || '?') + ' дн.';
+      durNote.textContent = '';
       saveCase(); updateScenario();
       return true;
     };
@@ -2800,8 +3276,7 @@
           fillDurSelect(r.name);
           durNote.style.color = r.exact ? '#15803D' : '#B45309';
           // подпись «по близости» убрана; остаётся только зелёное подтверждение точного совпадения и предупреждение о дублях
-          durNote.textContent = (r.exact ? '✓ подобрал «' + r.name + '»: ' + (r.hours || '?') + ' ак.ч., ' + (r.days || '?') + ' дн.' : '') +
-            (r.dupes > 1 ? (r.exact ? ' · ' : '') + 'в таблице несколько строк с этим курсом — сверь!' : '');
+          durNote.textContent = r.dupes > 1 ? 'в таблице несколько строк с этим курсом — сверь!' : '';
         } else {
           fillDurSelect('');
           durNote.style.color = '#B45309';
@@ -2831,24 +3306,29 @@
       '✓ Оконч. расчёт в буфере → «Оплаченная сумма» 2-го блока, Ctrl+V.');
     calcBtnRow.appendChild(bCalcPre);
     calcBtnRow.appendChild(bCalcFin);
-    calcBlock.appendChild(calcBtnRow);
-    const calcHelp = el('div', S.hint + 'white-space:pre-wrap;display:none;',
+    // запасной вариант (через Google-таблицу калькулятора) спрятан: основной расчёт теперь выше, в мастере
+    // знак «?» справа от заголовка «Калькулятор возврата» открывает запасной вариант
+    const oldCalcWrap = el('div', 'display:none;margin:6px 0;padding:8px 10px;background:#F9FAFB;border:1px dashed #D1D5DB;border-radius:10px;');
+    const calcQOff = 'margin-left:auto;width:22px;height:22px;box-sizing:border-box;border-radius:50%;padding:0;background:#fff;border:1.5px solid ' + ACC_BD + ';color:' + ACC_DK + ';font-size:12px;font-weight:700;line-height:1;cursor:pointer;font-family:inherit;flex:0 0 auto;';
+    const oldCalcTgl = el('button', calcQOff, '?');
+    oldCalcTgl.title = 'Запасной вариант: через таблицу калькулятора';
+    oldCalcTgl.onclick = () => {
+      const v = oldCalcWrap.style.display === 'none';
+      oldCalcWrap.style.display = v ? 'block' : 'none';
+      oldCalcTgl.style.cssText = calcQOff + (v ? 'background:' + ACC_BD + ';' : '');
+    };
+    calcBlock.firstElementChild.appendChild(oldCalcTgl);
+    calcBlock.insertBefore(oldCalcWrap, calcBlock.children[1]);
+    oldCalcWrap.appendChild(el('div', 'font-size:11px;font-weight:700;color:#374151;margin-bottom:2px;', 'Запасной вариант: через таблицу калькулятора'));
+    oldCalcWrap.appendChild(bCalcOpen);
+    oldCalcWrap.appendChild(calcBtnRow);
+    const calcHelp = el('div', S.hint + 'white-space:pre-wrap;',
       '1. Проверь курс и ак.ч./дни в жёлтом блоке выше (если не тот — выбери в списке).\n' +
       '2. «Предв. расчёт» → Ctrl+V в жёлтую ячейку «Оплаченная сумма» ПЕРВОГО блока калькулятора.\n' +
       '3. В калькуляторе руками впиши CPL (в амо его нет). «Итого возврата» посчитается само — это сумма по оферте.\n' +
       '4. После согласования: «Оконч. расчёт» → во ВТОРОЙ блок; там же руками впиши фактическую комиссию.\n' +
       'Копируется 7 значений в столбик: сумма · ак.ч. · дней · дата доступа · дата обращения · комиссия · (CPL пусто).');
-    // «как посчитать» — знак вопроса в круге справа в заголовке «Калькулятор возврата»; по клику раскрывается инструкция
-    const calcQOff = 'margin-left:auto;width:22px;height:22px;box-sizing:border-box;border-radius:50%;padding:0;background:#fff;border:1.5px solid ' + ACC_BD + ';color:' + ACC_DK + ';font-size:12px;font-weight:700;line-height:1;cursor:pointer;font-family:inherit;flex:0 0 auto;';
-    const calcHelpTgl = el('button', calcQOff, '?');
-    calcHelpTgl.title = 'Как посчитать';
-    calcHelpTgl.onclick = () => {
-      const v = calcHelp.style.display === 'none';
-      calcHelp.style.display = v ? 'block' : 'none';
-      calcHelpTgl.style.cssText = calcQOff + (v ? 'background:' + ACC_BD + ';' : '');
-    };
-    calcBlock.firstElementChild.appendChild(calcHelpTgl);
-    calcBlock.appendChild(calcHelp);
+    oldCalcWrap.appendChild(calcHelp);
 
     /* ============ ПРАВАЯ КОЛОНКА ============ */
 
@@ -4083,7 +4563,9 @@
     try { fn(); } catch (e) {}
   }
 
-  if (location.hostname.endsWith('omnidesk.ru')) {
+  if (location.hostname === 'docs.google.com') {
+    if (location.pathname.indexOf(CALC_ID) >= 0) calcWorker();   // вкладка калькулятора, открытая мастером
+  } else if (location.hostname.endsWith('omnidesk.ru')) {
     console.log(TAG, 'запущен, версия ' + '1.34.7');
     keepSynced(function () {
       removeLauncher();
