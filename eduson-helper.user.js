@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.60.5
+// @version      1.60.6
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -2609,9 +2609,11 @@
       function (el) { return isVisible(el); }
     );
     if (!saves.length) return false;
+    // ОДИН клик на ссылку. Раньше было el.click() + ещё dispatchEvent(click) — страница получала
+    // два «Сохранить» подряд, уходили два запроса одновременно, и сервер, не видя в базе новую
+    // почту ни в одном из них, записывал её дважды (дубль в карточке).
     saves.forEach(function (el) {
       try { el.click(); } catch (e) {}
-      el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     return true;
   }
@@ -2659,8 +2661,35 @@
 
   // Глобальные переменные для хранения результатов заполнения
   let lastFillResult = { ok: [], miss: [], soft: [], data: null };
+  // Адрес из амо часто приходит с «невидимками» (нулевой ширины пробел, неразрывный пробел,
+  // «mailto:», скобки) — на глаз он такой же, как в карточке, но Омни и наша сверка видят
+  // другую строку → адрес вписывается второй раз. Чистим до сверки.
+  function cleanEmailValue(e) {
+    return String(e || '')
+      .replace(/[​-‏ - ⁠-⁯﻿ ­]/g, '')
+      .replace(/\s+/g, '')
+      .replace(/^mailto:/i, '')
+      .replace(/^[<(\[]+|[>)\],;.]+$/g, '');
+  }
+  let _fillRunning = false;
   async function fillInputsFromData(data, prefix) {
+    // Защита от двойного запуска (двойной клик / фоновый + ручной): два прохода одновременно
+    // оба видят «почты в карточке нет» и вписывают её по разу.
+    if (_fillRunning) return;
+    _fillRunning = true;
+    try { await fillInputsFromDataInner(data, prefix); }
+    finally { _fillRunning = false; }
+  }
+  async function fillInputsFromDataInner(data, prefix) {
     const ok = [], miss = [], soft = [];   // soft = «не смогла, но не страшно — допиши руками»
+    if (data && data.emails) {
+      const seenClean = new Set();
+      data.emails = data.emails.map(cleanEmailValue).filter(function (e) {
+        const k = e.toLowerCase();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e) || seenClean.has(k)) return false;
+        seenClean.add(k); return true;
+      });
+    }
     // Снимок почт/телефонов, УЖЕ вписанных в карточку, снимаем ДО перехода в режим
     // «редактировать». В обычном режиме сохранённые значения показаны текстом и читаются
     // надёжно; после входа в редактирование поле почты на миг превращается в пустой
