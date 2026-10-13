@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.46.1
+// @version      1.47.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -445,17 +445,50 @@
         return (shParseCsvRow(t)[0] || '').trim();
       });
     }
+    // Где на листе блоки: строки ищем по названиям в столбце B (листы кураторов бывают разной формы,
+    // и в калькулятор добавляют новые строки — жёсткие номера строк ломаются). Читаем B1:B70 по ячейке.
+    const LAYOUT_ORDER = [/^оплаченная сумма/, /ак\.\s*ч/, /дней/, /дата открытия/, /дата обращения/, /комиссия/, /cpl/];
+    async function findLayout(gid) {
+      const N = 70, lab = [];
+      for (let r0 = 1; r0 <= N; r0 += 14) {
+        const part = [];
+        for (let r = r0; r < r0 + 14 && r <= N; r++) part.push(readCell(gid, 'B' + r).catch(function () { return ''; }));
+        (await Promise.all(part)).forEach(function (v) { lab.push(String(v || '').trim().toLowerCase()); });
+      }
+      const blocks = [];
+      for (let i = 0; i < lab.length; i++) {
+        if (!LAYOUT_ORDER[0].test(lab[i])) continue;
+        const okOrder = LAYOUT_ORDER.every(function (re, k) { return re.test(lab[i + k] || ''); });
+        let tot = -1;
+        for (let k = i + 1; k < lab.length; k++) {
+          if (LAYOUT_ORDER[0].test(lab[k])) break;
+          if (/^итого к возврату/.test(lab[k])) { tot = k; break; }
+        }
+        blocks.push({ paid: i + 1, total: tot + 1, okOrder: okOrder });
+      }
+      return blocks;
+    }
     async function runJob(j) {
-      if (!(await gotoCell(j.gid, j.cell))) return { ok: false, msg: 'не смогла встать на ' + j.cell + ' (поле имени показывает «' + nameVal() + '»).' };
-      if (!pasteText(j.text)) return { ok: false, msg: 'калькулятор не принял вставку.' };
+      let cell = j.cell, expectCell = j.expectCell, text = j.text;
+      if (j.kind) {
+        const blocks = await findLayout(j.gid), b = blocks[j.kind === 'pre' ? 0 : 1];
+        if (!b) return { ok: false, msg: 'не нашла на листе блок «' + (j.kind === 'pre' ? 'Предварительный' : 'Окончательный') + ' расчёт» (строку «Оплаченная сумма»).' };
+        if (!b.okOrder) return { ok: false, msg: 'на листе поменялся порядок строк под «Оплаченная сумма» (строка ' + b.paid + ') — не записываю, чтобы не испортить.' };
+        if (b.total < 1) return { ok: false, msg: 'не нашла строку «Итого к возврату» под строкой ' + b.paid + '.' };
+        cell = 'C' + b.paid; expectCell = 'C' + b.total;
+        text = String(text).split('{PAID}').join(cell);
+      }
+      if (!(await gotoCell(j.gid, cell))) return { ok: false, msg: 'не смогла встать на ' + cell + ' (поле имени показывает «' + nameVal() + '»).' };
+      if (!pasteText(text)) return { ok: false, msg: 'калькулятор не принял вставку.' };
       let got = '';
       for (let i = 0; i < 8; i++) {
         await shSleep(1300);
-        got = await readCell(j.gid, j.expectCell);
+        got = await readCell(j.gid, expectCell);
         const v = shNum(got);
-        if (isFinite(v) && Math.abs(v - j.expect) < 0.02) return { ok: true, msg: 'записано и сверено' };
+        // по формуле может выйти минус, а калькулятор покажет 0 (удержание не больше суммы оплаты) — это тоже «сошлось»
+        if (isFinite(v) && (Math.abs(v - j.expect) < 0.02 || (j.expect < 0 && Math.abs(v) < 0.02))) return { ok: true, msg: 'записано и сверено' };
       }
-      return { ok: false, msg: 'записала, но «Итого» в калькуляторе ' + (got || 'пусто') + ' вместо ' + j.expect + ' — проверь лист.' };
+      return { ok: false, msg: 'записала, но «Итого» в калькуляторе (' + expectCell + ') ' + (got || 'пусто') + ' вместо ' + j.expect + ' — проверь лист.' };
     }
     GM_addValueChangeListener('rm3_calc_job', function (name, oldV, newV) {
       let j; try { j = JSON.parse(newV); } catch (e) { return; }
@@ -467,7 +500,7 @@
         busy = true;
         let r;
         try {
-          const guard = shSleep(45000).then(function () { return { ok: false, msg: 'вкладка калькулятора зависла.' }; });
+          const guard = shSleep(75000).then(function () { return { ok: false, msg: 'вкладка калькулятора зависла.' }; });
           r = await Promise.race([runJob(j), guard]);
         } catch (e) { r = { ok: false, msg: 'ошибка: ' + ((e && e.message) || e) }; }
         r.id = j.id;
@@ -528,7 +561,7 @@
         job.to = calcBeat().tok;
         try { GM_setValue('rm3_calc_job', JSON.stringify(job)); } catch (e) { done({ ok: false, msg: 'не смогла передать задание.' }); return; }
         clearTimeout(resT);
-        resT = setTimeout(function () { done({ ok: false, msg: 'калькулятор не ответил за 60 секунд.' }); }, 60000);
+        resT = setTimeout(function () { done({ ok: false, msg: 'калькулятор не ответил за 90 секунд.' }); }, 90000);
         ackT = setTimeout(function () {
           if (acked || finished) return;
           if (retries >= 2) { done({ ok: false, msg: 'вкладка калькулятора не отвечает.' }); return; }
@@ -2450,7 +2483,7 @@
 
     /* ---- сценарий: текст + видимость блоков ---- */
     let tableBlock = null, calcBlock = null, rgBlock = null, tgBlock = null, tgHdr = null, rowLinkBtn = null, negBox = null, payTypeBlock = null;
-    let sumWrap = null, errBox = null, tgRefreshHook = null, calcRecalc = null;
+    let sumWrap = null, errBox = null, tgRefreshHook = null, calcRecalc = null, calcParts = { pre: null, fin: null };
     const dateWarn = el('div', S.warn);
     const show = (elm, v) => { if (elm) elm.style.display = v ? 'block' : 'none'; };
     // При результате «Возврат» сумма обязательна: конкретное число больше нуля.
@@ -3160,17 +3193,17 @@
           { l: 'Итого к возврату', v: fmtRub(total), total: true },
         ]);
         if (total < 0) rows.push({ warn: 'Получается меньше нуля — по формуле возвращать нечего. Проверь даты и срок курса.' });
-        return { rows: rows, total: total };
+        return { rows: rows, total: total, parts: { paid: paid, p1: usedCost, p2: comm, p3: cpl, p4: other, total: total, used: used, D: D } };
       };
 
       // предварительный
       const miss1 = need(S0);
       const cn = v => (Math.round(v * 100) / 100).toString().replace('.', ',');
       const colOf = (paid, comm) => [cn(paid), clean(T.calcHours), clean(T.calcDays), clean(T.accessDate), clean(T.claimDate), comm, cn(cpl)];
-      if (miss1.length) { rcLines(preBody, [{ warn: 'Не хватает: ' + miss1.join(', ') + '.' }]); lastPre = NaN; }
+      if (miss1.length) { rcLines(preBody, [{ warn: 'Не хватает: ' + miss1.join(', ') + '.' }]); lastPre = NaN; calcParts.pre = null; }
       else {
         const r = rowsFor(S0, [{ l: '− комиссия 3%', v: fmtRub(S0 * PRELIM_COMM_PCT) }], S0 * PRELIM_COMM_PCT);
-        rcLines(preBody, r.rows); lastPre = r.total; lastPreCol = colOf(S0, '=C5*0,03');
+        rcLines(preBody, r.rows); calcParts.pre = r.parts; lastPre = r.total; lastPreCol = colOf(S0, '={PAID}*0,03');
       }
       prePush.disabled = !isFinite(lastPre);
 
@@ -3179,7 +3212,7 @@
       const rate = Math.round(numIn(T.calcRate) * 100) / 10000;   // ставка — только до сотой доли процента
       const miss2 = need(paid);
       if (!isFinite(rate)) miss2.push('способ оплаты / ставка');
-      if (miss2.length) { rcLines(finBody, [{ warn: 'Не хватает: ' + miss2.join(', ') + '.' }]); lastFin = NaN; }
+      if (miss2.length) { rcLines(finBody, [{ warn: 'Не хватает: ' + miss2.join(', ') + '.' }]); lastFin = NaN; calcParts.fin = null; }
       else {
         const it = payItem();
         let comm, commRows;
@@ -3194,7 +3227,7 @@
           comm = paid * rate;
           commRows = [{ l: '− комиссия ' + fmtPct(rate) + ' с ' + fmtRub(paid), v: fmtRub(comm) }];
         }
-        const r = rowsFor(paid, commRows, comm); rcLines(finBody, r.rows); lastFin = r.total; lastFinCol = colOf(paid, cn(comm));
+        const r = rowsFor(paid, commRows, comm); rcLines(finBody, r.rows); calcParts.fin = r.parts; lastFin = r.total; lastFinCol = colOf(paid, cn(comm));
       }
       finPush.disabled = !isFinite(lastFin);
       finPushSum.disabled = !isFinite(lastFin);
@@ -3203,21 +3236,20 @@
     finPush.onclick = () => rcToSheet(finPush, finMsg, 'fin');
     finPushSum.onclick = () => rcPush(finPushSum, lastFin);
 
-    // Запись в Google-калькулятор: на листе куратора (лист называется по ФИО) — предв. C5:C11, оконч. C23:C29;
-    // вставляет вкладка-«работник» (открывается сама), потом сверяет «Итого к возврату» (C14 / C32) с нашим расчётом.
+    // Запись в Google-калькулятор: на листе куратора (лист называется по ФИО) — 7 значений с «Оплаченной суммы» вниз;
+    // вставляет вкладка-«работник» (открывается сама), строки блоков находит сама по названиям и сверяет «Итого к возврату» с нашим расчётом.
     function rcToSheet(btn, msgEl, kind) {
       const col = kind === 'pre' ? lastPreCol : lastFinCol, total = kind === 'pre' ? lastPre : lastFin;
       if (!col || !isFinite(total)) return;
       const gid = CALC_SHEET_GIDS[T.curator];
       const say = (t, bad) => { msgEl.style.display = 'block'; msgEl.style.color = bad ? '#B45309' : '#15803D'; msgEl.textContent = t; };
-      if (gid == null) { copy(col.join('\n'), 'Для куратора «' + T.curator + '» нет листа в калькуляторе — значения в буфере.'); say('⚠️ Нет листа калькулятора для «' + T.curator + '» — значения в буфере (Ctrl+V в «Оплаченная сумма»).', true); return; }
+      if (gid == null) { copy(col.join('\n').split('{PAID}').join('C5'),'Для куратора «' + T.curator + '» нет листа в калькуляторе — значения в буфере.'); say('⚠️ Нет листа калькулятора для «' + T.curator + '» — значения в буфере (Ctrl+V в «Оплаченная сумма»).', true); return; }
       btn.disabled = true; const old = btn.textContent; btn.textContent = 'Записываю в калькулятор…';
       say('Открываю калькулятор в фоне, это 5–20 секунд…', false);
-      calcSheetSend({ gid: gid, cell: kind === 'pre' ? 'C5' : 'C23', text: col.join('\n'),
-        expectCell: kind === 'pre' ? 'C14' : 'C32', expect: Math.round(total * 100) / 100 }).then(r => {
+      calcSheetSend({ gid: gid, kind: kind, text: col.join('\n'), expect: Math.round(total * 100) / 100 }).then(r => {
         btn.disabled = false; btn.textContent = old;
         if (r.ok) say('✓ Записано в лист «' + T.curator + '». Итого в таблице сошлось: ' + fmtRub(total), false);
-        else { copy(col.join('\n'), 'Не вышло записать — значения в буфере.'); say('⚠️ ' + r.msg + ' Значения в буфере: вставь Ctrl+V в «Оплаченная сумма» вручную.', true); }
+        else { copy(col.join('\n').split('{PAID}').join(kind === 'pre' ? 'C5' : 'C25'), 'Не вышло записать — значения в буфере.'); say('⚠️ ' + r.msg + ' Значения в буфере: вставь Ctrl+V в «Оплаченная сумма» вручную.', true); }
       });
     }
     calcRecalc();
@@ -3301,7 +3333,7 @@
     bCalcPre.style.cssText += 'flex:1 1 0;margin-top:0;padding:7px 6px;font-size:12px;';
     bCalcPre.onclick = () => copy(calcCol('=C5*0,05'),
       '✓ Предв. расчёт в буфере → «Оплаченная сумма» 1-го блока, Ctrl+V.');
-    const bCalcFin = el('button', S.big, 'Оконч. расчёт (C23)');
+    const bCalcFin = el('button', S.big, 'Оконч. расчёт (2-й блок)');
     bCalcFin.title = 'Скопировать в «Оплаченная сумма» 2-го блока калькулятора';
     bCalcFin.style.cssText += 'flex:1 1 0;margin-top:0;padding:7px 6px;font-size:12px;';
     bCalcFin.onclick = () => copy(calcCol(''),
@@ -3495,6 +3527,9 @@
     // ---- Шаблоны ответов клиенту: новая / старая оферта + общие ----
     // В тексте: {ИМЯ} {ДАТА} {СУММА} {ДНЕЙ} {ПРОЦ} — подставляются из данных мастера; чего нет — отмечается «✍️【…】» (вписать самой).
     const LN = (...a) => a.join('\n');
+    // «Подробный расчёт»: цифры пунктов 1–4 — из калькулятора мастера (окончательный расчёт, если посчитан, иначе предварительный)
+    const CALC_TPL_TIP = 'Цифры — из калькулятора мастера (вкладка «Расчёт»): окончательный расчёт, если он посчитан, иначе предварительный.';
+    const CALC_TPL_PROC = 'Процент просмотренных материалов в личном кабинете отражает активность обучающегося и не является единственным показателем объёма оказанных услуг. Отсутствие просмотров отдельных уроков само по себе не означает, что доступ к ним не был предоставлен. Поэтому при расчёте учитываются также предоставленные компоненты программы и период их доступности до получения обращения.';
     const TPL_NEW = [
       { t: 'Первое сообщение / уточнение причины', x: LN(
         '{ИМЯ}, здравствуйте!', '',
@@ -3511,6 +3546,61 @@
         'Направляю также ссылку на оферту: https://eduson.academy/offer', '',
         'Обращаем внимание, что при отказе от обучения доступ к подарочному курсу таже будет закрыт.', '',
         'Сейчас мне потребуется немного времени, чтобы рассчитать предварительную сумму к возврату. В ближайшее время вернусь к вам с информацией. Ожидайте, пожалуйста.') },
+      { t: 'Подробный расчёт суммы возврата (для ПОЛОЖИТЕЛЬНОЙ суммы)', tip: CALC_TPL_TIP, x: LN(
+        'Расчёт суммы возврата', '',
+        'Стоимость программы, оплаченная вами по договору, составляет {ОПЛ} руб.',
+        'Доступ к программе предоставлен {ДОСТУП}. Обращение за возвратом получено {ЗАЯВКА}.',
+        'В период с {ДОСТУП} по {ЗАЯВКА} вам был предоставлен доступ к образовательным материалам, функционалу платформы и предусмотренным договором сервисам.', '',
+        CALC_TPL_PROC, '',
+        'Расчёт фактически оказанных услуг и фактически понесённых расходов компании:', '',
+        '1. Предоставление доступа к учебным материалам и предусмотренному программой сопровождению за период с {ДОСТУП} по {ЗАЯВКА} — {П1} ₽.',
+        'Эта часть рассчитана с учётом стоимости курса, расчётной продолжительности программы и периода до получения вашего обращения.',
+        'Расчётная продолжительность программы указана в перечне программ: https://disk.360.yandex.ru/i/q-3yiO_gOxqLWA?roistat_visit=34221081.', '',
+        '2. Комиссия платежной системы (эквайринг, брокер и т.п.) + фискализация составляет {П2} руб.', '',
+        '3. Расходы, непосредственно связанные с предоставлением и сопровождением услуг по договору составляют {П3} руб.', '',
+        '4. Прочие подтвержденные расходы составляют {П4} руб.',
+        'В них входят следующие расходы, учтённые по вашему договору: ✍️【оставить только применимые позиции】:', '',
+        '— расходы на регистрацию Заказчика, создание и активацию Личного кабинета;',
+        '— расходы на кураторское, экспертное, методическое, карьерное и техническое сопровождение;',
+        '— расходы на проверку домашних, практических, дипломных и иных работ;',
+        '— расходы на проведение консультаций, вебинаров, практических занятий, разборов и иных мероприятий;',
+        '— расходы на проведение промежуточной и итоговой аттестации;',
+        '— расходы на подготовку, оформление, выдачу и направление документов;',
+        '— почтовые, курьерские и иные расходы на доставку документов;',
+        '— расходы на обработку обращений Заказчика, связанных с исполнением Договора до даты получения уведомления об отказе', '',
+        'Итого',
+        'Сумма оплаты: {ОПЛ} руб.',
+        'Стоимость фактически оказанных услуг и фактически понесённых расходов, включённых в расчёт: {РАСХ} руб.',
+        '{ОПЛ} − {РАСХ} = {ВОЗВР} руб.') },
+      { t: 'Подробный расчёт суммы возврата (для НУЛЕВОЙ или ОТРИЦАТЕЛЬНОЙ суммы)', tip: CALC_TPL_TIP, x: LN(
+        'Расчёт суммы возврата', '',
+        'Стоимость программы, оплаченная вами по договору, составляет {ОПЛ} руб.', '',
+        'Доступ к программе предоставлен {ДОСТУП}. Обращение за возвратом получено {ЗАЯВКА}.', '',
+        'Объём программы составляет {АКЧ} академических часов, расчётная продолжительность освоения — {СРОКДН} календарных дней. На дату обращения указанный расчётный период истёк.', '',
+        'В период с {ДОСТУП} по {ЗАЯВКА} вам был предоставлен доступ к образовательным материалам, функционалу платформы и предусмотренным договором сервисам.', '',
+        CALC_TPL_PROC, '',
+        'Расчёт фактически оказанных услуг и фактически понесённых расходов компании', '',
+        '1. Предоставление доступа к учебным материалам и предусмотренному программой сопровождению за период с {ДОСТУП} по {ЗАЯВКА} — {П1} ₽.', '',
+        'Эта часть рассчитана с учётом стоимости курса, расчётной продолжительности программы и периода до получения вашего обращения.',
+        'Расчётная продолжительность программы указана в перечне программ: https://disk.360.yandex.ru/i/q-3yiO_gOxqLWA?roistat_visit=34221081.', '',
+        '2. Комиссия платежной системы (эквайринг, брокер и т.п.) + фискализация составляет {П2} руб.', '',
+        '3. Расходы, непосредственно связанные с предоставлением и сопровождением услуг по договору составляют {П3} руб.', '',
+        '4. Прочие подтвержденные расходы составляют {П4} руб.', '',
+        'В них входят следующие расходы, учтённые по вашему договору: ✍️【оставить только применимые позиции】:', '',
+        '— расходы на регистрацию Заказчика, создание и активацию Личного кабинета;',
+        '— расходы на кураторское, экспертное, методическое, карьерное и техническое сопровождение;',
+        '— расходы на проверку домашних, практических, курсовых, дипломных и иных работ;',
+        '— расходы на проведение консультаций, вебинаров, практических занятий, разборов и иных мероприятий;',
+        '— расходы на проведение промежуточной и итоговой аттестации;',
+        '— расходы на подготовку, оформление, выдачу и направление документов;',
+        '— почтовые, курьерские и иные расходы на доставку документов;',
+        '— расходы на обработку обращений Заказчика, связанных с исполнением Договора до даты получения уведомления об отказе.', '',
+        'Итого', '',
+        'Сумма оплаты: {ОПЛ} руб.', '',
+        'Общая стоимость услуг и расходов, включённых академией в расчёт: {РАСХ} руб.',
+        'Согласно Политике возвратов общая сумма удержания не может превышать сумму оплаты. Поэтому сумма удержания составляет {ОПЛ} руб.',
+        '{ОПЛ} − {ОПЛ} = 0 руб.', '',
+        'Сумма к возврату составляет 0 руб.') },
       { t: 'Согласовали сумму (окончательная сумма)', x: LN(
         'Расчет суммы возврата произведен в соответствии со ст. 32 Закона РФ «О защите прав потребителей», Публичной офертой и Политикой возвратов ООО «Эдюсон».', '',
         'При расчете суммы возврата были учтены обстоятельства исполнения договора до даты получения уведомления об отказе, а также расходы Исполнителя, связанные с заключением, началом исполнения и исполнением договора, в порядке, предусмотренном Политикой возвратов.', '',
@@ -3572,7 +3662,18 @@
       const p = parseRu(T.accessDate), c = parseRu(T.claimDate);
       const days = (p && c) ? Math.round((c - p) / 86400000) : null;
       const sup = (String(omniCardField(7301) || '').match(/\d{2}\.\d{2}\.\d{4}/) || [''])[0];
+      const cp = calcParts.fin || calcParts.pre;
+      const rub = n => (Math.round(n * 100) / 100).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const cv = (k, what) => cp && isFinite(cp[k]) ? rub(cp[k]) : mark(what);
       return {
+        'ОПЛ': cv('paid', 'сумма оплаты'),
+        'ДОСТУП': clean(T.accessDate) || mark('дата доступа'),
+        'ЗАЯВКА': clean(T.claimDate) || mark('дата обращения'),
+        'П1': cv('p1', 'пункт 1'), 'П2': cv('p2', 'комиссия'), 'П3': cv('p3', 'CPL'), 'П4': cv('p4', 'прочие расходы'),
+        'РАСХ': cp ? rub(cp.p1 + cp.p2 + cp.p3 + cp.p4) : mark('сумма пунктов 1–4'),
+        'ВОЗВР': cp ? rub(Math.max(0, cp.total)) : mark('сумма к возврату'),
+        'АКЧ': clean(T.calcHours) || mark('ак. часов'),
+        'СРОКДН': clean(T.calcDays) || mark('дней'),
         'ИМЯ': (w.length > 1 ? w[1] : (w[0] || '')) || mark('имя'),
         'ДАТА': sup || mark('дата окончания поддержки'),
         'СУММА': mark('сумма'),   // сумма в шаблонах не подставляется сама — вписывается руками
@@ -3591,7 +3692,7 @@
     const tplFill = (x) => {
       if (supportEnded()) x = x.replace(/ ?\nТакже у вас действует кураторская поддержка[^\n]*\{ДАТА\}\./, '');
       const v = tplVals();
-      return x.replace(/\{(ИМЯ|ДАТА|СУММА|ДНЕЙ|ПРОЦ)\}/g, (m, k) => v[k]);
+      return x.replace(/\{(ИМЯ|ДАТА|СУММА|ДНЕЙ|ПРОЦ|ОПЛ|ДОСТУП|ЗАЯВКА|П1|П2|П3|П4|РАСХ|ВОЗВР|АКЧ|СРОКДН)\}/g, (m, k) => v[k]);
     };
     const tplFit = (a) => { if (!a.offsetParent) return; a.style.height = 'auto'; a.style.height = (a.scrollHeight + 4) + 'px'; };
     const tplRender = () => {
