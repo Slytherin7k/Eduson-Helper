@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.45.1
+// @version      1.46.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -2281,7 +2281,7 @@
         'Шаблоны: готовые ответы клиенту (новая и старая оферта)',
         'Сообщения: ТГ продакту и РГ',
         'Асана: тип оплаты и заявление, ссылка на согласование, файлы, карточка возврата',
-        'Доступ: блокировка курса, метка в амо, карточка OmniDesk'][i];
+        'Доступ: блокировка курса, метка в амо, заполнить амо (дата и причина запроса), карточка OmniDesk'][i];
       b.onclick = () => selectTab(i);
       railBtns.push(b); tabRail.appendChild(b);
     });
@@ -4042,6 +4042,90 @@
     recPane.insertBefore(amoTagBlockEl, omniBlockEl);   // порядок на вкладке: блокировка курса → метка в амо → карточка OmniDesk
     bTagFull.onclick = () => setReturnTag('full');
     bTagPart.onclick = () => setReturnTag('part');
+
+    // ---- Заполнить амо: «Дата запроса на возврат» (поле 1631507, дата) + «Причина запроса на возврат» (1631511, список) ----
+    // Берёт «Дату заявки» и «Причину возврата» с вкладки «Данные» (можно поправить тут же). Другие поля сделки не трогает.
+    const F_REQ_DATE = 1631507, F_REQ_REASON = 1631511;
+    const amoFillEl = mkBlock(recPane, 'Заполнить амо', true);
+    amoFillEl.style.display = 'block';
+    const afCur = el('div', 'font-size:11.5px;color:#6B7280;line-height:1.45;margin-bottom:6px;', '');
+    const afRow = el('div', 'display:flex;gap:6px;');
+    const afDateW = el('div', 'flex:0 0 120px;min-width:0;'), afReasonW = el('div', 'flex:1 1 auto;min-width:0;');
+    afDateW.appendChild(el('div', S.lab, 'Дата запроса на возврат'));
+    afReasonW.appendChild(el('div', S.lab, 'Причина запроса на возврат'));
+    const afDate = el('input', S.input); afDate.placeholder = 'дд.мм.гггг';
+    const afReason = el('select', S.input);
+    afDateW.appendChild(afDate); afReasonW.appendChild(afReason);
+    afRow.appendChild(afDateW); afRow.appendChild(afReasonW);
+    const bAmoFill = el('button', S.big, 'Записать в амо');
+    const afNote = el('div', 'font-size:11.5px;line-height:1.45;margin-top:6px;color:#6B7280;', 'Впишет дату и причину в сделку амо (остальные поля не трогает).');
+    amoFillEl.appendChild(afCur); amoFillEl.appendChild(afRow); amoFillEl.appendChild(bAmoFill); amoFillEl.appendChild(afNote);
+    recPane.insertBefore(amoFillEl, omniBlockEl);   // сразу после «Метки в сделке амо»
+    const afSay = (txt, color) => { afNote.textContent = txt; afNote.style.color = color || '#6B7280'; };
+    const afKey = s => String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9]/g, '');
+    let afEnums = null, afBusy = false;
+    const afLoadEnums = async () => {
+      if (afEnums) return afEnums;
+      const f = await gmAmoJson('GET', '/api/v4/leads/custom_fields/' + F_REQ_REASON);
+      afEnums = (f.enums || []).map(e => ({ id: e.id, value: String(e.value || '') }));
+      return afEnums;
+    };
+    // список причин — как в амо (если амо не ответило, пока как на вкладке «Данные»)
+    const afFillSelect = (want) => {
+      const list = afEnums ? afEnums.map(e => e.value) : REASONS;
+      afReason.innerHTML = '';
+      const o0 = el('option', '', '— выбери —'); o0.value = ''; afReason.appendChild(o0);
+      list.forEach(v => { const o = el('option', '', v); o.value = v; afReason.appendChild(o); });
+      const hit = list.find(v => afKey(v) === afKey(want));
+      afReason.value = hit || '';
+    };
+    const renderAmoFill = async () => {
+      if (!afDate.value || afDate.dataset.auto === '1') { afDate.value = clean(T.claimDate) || todayStr(); afDate.dataset.auto = '1'; }
+      afFillSelect(afReason.value || clean(T.reason));
+      const leadId = tagLeadId();
+      if (!leadId) { afCur.textContent = 'Не вижу номера сделки в амо — нажми «↻ амо» вверху.'; return; }
+      afCur.textContent = 'Смотрю, что сейчас в сделке ' + leadId + '…';
+      try {
+        await afLoadEnums(); afFillSelect(afReason.value || clean(T.reason));
+        const lead = await gmAmoJson('GET', '/api/v4/leads/' + leadId);
+        const d = fieldValById(lead, F_REQ_DATE), r = fieldValById(lead, F_REQ_REASON);
+        afCur.textContent = 'Сейчас в сделке ' + leadId + ': дата — ' + (d ? fmtDate(new Date(+d * 1000)) : 'пусто') + ', причина — ' + (r || 'пусто') + '.';
+      } catch (e) {
+        afCur.textContent = 'Не получилось посмотреть сделку: ' + ((e && e.message) === 'NOAUTH' ? 'амо не пустило (обнови вкладку амо)' : ((e && e.message) || e));
+      }
+    };
+    afDate.oninput = () => { afDate.dataset.auto = '0'; };
+    bAmoFill.onclick = async () => {
+      if (afBusy) return;
+      const leadId = tagLeadId();
+      if (!leadId) { afSay('Не вижу номера сделки в амо — нажми «↻ амо» вверху.', '#B45309'); return; }
+      const dt = parseRu(afDate.value);
+      if (!dt) { afSay('Дата не похожа на дд.мм.гггг — поправь её.', '#B45309'); return; }
+      if (!afReason.value) { afSay('Выбери причину из списка.', '#B45309'); return; }
+      afBusy = true; bAmoFill.disabled = true;
+      try {
+        const en = (await afLoadEnums()).find(e => afKey(e.value) === afKey(afReason.value));
+        if (!en) throw new Error('в амо нет причины «' + afReason.value + '»');
+        const dStr = fmtDate(dt);
+        if (!window.confirm('Записать в сделку ' + leadId + '?\n\nДата запроса на возврат: ' + dStr + '\nПричина запроса на возврат: ' + en.value + '\n\nЕсли там уже что-то стоит — заменится. Остальные поля не трогаются.')) { afSay('Отменено: в амо ничего не записано.', '#6B7280'); afBusy = false; bAmoFill.disabled = false; return; }
+        afSay('Записываю в амо…', '#374151');
+        const ts = Math.floor(new Date(dt.getFullYear(), dt.getMonth(), dt.getDate(), 12).getTime() / 1000);   // полдень — чтобы дата не съехала из-за часового пояса
+        await gmAmoJson('PATCH', '/api/v4/leads/' + leadId, { custom_fields_values: [
+          { field_id: F_REQ_DATE, values: [{ value: ts }] },
+          { field_id: F_REQ_REASON, values: [{ enum_id: en.id }] },
+        ] });
+        const after = await gmAmoJson('GET', '/api/v4/leads/' + leadId);
+        const d2 = fieldValById(after, F_REQ_DATE), r2 = fieldValById(after, F_REQ_REASON);
+        if (!d2 || fmtDate(new Date(+d2 * 1000)) !== dStr || afKey(r2) !== afKey(en.value)) throw new Error('амо приняло запрос, но поля не совпали — проверь сделку вручную');
+        afSay('✓ Записано в сделку ' + leadId + ': ' + dStr + ', «' + en.value + '» (проверено).', '#15803D');
+        afCur.textContent = 'Сейчас в сделке ' + leadId + ': дата — ' + dStr + ', причина — ' + en.value + '.';
+      } catch (e) {
+        const m = (e && e.message) || String(e);
+        afSay('Не получилось: ' + (m === 'NOAUTH' ? 'амо не пустило, обнови вкладку амо в этом браузере и повтори' : m) + '. Можно заполнить руками: вкладка «Основное» в сделке.', '#B45309');
+      }
+      afBusy = false; bAmoFill.disabled = false;
+    };
+    { const prevHook = tabHooks[5]; tabHooks[5] = () => { if (prevHook) prevHook(); renderAmoFill(); }; }
     // ---- Заметка в обращении: ссылки на строку таблицы и карточку Асаны (ТОЛЬКО скрытая заметка, клиенту ничего не уходит) ----
     const noteBlockEl = mkBlock(recPane, 'Заметка в обращении', true);
     noteBlockEl.appendChild(el('div', S.hint + 'margin-top:0;', 'Добавляет в СКРЫТУЮ заметку обращения ссылки на строку таблицы и карточку Асаны. Клиенту ничего не уходит: если поле не в режиме заметки, мастер откажется и ничего не напишет.'));
