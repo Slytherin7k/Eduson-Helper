@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.46.0
+// @version      1.46.1
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -2281,7 +2281,7 @@
         'Шаблоны: готовые ответы клиенту (новая и старая оферта)',
         'Сообщения: ТГ продакту и РГ',
         'Асана: тип оплаты и заявление, ссылка на согласование, файлы, карточка возврата',
-        'Доступ: блокировка курса, метка в амо, заполнить амо (дата и причина запроса), карточка OmniDesk'][i];
+        'Доступ: блокировка курса, метка в амо, карточка OmniDesk'][i];
       b.onclick = () => selectTab(i);
       railBtns.push(b); tabRail.appendChild(b);
     });
@@ -4043,89 +4043,93 @@
     bTagFull.onclick = () => setReturnTag('full');
     bTagPart.onclick = () => setReturnTag('part');
 
-    // ---- Заполнить амо: «Дата запроса на возврат» (поле 1631507, дата) + «Причина запроса на возврат» (1631511, список) ----
-    // Берёт «Дату заявки» и «Причину возврата» с вкладки «Данные» (можно поправить тут же). Другие поля сделки не трогает.
+    // ---- «В амо»: «Дата запроса на возврат» (поле 1631507, дата) + «Причина запроса на возврат» (1631511, список) ----
+    // Компактная строка в «Анкете» под «Причиной возврата»: берёт «Дату заявки» и «Причину возврата» из анкеты,
+    // показывает, что сейчас стоит в сделке, и пишет по кнопке. Другие поля сделки не трогает.
     const F_REQ_DATE = 1631507, F_REQ_REASON = 1631511;
-    const amoFillEl = mkBlock(recPane, 'Заполнить амо', true);
-    amoFillEl.style.display = 'block';
-    const afCur = el('div', 'font-size:11.5px;color:#6B7280;line-height:1.45;margin-bottom:6px;', '');
-    const afRow = el('div', 'display:flex;gap:6px;');
-    const afDateW = el('div', 'flex:0 0 120px;min-width:0;'), afReasonW = el('div', 'flex:1 1 auto;min-width:0;');
-    afDateW.appendChild(el('div', S.lab, 'Дата запроса на возврат'));
-    afReasonW.appendChild(el('div', S.lab, 'Причина запроса на возврат'));
-    const afDate = el('input', S.input); afDate.placeholder = 'дд.мм.гггг';
-    const afReason = el('select', S.input);
-    afDateW.appendChild(afDate); afReasonW.appendChild(afReason);
-    afRow.appendChild(afDateW); afRow.appendChild(afReasonW);
-    const bAmoFill = el('button', S.big, 'Записать в амо');
-    const afNote = el('div', 'font-size:11.5px;line-height:1.45;margin-top:6px;color:#6B7280;', 'Впишет дату и причину в сделку амо (остальные поля не трогает).');
-    amoFillEl.appendChild(afCur); amoFillEl.appendChild(afRow); amoFillEl.appendChild(bAmoFill); amoFillEl.appendChild(afNote);
-    recPane.insertBefore(amoFillEl, omniBlockEl);   // сразу после «Метки в сделке амо»
-    const afSay = (txt, color) => { afNote.textContent = txt; afNote.style.color = color || '#6B7280'; };
+    const afStrip = el('div', 'margin:0 0 8px;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:8px;padding:6px 6px 6px 9px;');
+    const afLine = el('div', 'display:flex;align-items:center;gap:8px;');
+    const afTxt = el('div', 'flex:1 1 auto;min-width:0;font-size:11px;line-height:1.4;color:#4B5563;');
+    const bAmoFill = el('button', 'flex:0 0 auto;background:#fff;color:#C2410C;border:1px solid #FDBA74;border-radius:8px;padding:4px 10px;font-size:11.5px;font-weight:600;cursor:pointer;font-family:inherit;white-space:nowrap;', 'Записать в амо');
+    bAmoFill.title = 'Впишет «Дату заявки» и «Причину возврата» из анкеты в поля сделки амо «Дата запроса на возврат» и «Причина запроса на возврат»';
+    const afNote = el('div', 'display:none;font-size:10.5px;line-height:1.4;margin-top:3px;');
+    afLine.appendChild(afTxt); afLine.appendChild(bAmoFill);
+    afStrip.appendChild(afLine); afStrip.appendChild(afNote);
+    { let w = inputs.clientComment; while (w && w.parentNode !== bForm) w = w.parentNode; bForm.insertBefore(afStrip, w || null); }
+    const afSay = (txt, color) => { afNote.textContent = txt || ''; afNote.style.color = color || '#6B7280'; afNote.style.display = txt ? 'block' : 'none'; };
     const afKey = s => String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9]/g, '');
-    let afEnums = null, afBusy = false;
+    const afTsStr = v => (v ? fmtDate(new Date(+v * 1000)) : '');
+    let afEnums = null, afBusy = false, afAmo = null;   // afAmo = {lead, d, r} — что сейчас в сделке (null — ещё не смотрели)
     const afLoadEnums = async () => {
       if (afEnums) return afEnums;
       const f = await gmAmoJson('GET', '/api/v4/leads/custom_fields/' + F_REQ_REASON);
       afEnums = (f.enums || []).map(e => ({ id: e.id, value: String(e.value || '') }));
       return afEnums;
     };
-    // список причин — как в амо (если амо не ответило, пока как на вкладке «Данные»)
-    const afFillSelect = (want) => {
-      const list = afEnums ? afEnums.map(e => e.value) : REASONS;
-      afReason.innerHTML = '';
-      const o0 = el('option', '', '— выбери —'); o0.value = ''; afReason.appendChild(o0);
-      list.forEach(v => { const o = el('option', '', v); o.value = v; afReason.appendChild(o); });
-      const hit = list.find(v => afKey(v) === afKey(want));
-      afReason.value = hit || '';
-    };
-    const renderAmoFill = async () => {
-      if (!afDate.value || afDate.dataset.auto === '1') { afDate.value = clean(T.claimDate) || todayStr(); afDate.dataset.auto = '1'; }
-      afFillSelect(afReason.value || clean(T.reason));
+    const afFormDate = () => { const d = parseRu(T.claimDate); return d ? fmtDate(d) : ''; };
+    // перерисовать строку (без запроса в амо): сравнить анкету с тем, что в сделке
+    const renderAmoFill = () => {
       const leadId = tagLeadId();
-      if (!leadId) { afCur.textContent = 'Не вижу номера сделки в амо — нажми «↻ амо» вверху.'; return; }
-      afCur.textContent = 'Смотрю, что сейчас в сделке ' + leadId + '…';
-      try {
-        await afLoadEnums(); afFillSelect(afReason.value || clean(T.reason));
-        const lead = await gmAmoJson('GET', '/api/v4/leads/' + leadId);
-        const d = fieldValById(lead, F_REQ_DATE), r = fieldValById(lead, F_REQ_REASON);
-        afCur.textContent = 'Сейчас в сделке ' + leadId + ': дата — ' + (d ? fmtDate(new Date(+d * 1000)) : 'пусто') + ', причина — ' + (r || 'пусто') + '.';
-      } catch (e) {
-        afCur.textContent = 'Не получилось посмотреть сделку: ' + ((e && e.message) === 'NOAUTH' ? 'амо не пустило (обнови вкладку амо)' : ((e && e.message) || e));
-      }
+      afTxt.innerHTML = '';
+      const lab = el('span', 'color:#6B7280;', 'В сделке амо: ');
+      afTxt.appendChild(lab);
+      if (!leadId) { afTxt.appendChild(document.createTextNode('сделка не найдена — нажми «↻ амо»')); bAmoFill.style.display = 'none'; return; }
+      if (!afAmo || afAmo.lead !== leadId) { afTxt.appendChild(document.createTextNode('смотрю…')); bAmoFill.style.display = 'none'; return; }
+      if (afAmo.err) { afTxt.appendChild(document.createTextNode('не удалось посмотреть')); afTxt.title = afAmo.err; bAmoFill.style.display = ''; return; }
+      const same = afAmo.d && afAmo.d === afFormDate() && afAmo.r && afKey(afAmo.r) === afKey(T.reason);
+      const val = el('span', 'font-weight:600;color:' + (same ? '#15803D' : '#1F2937') + ';',
+        (same ? '✓ ' : '') + (!afAmo.d && !afAmo.r ? 'пока пусто' : (afAmo.d || 'без даты') + ' · ' + (afAmo.r || 'без причины')));
+      afTxt.appendChild(val);
+      afTxt.title = 'Поля сделки ' + leadId + ': «Дата запроса на возврат» и «Причина запроса на возврат»';
+      bAmoFill.style.display = same ? 'none' : '';
+      bAmoFill.textContent = (afAmo.d || afAmo.r) ? 'Обновить в амо' : 'Записать в амо';
     };
-    afDate.oninput = () => { afDate.dataset.auto = '0'; };
+    // посмотреть, что сейчас в сделке
+    const afRefresh = async () => {
+      const leadId = tagLeadId();
+      if (!leadId) { afAmo = null; renderAmoFill(); return; }
+      if (!afAmo || afAmo.lead !== leadId) { afAmo = null; renderAmoFill(); }
+      try {
+        const lead = await gmAmoJson('GET', '/api/v4/leads/' + leadId);
+        afAmo = { lead: leadId, d: afTsStr(fieldValById(lead, F_REQ_DATE)), r: fieldValById(lead, F_REQ_REASON) };
+      } catch (e) {
+        const m = (e && e.message) || String(e);
+        afAmo = { lead: leadId, err: m === 'NOAUTH' ? 'амо не пустило (обнови вкладку амо)' : m };
+      }
+      renderAmoFill();
+    };
+    [inputs.claimDate, inputs.reason].forEach(i => { if (i) { i.addEventListener('change', renderAmoFill); i.addEventListener('input', renderAmoFill); } });
     bAmoFill.onclick = async () => {
       if (afBusy) return;
       const leadId = tagLeadId();
-      if (!leadId) { afSay('Не вижу номера сделки в амо — нажми «↻ амо» вверху.', '#B45309'); return; }
-      const dt = parseRu(afDate.value);
-      if (!dt) { afSay('Дата не похожа на дд.мм.гггг — поправь её.', '#B45309'); return; }
-      if (!afReason.value) { afSay('Выбери причину из списка.', '#B45309'); return; }
+      if (!leadId) { afSay('Не вижу сделки в амо — нажми «↻ амо» вверху.', '#B45309'); return; }
+      const dt = parseRu(T.claimDate);
+      if (!dt) { afSay('Заполни «Дату заявки» вверху анкеты (дд.мм.гггг).', '#B45309'); return; }
+      if (!clean(T.reason)) { afSay('Выбери «Причину возврата» выше.', '#B45309'); return; }
       afBusy = true; bAmoFill.disabled = true;
       try {
-        const en = (await afLoadEnums()).find(e => afKey(e.value) === afKey(afReason.value));
-        if (!en) throw new Error('в амо нет причины «' + afReason.value + '»');
+        const en = (await afLoadEnums()).find(e => afKey(e.value) === afKey(T.reason));
+        if (!en) throw new Error('в амо нет причины «' + clean(T.reason) + '»');
         const dStr = fmtDate(dt);
-        if (!window.confirm('Записать в сделку ' + leadId + '?\n\nДата запроса на возврат: ' + dStr + '\nПричина запроса на возврат: ' + en.value + '\n\nЕсли там уже что-то стоит — заменится. Остальные поля не трогаются.')) { afSay('Отменено: в амо ничего не записано.', '#6B7280'); afBusy = false; bAmoFill.disabled = false; return; }
-        afSay('Записываю в амо…', '#374151');
+        if (!window.confirm('Записать в сделку амо ' + leadId + '?\n\nДата запроса на возврат: ' + dStr + '\nПричина запроса на возврат: ' + en.value + '\n\nЕсли там уже что-то стоит — заменится. Остальные поля не трогаются.')) { afSay('', ''); afBusy = false; bAmoFill.disabled = false; return; }
+        afSay('Записываю…', '#374151');
         const ts = Math.floor(new Date(dt.getFullYear(), dt.getMonth(), dt.getDate(), 12).getTime() / 1000);   // полдень — чтобы дата не съехала из-за часового пояса
         await gmAmoJson('PATCH', '/api/v4/leads/' + leadId, { custom_fields_values: [
           { field_id: F_REQ_DATE, values: [{ value: ts }] },
           { field_id: F_REQ_REASON, values: [{ enum_id: en.id }] },
         ] });
         const after = await gmAmoJson('GET', '/api/v4/leads/' + leadId);
-        const d2 = fieldValById(after, F_REQ_DATE), r2 = fieldValById(after, F_REQ_REASON);
-        if (!d2 || fmtDate(new Date(+d2 * 1000)) !== dStr || afKey(r2) !== afKey(en.value)) throw new Error('амо приняло запрос, но поля не совпали — проверь сделку вручную');
-        afSay('✓ Записано в сделку ' + leadId + ': ' + dStr + ', «' + en.value + '» (проверено).', '#15803D');
-        afCur.textContent = 'Сейчас в сделке ' + leadId + ': дата — ' + dStr + ', причина — ' + en.value + '.';
+        afAmo = { lead: leadId, d: afTsStr(fieldValById(after, F_REQ_DATE)), r: fieldValById(after, F_REQ_REASON) };
+        if (afAmo.d !== dStr || afKey(afAmo.r) !== afKey(en.value)) throw new Error('амо приняло запрос, но поля не совпали — проверь сделку');
+        afSay('', '');
       } catch (e) {
         const m = (e && e.message) || String(e);
-        afSay('Не получилось: ' + (m === 'NOAUTH' ? 'амо не пустило, обнови вкладку амо в этом браузере и повтори' : m) + '. Можно заполнить руками: вкладка «Основное» в сделке.', '#B45309');
+        afSay('Не получилось: ' + (m === 'NOAUTH' ? 'амо не пустило, обнови вкладку амо и повтори' : m) + '. Можно руками: сделка → «Основное».', '#B45309');
       }
+      renderAmoFill();
       afBusy = false; bAmoFill.disabled = false;
     };
-    { const prevHook = tabHooks[5]; tabHooks[5] = () => { if (prevHook) prevHook(); renderAmoFill(); }; }
+    afRefresh();
     // ---- Заметка в обращении: ссылки на строку таблицы и карточку Асаны (ТОЛЬКО скрытая заметка, клиенту ничего не уходит) ----
     const noteBlockEl = mkBlock(recPane, 'Заметка в обращении', true);
     noteBlockEl.appendChild(el('div', S.hint + 'margin-top:0;', 'Добавляет в СКРЫТУЮ заметку обращения ссылки на строку таблицы и карточку Асаны. Клиенту ничего не уходит: если поле не в режиме заметки, мастер откажется и ничего не напишет.'));
@@ -4447,7 +4451,7 @@
         renderDealPick();
 
         _rkClusterApplied = ''; // после свежего сбора из амо — заново подставить кластер по сценарию
-        syncAgreed(); renderAmoCard(); updateScenario();
+        syncAgreed(); renderAmoCard(); updateScenario(); afRefresh();
         loadCalcDuration(d.course); // ак.ч. + дни для калькулятора — по названию курса
 
         const what = [];
