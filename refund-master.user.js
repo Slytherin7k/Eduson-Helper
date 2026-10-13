@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.47.0
+// @version      1.48.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -4231,6 +4231,78 @@
       afBusy = false; bAmoFill.disabled = false;
     };
     afRefresh();
+
+    // ---- Возврат в сделке амо (вкладка «Доступ»): «Дата возврата» (1631360, текст), «Сумма возврата» (1631358, текст),
+    // «Возврат» (1623913, список Полный/Частичный). Сумма — из «Согласованной суммы», вид — по сравнению с оплатой.
+    const F_RF_DATE = 1631360, F_RF_SUM = 1631358, F_RF_KIND = 1623913;
+    const RF_KINDS = [{ id: 2953429, value: 'Полный' }, { id: 2953431, value: 'Частичный' }];
+    const rfBlockEl = mkBlock(recPane, 'Возврат в сделке амо', true);
+    rfBlockEl.style.display = 'block';
+    const rfCur = el('div', 'font-size:11.5px;line-height:1.45;color:#4B5563;margin-bottom:6px;', '');
+    const rfRow = el('div', 'display:flex;gap:6px;align-items:flex-end;');
+    const rfCol = (lab, inp, flex) => { const w = el('div', 'flex:' + flex + ';min-width:0;'); w.appendChild(el('div', 'font-size:10.5px;color:#6B7280;margin-bottom:2px;', lab)); w.appendChild(inp); rfRow.appendChild(w); };
+    const rfDate = el('input', S.input); rfDate.placeholder = 'дд.мм.гггг'; rfDate.value = todayStr();
+    const rfSum = el('input', S.input); rfSum.placeholder = 'сумма';
+    const rfKind = el('select', S.input);
+    RF_KINDS.forEach(k => { const o = document.createElement('option'); o.value = String(k.id); o.textContent = k.value; rfKind.appendChild(o); });
+    rfCol('Дата возврата', rfDate, '1 1 0'); rfCol('Сумма возврата', rfSum, '1 1 0'); rfCol('Возврат', rfKind, '0 0 96px');
+    const bRf = el('button', S.big, 'Записать в амо');
+    const rfNote = el('div', 'display:none;font-size:11px;line-height:1.4;margin-top:4px;');
+    rfBlockEl.appendChild(rfCur); rfBlockEl.appendChild(rfRow); rfBlockEl.appendChild(bRf); rfBlockEl.appendChild(rfNote);
+    recPane.insertBefore(rfBlockEl, omniBlockEl);   // сразу под «Меткой в сделке амо»
+    const rfSay = (txt, color) => { rfNote.textContent = txt || ''; rfNote.style.color = color || '#6B7280'; rfNote.style.display = txt ? 'block' : 'none'; };
+    const rfNum = v => { const n = parseFloat(String(v || '').replace(/[\s ₽]/g, '').replace(',', '.')); return isFinite(n) ? n : NaN; };
+    const rfSumStr = v => { const n = rfNum(v); return isFinite(n) ? String(Math.round(n * 100) / 100) : ''; };
+    let rfTouched = false, rfBusy = false;
+    [rfDate, rfSum, rfKind].forEach(i => i.addEventListener('input', () => { rfTouched = true; }));
+    rfKind.addEventListener('change', () => { rfTouched = true; });
+    // подставить из мастера, пока куратор сам не правил поля
+    const rfFill = () => {
+      if (rfTouched) return;
+      rfSum.value = rfSumStr(T.agreedSum);
+      const s = rfNum(T.agreedSum), paid = rfNum(T.amount);
+      rfKind.value = String(isFinite(s) && isFinite(paid) && Math.abs(s - paid) < 1 ? RF_KINDS[0].id : RF_KINDS[1].id);
+    };
+    const rfShow = (lead) => {
+      const d = fieldValById(lead, F_RF_DATE), s = fieldValById(lead, F_RF_SUM), k = fieldValById(lead, F_RF_KIND);
+      rfCur.textContent = 'Сейчас в сделке: ' + (!d && !s && !k ? 'пусто' : (d || '…') + ' · ' + (s || '…') + ' · ' + (k || '…'));
+      return { d: String(d || ''), s: String(s || ''), k: String(k || '') };
+    };
+    const rfRefresh = async () => {
+      rfFill();
+      const leadId = tagLeadId();
+      if (!leadId) { rfCur.textContent = 'Сделка не найдена — нажми «↻ амо» вверху.'; return; }
+      try { rfShow(await gmAmoJson('GET', '/api/v4/leads/' + leadId)); }
+      catch (e) { const m = (e && e.message) || String(e); rfCur.textContent = 'Не удалось посмотреть сделку: ' + (m === 'NOAUTH' ? 'амо не пустило (обнови вкладку амо)' : m); }
+    };
+    bRf.onclick = async () => {
+      if (rfBusy) return;
+      const leadId = tagLeadId();
+      if (!leadId) { rfSay('Не вижу сделки в амо — нажми «↻ амо» вверху.', '#B45309'); return; }
+      const dt = parseRu(rfDate.value), dStr = dt ? fmtDate(dt) : '';
+      const sStr = rfSumStr(rfSum.value);
+      const kind = RF_KINDS.find(k => String(k.id) === rfKind.value);
+      if (!dStr) { rfSay('Впиши дату возврата (дд.мм.гггг).', '#B45309'); return; }
+      if (!sStr) { rfSay('Впиши сумму возврата.', '#B45309'); return; }
+      if (!window.confirm('Записать в сделку амо ' + leadId + '?\n\nДата возврата: ' + dStr + '\nСумма возврата: ' + sStr + '\nВозврат: ' + kind.value + '\n\nЕсли там уже что-то стоит — заменится. Остальные поля не трогаются.')) return;
+      rfBusy = true; bRf.disabled = true; rfSay('Записываю…', '#374151');
+      try {
+        await gmAmoJson('PATCH', '/api/v4/leads/' + leadId, { custom_fields_values: [
+          { field_id: F_RF_DATE, values: [{ value: dStr }] },
+          { field_id: F_RF_SUM, values: [{ value: sStr }] },
+          { field_id: F_RF_KIND, values: [{ enum_id: kind.id }] },
+        ] });
+        const now = rfShow(await gmAmoJson('GET', '/api/v4/leads/' + leadId));
+        if (now.d !== dStr || now.s !== sStr || now.k !== kind.value) throw new Error('амо приняло запрос, но поля не совпали — проверь сделку');
+        rfSay('✓ Записано в сделку ' + leadId + ' (проверено).', '#15803D');
+      } catch (e) {
+        const m = (e && e.message) || String(e);
+        rfSay('Не получилось: ' + (m === 'NOAUTH' ? 'амо не пустило, обнови вкладку амо и повтори' : m) + '. Можно руками в карточке сделки.', '#B45309');
+      }
+      rfBusy = false; bRf.disabled = false;
+    };
+    rfRefresh();
+    { const h5 = tabHooks[5]; tabHooks[5] = () => { if (h5) h5(); rfFill(); }; }   // открыли «Доступ» — подтянуть свежую согласованную сумму
     // ---- Заметка в обращении: ссылки на строку таблицы и карточку Асаны (ТОЛЬКО скрытая заметка, клиенту ничего не уходит) ----
     const noteBlockEl = mkBlock(recPane, 'Заметка в обращении', true);
     noteBlockEl.appendChild(el('div', S.hint + 'margin-top:0;', 'Добавляет в СКРЫТУЮ заметку обращения ссылки на строку таблицы и карточку Асаны. Клиенту ничего не уходит: если поле не в режиме заметки, мастер откажется и ничего не напишет.'));
@@ -4552,7 +4624,7 @@
         renderDealPick();
 
         _rkClusterApplied = ''; // после свежего сбора из амо — заново подставить кластер по сценарию
-        syncAgreed(); renderAmoCard(); updateScenario(); afRefresh();
+        syncAgreed(); renderAmoCard(); updateScenario(); afRefresh(); rfRefresh();
         loadCalcDuration(d.course); // ак.ч. + дни для калькулятора — по названию курса
 
         const what = [];
