@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.60.8
+// @version      1.61.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -1167,6 +1167,37 @@
     });
   }
 
+  // В поле «AMOCRM» карточки — сделка, где ни телефон, ни почта клиента не совпали. Спрашиваем куратора:
+  // 'search' — искать клиента в амо по телефону/почте с карточки, 'take' — всё же взять эту сделку, null — отмена.
+  function askForeignDeal(contact, lead, seed) {
+    return new Promise(function (resolve) {
+      const esc = function (s) { return String(s || '').replace(/[<>&]/g, ''); };
+      const box = document.createElement('div');
+      box.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:2147483647;background:#fff;border-radius:16px;box-shadow:0 12px 40px rgba(15,23,42,.35);padding:18px;max-width:460px;width:92%;font-family:' + HP_FONT + ';';
+      const cName = String(contact.name || '').trim() || [contact.first_name, contact.last_name].filter(Boolean).join(' ').trim() || 'без имени';
+      const who = (seed.phones[0] || seed.emails[0] || '');
+      box.innerHTML = '<div style="font-size:14px;font-weight:700;color:#111827;margin-bottom:6px;">В поле «AMOCRM» похоже чужая сделка 🙀</div>' +
+        '<div style="font-size:12.5px;color:#374151;line-height:1.5;margin-bottom:12px;">Сделка ' + esc(lead.id) + ' — <b>' + esc(cName) + '</b>' +
+        (lead.name ? ' («' + esc(lead.name) + '»)' : '') + '.<br>Ни телефон, ни почта клиента' + (who ? ' (' + esc(who) + ')' : '') + ' с ней не совпали.</div>';
+      const mk = function (txt, primary, val) {
+        const b = document.createElement('button');
+        b.style.cssText = 'display:block;width:100%;margin-top:8px;border-radius:10px;padding:9px 12px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;' +
+          (primary ? 'background:#0284C7;color:#fff;border:1px solid #0284C7;' : 'background:#fff;color:#0F172A;border:1px solid #CBD5E1;');
+        b.textContent = txt;
+        b.onclick = function () { box.remove(); resolve(val); };
+        box.appendChild(b);
+      };
+      mk('Искать клиента по телефону и почте', true, 'search');
+      mk('Всё равно взять эту сделку (' + cName + ')', false, 'take');
+      const cancel = document.createElement('button');
+      cancel.style.cssText = 'background:none;border:none;color:#0284C7;font-size:12px;cursor:pointer;padding:6px 4px 0;display:block;margin:2px auto 0;font-family:inherit;';
+      cancel.textContent = 'Отмена — ничего не вписывать';
+      cancel.onclick = function () { box.remove(); resolve(null); };
+      box.appendChild(cancel);
+      document.documentElement.appendChild(box);
+    });
+  }
+
   // Выбор ссылок для поля «АДМИНКА»: когда после сверки по ФИО/почте осталось >1 совпадения
   // (у студента может быть несколько аккаунтов; либо ФИО у разных людей совпало). Куратор
   // отмечает галочками, какие вставлять. Возвращает массив выбранных links (может быть пустым).
@@ -1498,6 +1529,15 @@
         contacts.sort(function (a, b) {
           return (b._score - a._score) || ((b.updated_at || 0) - (a.updated_at || 0));
         });
+      }
+      // Номер сделки в поле «AMOCRM» карточки бывает чужим (кейс 252-697551: у Жолтиковой стояла сделка Гончарова).
+      // Если ни один контакт сделки не совпал с телефоном/почтой клиента — не берём молча, а спрашиваем.
+      if (contacts.length && (seed.phones.length || seed.emails.length) &&
+          !contacts.some(function (c) { return c._matchEmail || c._matchPhone; })) {
+        if (warm) throw new Error('WARM_STOP'); // фоном не решаем — спросим при клике
+        const ans = await askForeignDeal(contacts[0], lead, seed);
+        if (ans === 'search') { seed._foreignAmoId = true; return null; }
+        if (ans !== 'take') throw new Error('CANCELLED');
       }
       let chosen = null;
       if (contacts.length === 1) {
@@ -1968,7 +2008,7 @@
       toast('В амо ничего не нашлось 😿', 'warn');
       return;
     }
-    data.cardAmoId = amoId || '';
+    data.cardAmoId = seed._foreignAmoId ? '' : (amoId || '');   // чужую сделку из поля «AMOCRM» не используем и для админки
     // Почта(ы), уже вписанные в карточку OmniDesk. Нужны для поиска студента в админке,
     // когда в амо почты нет (Наталья, 03.09): «если почта указана в омни, но не в амо —
     // ищем в админке по почте из омни».
