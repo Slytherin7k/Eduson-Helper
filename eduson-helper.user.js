@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.61.0
+// @version      1.61.1
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -1113,6 +1113,26 @@
       }
     });
   }
+  // Все сделки контакта по списку id. Раньше брали только первые 8 по одной — у студентки с 15 сделками
+  // (кейс 485-168946) оплаченный «Вайб-кодинг» был 9-м, и окно выбора курса не появлялось.
+  // Теперь — пачкой одним запросом (самые новые первыми, до 50); если пачкой не вышло — по одной (последние 12).
+  async function fetchLeadsByIds(api, ids) {
+    ids = Array.from(new Set((ids || []).filter(Boolean))).sort(function (a, b) { return b - a; }).slice(0, 50);
+    if (!ids.length) return [];
+    try {
+      const r = await api('/api/v4/leads?limit=50&' + ids.map(function (id) { return 'filter[id][]=' + id; }).join('&'));
+      const got = (((r || {})._embedded || {}).leads) || [];
+      if (got.length) return got.filter(function (l) { return l && l.id; });
+    } catch (e) { if (e.message === 'NOAUTH') throw e; }
+    const leads = [];
+    for (const lid of ids.slice(0, 12)) {
+      try {
+        const l = await api('/api/v4/leads/' + lid);
+        if (l && l.id) leads.push(l);
+      } catch (e) { if (e.message === 'NOAUTH') throw e; }
+    }
+    return leads;
+  }
   /* ---------- закрытая (успешная) сделка ---------- */
   function isWon(l) {
     return l.status_id === 142 || (!!l.closed_at && l.status_id !== 143);
@@ -1325,14 +1345,8 @@
       data.supportMonths = months;
       return data;
     }
-    const leadIds = (((contact._embedded || {}).leads) || []).map(l => l.id).slice(0, 8);
-    const leads = [];
-    for (const lid of leadIds) {
-      try {
-        const l = await api('/api/v4/leads/' + lid);
-        if (l && l.id) leads.push(l);
-      } catch (e) { if (e.message === 'NOAUTH') throw e; }
-    }
+    const leadIds = (((contact._embedded || {}).leads) || []).map(l => l.id);
+    const leads = await fetchLeadsByIds(api, leadIds);
     const wonLeads = leads.filter(isWon).sort((a, b) => (b.closed_at || 0) - (a.closed_at || 0));
     if (!wonLeads.length) {
       // Клиент ещё не покупал курс (нет сделки WIN 100%), но контакт есть.
@@ -1554,14 +1568,9 @@
       if (isWon(lead)) {
         const wonLeads = [lead];
         if (chosen) {
-          const otherLeadIds = (((chosen._embedded || {}).leads) || []).map(l => l.id).slice(0, 8);
-          for (const lid of otherLeadIds) {
-            if (lid === lead.id) continue;
-            try {
-              const l = await api('/api/v4/leads/' + lid);
-              if (l && l.id && isWon(l)) wonLeads.push(l);
-            } catch (e) { /* тихо пропускаем */ }
-          }
+          const otherLeadIds = (((chosen._embedded || {}).leads) || []).map(l => l.id).filter(lid => lid !== lead.id);
+          try { (await fetchLeadsByIds(api, otherLeadIds)).forEach(function (l) { if (isWon(l)) wonLeads.push(l); }); }
+          catch (e) { /* тихо пропускаем */ }
         }
         wonLeads.sort((a, b) => (b.closed_at || 0) - (a.closed_at || 0));
         let useLead = wonLeads[0];
