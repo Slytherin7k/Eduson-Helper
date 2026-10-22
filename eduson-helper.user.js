@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.61.3
+// @version      1.62.0
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -383,8 +383,9 @@
   }
 
   // Набор слов ФИО (строчные, ё→е, латиница/кириллица, ≥2 букв). Для сравнения «тот же человек».
+  // Латиница переводится в кириллицу (fioToCyr): «Ivanov Ivan» = «Иванов Иван».
   function nameWordSet(s) {
-    return new Set(String(s || '').toLowerCase().replace(/ё/g, 'е')
+    return new Set(fioToCyr(String(s || '')).toLowerCase().replace(/ё/g, 'е')
       .split(/[^a-zа-я0-9]+/).filter(function (w) { return w.length >= 2 && /[a-zа-я]/.test(w); }));
   }
   // «Это тот же человек»: совпали минимум 2 слова ФИО (фамилия+имя), в любом порядке;
@@ -484,10 +485,14 @@
   }
   // Выбор между именем из амо и из админки: берём то, где больше слов;
   // при равенстве — где есть отчество; иначе оставляем амо.
-  function fullerName(amoName, adminName) {
+  // amoRaw/adminRaw — исходные написания (до перевода латиницы): при равной полноте лучше то,
+  // что изначально было по-русски, чем переведённое с латиницы.
+  function fullerName(amoName, adminName, amoRaw, adminRaw) {
     const a = adminNameWords(amoName).length, b = adminNameWords(adminName).length;
     if (b > a) return adminName;
     if (b === a && b >= 2 && hasPatronymic(adminName) && !hasPatronymic(amoName)) return adminName;
+    if (b === a && b >= 2 && hasPatronymic(adminName) === hasPatronymic(amoName) &&
+        /[A-Za-z]/.test(amoRaw || '') && !/[A-Za-z]/.test(adminRaw || '')) return adminName;
     return amoName || adminName;
   }
 
@@ -1400,7 +1405,7 @@
       toast('🙀 Не получилось прочитать amoCRM.\nНажми F12 → вкладка Console и пришли текст возле ' + TAG, 'error');
       return;
     }
-    if (data.name) data.name = fioOrder(data.name) || data.name;
+    if (data.name) data.name = fioNormalize(data.name) || data.name;
     GM_setValue(STORE_KEY, data);
     console.log(TAG, 'данные:', data);
     toast(data, 'ok');
@@ -1733,11 +1738,92 @@
     var s = fioPatrStem(fioLow(w));
     return !!(s && /^(ович|евич|ьевич|овна|евна|инична|ична)$/.test(s.suf));
   }
+  // Каждое слово (и каждая часть через дефис) — с большой буквы, остальное строчными:
+  // «ИВАНОВ» / «иванов» / «иВАНОВ» → «Иванов», «петрова-ВОДКИНА» → «Петрова-Водкина».
   function fioCase(w) {
-    if (/[А-ЯЁ]/.test(w) && /[а-яё]/.test(w)) return w;      // смешанный регистр — оставляем как есть
     return w.replace(/[А-Яа-яЁёA-Za-z]+/g, function (p) {
       return p.charAt(0).toUpperCase() + p.slice(1).toLowerCase();
     });
+  }
+
+  /* ---------- ФИО латиницей → кириллицей ---------- */
+  // Частые имена в латинском написании (несколько вариантов транслита) — чтобы получилось
+  // «Наталья», а не «Наталиа». Остальные слова (фамилии) переводятся по буквам ниже.
+  var FIO_LAT_NAMES = {
+    'Александр': 'alexander aleksandr alexandr aleksander alex',
+    'Алексей': 'aleksey alexey alexei aleksei aleksej alexej',
+    'Анатолий': 'anatoly anatoliy anatolii', 'Андрей': 'andrey andrei andrej andrew',
+    'Аркадий': 'arkady arkadiy arkadii', 'Арсений': 'arseny arseniy arsenii',
+    'Артём': 'artem artyom artiom', 'Василий': 'vasily vasiliy vasilii vassily',
+    'Вениамин': 'veniamin venyamin', 'Виталий': 'vitaly vitaliy vitalii',
+    'Валерий': 'valery valeriy valerii', 'Вячеслав': 'vyacheslav viacheslav',
+    'Геннадий': 'gennady gennadiy gennadii', 'Георгий': 'georgy georgiy georgii george',
+    'Григорий': 'grigory grigoriy grigorii', 'Даниил': 'daniil daniel', 'Данила': 'danila',
+    'Дмитрий': 'dmitry dmitriy dmitrii dmitrij', 'Евгений': 'evgeny evgeniy evgenii yevgeny yevgeniy eugene',
+    'Егор': 'egor yegor', 'Игорь': 'igor igor\'','Иннокентий': 'innokenty innokentiy', 'Илья': 'ilya ilia ilja',
+    'Матвей': 'matvey matvei', 'Михаил': 'mikhail mihail michael', 'Николай': 'nikolay nikolai nicolai',
+    'Пётр': 'petr pyotr peter', 'Савелий': 'saveliy savely savelii', 'Семён': 'semen semyon semion',
+    'Сергей': 'sergey sergei sergej', 'Тимофей': 'timofey timofei', 'Фёдор': 'fedor fyodor fiodor',
+    'Филипп': 'filipp philipp philip', 'Юрий': 'yury yuriy yurii iurii yuri', 'Яков': 'yakov iakov',
+    'Алёна': 'alena alyona aliona', 'Анастасия': 'anastasia anastasiya anastasiia',
+    'Валерия': 'valeria valeriya valeriia', 'Виктория': 'victoria viktoria viktoriya viktoriia',
+    'Дарья': 'darya daria dariya', 'Евгения': 'evgenia evgeniya yevgeniya eugenia',
+    'Екатерина': 'ekaterina yekaterina katerina', 'Елена': 'elena yelena helen', 'Елизавета': 'elizaveta yelizaveta',
+    'Ксения': 'ksenia kseniya kseniia xenia', 'Любовь': 'lyubov lubov liubov',
+    'Людмила': 'lyudmila ludmila liudmila', 'Мария': 'maria mariya mariia', 'Марьяна': 'maryana mariana',
+    'Наталья': 'natalya natalia natalija nataliya', 'Ольга': 'olga', 'Олеся': 'olesya olesia',
+    'Софья': 'sofya sofia sophia sofiya', 'Татьяна': 'tatyana tatiana tatjana', 'Ульяна': 'ulyana uliana',
+    'Юлия': 'yulia yuliya julia iuliia ulia', 'Яна': 'yana iana'
+  };
+  var FIO_LAT_MAP = {};
+  Object.keys(FIO_LAT_NAMES).forEach(function (ru) {
+    FIO_LAT_NAMES[ru].split(' ').forEach(function (l) { FIO_LAT_MAP[l] = ru; });
+  });
+  'ogly:оглы oglu:оглу kyzy:кызы gyzy:гызы uulu:уулу uly:улы'.split(' ').forEach(function (p) {
+    FIO_LAT_MAP[p.split(':')[0]] = p.split(':')[1];
+  });
+  // Остальные имена словаря FIO_* — тоже ловим, если побуквенный перевод дал ровно их.
+  function fioLatWord(w) {
+    var low = String(w || '').toLowerCase();
+    if (FIO_LAT_MAP[low]) return FIO_LAT_MAP[low];
+    var s = low
+      .replace(/'/g, '')
+      .replace(/lsk/g, 'льsk')                                       // Kovalsky → Ковальский
+      .replace(/(sk|ck|tsk|ts)(iy|ii|y|yi|ij)$/, '$1ий')            // -sky/-skiy/-skii → -ский
+      .replace(/(iy|ii|yi|ij)$/, 'ий')                               // -iy/-ii → -ий
+      .replace(/([aeiouy])y$/, '$1й')                                // -ey/-ay/-oy → -ей/-ай/-ой
+      .replace(/([^aeiouy])y$/, '$1ий')                              // Dmitry → Дмитрий
+      .replace(/([^aeiouy])yin/g, '$1ьin').replace(/([^aeiouy])(ye|yo)/g, '$1ь$2')   // Ilyin, Vasilyev, Solovyov
+      .replace(/^ye/, 'е').replace(/^e/, 'е')
+      .replace(/shch|sch/g, 'щ').replace(/zh/g, 'ж').replace(/kh/g, 'х').replace(/tch|ch/g, 'ч')
+      .replace(/sh/g, 'ш').replace(/ts|tz/g, 'ц')
+      .replace(/(yu|iu|ju)/g, 'ю').replace(/(yo|jo)/g, 'ё').replace(/ye/g, 'е')
+      .replace(/(iya|ia)$/, 'ия').replace(/(ya|ja)/g, 'я')
+      .replace(/([aeiouаеёиоуыэюя])y/g, '$1й').replace(/y([aeiou])/g, 'й$1')
+      .replace(/x/g, 'кс').replace(/ph/g, 'ф').replace(/j/g, 'дж').replace(/w/g, 'в').replace(/q/g, 'к');
+    var L = { a: 'а', b: 'б', c: 'к', d: 'д', e: 'е', f: 'ф', g: 'г', h: 'х', i: 'и', k: 'к', l: 'л', m: 'м',
+      n: 'н', o: 'о', p: 'п', r: 'р', s: 'с', t: 'т', u: 'у', v: 'в', y: 'ы', z: 'з' };
+    s = s.replace(/[a-z]/g, function (c) { return L[c] || ''; });
+    if (!s) return w;
+    return s;
+  }
+  // Латинские слова ФИО → кириллица; кириллические не трогаем. «IVANOV Ivan» → «иванов иван»
+  // (регистр поправит fioCase).
+  function fioToCyr(raw) {
+    return String(raw || '').replace(/[A-Za-z']+/g, function (w) { return fioLatWord(w); });
+  }
+  // Полная «чистка» ФИО: лишние пробелы, повторы слов, латиница → кириллица,
+  // КАПС/строчные → «Иванов», затем порядок «Фамилия Имя Отчество».
+  function fioNormalize(raw) {
+    var s = String(raw || '').replace(/[\s ]+/g, ' ').replace(/,/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!s) return '';
+    s = s.split(' ').filter(function (w, i, a) {
+      return w.toLowerCase() !== (a[i - 1] || '').toLowerCase();
+    }).join(' ');
+    if (/[A-Za-z]/.test(s)) s = fioToCyr(s);
+    s = s.split(' ').map(fioCase).join(' ')
+      .replace(/(^|\s)(Оглы|Оглу|Кызы|Гызы|Уулу|Улы)(?=\s|$)/g, function (_, a, b) { return a + b.toLowerCase(); });
+    return fioOrder(s) || s;
   }
   function fioOrder(raw) {
     if (!NAME_FIO_ORDER) return raw;
@@ -2025,24 +2111,28 @@
     // когда в амо почты нет (Наталья, 03.09): «если почта указана в омни, но не в амо —
     // ищем в админке по почте из омни».
     data.cardEmails = (seed.emails || []).filter(function (e) { return e && !/@eduson\.tv$/i.test(e); });
+    // Исходное имя из амо (до чистки) — чтобы знать, было ли оно латиницей.
+    const amoNameRaw = data.name || '';
     if (data.name) {
-      var nameFio = fioOrder(data.name);
+      var nameFio = fioNormalize(data.name);
       if (nameFio && nameFio !== data.name) {
-        note = (note ? note + '; ' : '') + 'имя переставила в порядок ФИО';
+        note = (note ? note + '; ' : '') + 'ФИО привела в вид «Фамилия Имя Отчество»';
         data.name = nameFio;
       }
     }
-    // ФИО должно быть полное: сравниваем имя из амо с ФИО из админки Эдюсон, берём где больше слов.
+    // ФИО должно быть МАКСИМАЛЬНО полное: сравниваем имя из амо с ФИО из админки Эдюсон
+    // (оба уже почищены: регистр, латиница → кириллица) и берём то, где больше слов.
     // Если сделку нашли через админку (курс купили другому) — имя обучающегося берём из админки
     // (по его почте), а НЕ из контакта покупателя в сделке.
     try {
-      const adminFio = await lookupAdminFio(data, seed);
+      const adminRaw = await lookupAdminFio(data, seed);
+      const adminFio = adminRaw ? fioNormalize(adminRaw) : '';
       if (adminFio) {
         const useAdmin = data.viaAdmin && adminNameWords(adminFio).length >= 2;
-        const better = useAdmin ? adminFio : fullerName(data.name || '', adminFio);
+        const better = useAdmin ? adminFio : fullerName(data.name || '', adminFio, amoNameRaw, adminRaw);
         if (better && better !== data.name) {
           note = (note ? note + '; ' : '') + (useAdmin ? 'ФИО обучающегося — из админки Эдюсон' : 'ФИО взяла из админки Эдюсон (полнее)');
-          data.name = fioOrder(better) || better;
+          data.name = better;
         }
       }
     } catch (e) { /* админка не критична для имени */ }
