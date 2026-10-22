@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.61.2
+// @version      1.61.3
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -7886,11 +7886,10 @@
     if (looksLikeAdminLogin(statsHtml)) throw new Error('NOAUTH');
     const plans = plansFromStats(statsHtml, cabUrl);
     if (!plans.length) throw new Error('нет учебных планов');
-    const picked = pickPlan(plans, courseHint) || plans[0];
-    const planHtml = await gmText(picked.url);
-    _planPct[picked.url] = planPctFromHtml(planHtml);
+    const pp = await openPlanWithFallback(plans, pickPlan(plans, courseHint));
+    const picked = pp.picked;
     const res = {
-      planName: picked.name, lessons: lessonsFromPlan(planHtml), plans: plans,
+      planName: picked.name, lessons: pp.lessons, plans: plans,
       domain: (cabUrl.match(/^https?:\/\/[^/]+/) || [''])[0], planKey: picked.url
     };
     _acctLessons[uid] = res;
@@ -7996,6 +7995,32 @@
     return null;
   }
 
+  // Открыть учебный план: сначала выбранный по «Курсу» карточки, иначе основной.
+  // Если план не открылся (платформа отдаёт 500 — так бывает у плана «Дополнительные курсы»,
+  // кейс 402-538613) или в нём нет уроков — пробуем следующий, а не падаем.
+  async function openPlanWithFallback(plans, preferred) {
+    const extra = function (p) { return /дополнительн/i.test(p.name) ? 1 : 0; };
+    const order = plans.slice().sort(function (a, b) { return extra(a) - extra(b); });
+    if (preferred) { order.splice(order.indexOf(preferred), 1); order.unshift(preferred); }
+    let lastErr = null;
+    for (let i = 0; i < order.length; i++) {
+      let html;
+      try { html = await gmText(order[i].url); } catch (e) { lastErr = e; continue; }
+      if (looksLikeAdminLogin(html)) throw new Error('NOAUTH');
+      const lessons = lessonsFromPlan(html);
+      if (!lessons.length) continue;
+      _planPct[order[i].url] = planPctFromHtml(html);
+      let note = '';
+      if (order[i] !== preferred && plans.length > 1) {
+        note = preferred ? 'план «' + preferred.name + '» не открылся на платформе — взяла «' + order[i].name + '»'
+                         : 'курс из карточки не совпал — взяла «' + order[i].name + '»';
+      }
+      return { picked: order[i], lessons: lessons, note: note };
+    }
+    if (lastErr) throw lastErr;
+    throw new Error('в учебном плане не нашла уроков');
+  }
+
   let lessonCache = null; // { caseId, domain, lessons:[{id,name}], planName, plans, note, planKey, deep, deepDone }
   const _lessonCaseId = function () { return (location.pathname.match(/(\d{2,4}-\d{5,})/) || [])[1] || ''; };
   async function loadLessons() {
@@ -8024,13 +8049,8 @@
     const plans = plansFromStats(statsHtml, cabUrl);
     if (!plans.length) throw new Error('у студента нет учебных планов в кабинете');
 
-    let picked = pickPlan(plans, readCourse());
-    let note = '';
-    if (!picked) { picked = plans[0]; note = plans.length > 1 ? 'курс из карточки не совпал — взяла «' + picked.name + '»' : ''; }
-
-    const planHtml = await gmText(picked.url);
-    const lessons = lessonsFromPlan(planHtml);
-    if (!lessons.length) throw new Error('в учебном плане не нашла уроков');
+    const pp = await openPlanWithFallback(plans, pickPlan(plans, readCourse()));
+    const picked = pp.picked, lessons = pp.lessons, note = pp.note;
 
     // Кэш вложенных лекций по этому плану в GM (уроки курса меняются редко; TTL 14 дней) —
     // чтобы «Никита» на второй раз находился сразу.
