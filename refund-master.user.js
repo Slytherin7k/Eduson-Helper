@@ -1,8 +1,8 @@
 ﻿// ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.49.0
-// @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Асана справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Асаны по сценарию кейса.
+// @version      1.50.0
+// @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Weeek справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Weeek по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
 // @updateURL    https://raw.githubusercontent.com/Slytherin7k/Eduson-Helper/main/refund-master.user.js
@@ -19,6 +19,8 @@
 // @connect      eduson.tv
 // @connect      docs.google.com
 // @connect      app.asana.com
+// @connect      api.weeek.net
+// @connect      storage.selcloud.ru
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -47,6 +49,16 @@
   const ASANA_PROJECT = '1206957485248244';   // действующий проект «Возвраты» — Наталья разрешила тестировать на нём (03.10)
   const ASANA_WS = '143258801040308';
   const ASANA_DUE_DAYS = 10;   // срок карточки = дата создания + 10 дней
+
+  // Weeek: с 02.11.2026 карточки возвратов заводим тут (доска «Возвраты — перенос 30.10.2026»), Асана — только старые карточки.
+  // Номера колонок, Кирилла, поля «Сумма возврата» и тегов сняты с самой доски 02.11.
+  const WEEEK_WS = 631867;
+  const WEEEK_PROJECT = 47;
+  const WEEEK_COLS = { 'Делаем возврат': 607, 'Заявление получено': 608 };
+  const WEEEK_ASSIGNEE = 'a2f8b98c-8b55-4f7c-bdab-c13f33fa4301';   // Кирилл — ему летит уведомление
+  const WEEEK_SUM_FIELD = 'a3210f8d-9744-4c78-bb89-2d27bcce9eed';  // поле «Сумма возврата»
+  const WEEEK_TAG_FULL = 247;   // тег «Полный возврат» (248 — «Частичный», его не ставим)
+  const weeekTaskUrl = id => 'https://app.weeek.net/ws/' + WEEEK_WS + '/task/' + id;
 
   /* ============ ЗАПИСЬ В ТАБЛИЦУ ИЗ МАСТЕРА (без копирования) ============
      Две половины одного скрипта, говорят через GM_setValue / GM_addValueChangeListener:
@@ -629,6 +641,48 @@
     });
   }
 
+  // Запрос во внутренний API Weeek от имени куратора — как сам сайт app.weeek.net (вход по его кукам,
+  // нужен вход в Weeek в этом же браузере). path — после /ws/<номер пространства>.
+  function weeekApi(method, path, bodyObj) {
+    return new Promise(function (resolve, reject) {
+      GM_xmlhttpRequest({
+        method: method, url: 'https://api.weeek.net/ws/' + WEEEK_WS + path, timeout: 20000,
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'Origin': 'https://app.weeek.net', 'Referer': 'https://app.weeek.net/' },
+        data: bodyObj ? JSON.stringify(bodyObj) : undefined,
+        onload: function (r) {
+          let j = {}; try { j = JSON.parse(r.responseText || '{}'); } catch (e) { /* ignore */ }
+          if (r.status >= 200 && r.status < 300 && j.success !== false) resolve(j);
+          else if (r.status === 401 || r.status === 403 || r.status === 419) reject(new Error('NOAUTH'));
+          else reject(new Error('http-' + r.status + ' ' + (j.message || '')));
+        },
+        onerror: function () { reject(new Error('сеть')); },
+        ontimeout: function () { reject(new Error('таймаут')); }
+      });
+    });
+  }
+
+  // Файл → карточка Weeek, тремя шагами, как у самого сайта: 1) Weeek выдаёт адрес хранилища (presign);
+  // 2) файл кладём прямо в хранилище (без кук Weeek); 3) регистрируем файл в карточке.
+  async function weeekUpload(taskId, file) {
+    const type = file.type || 'application/octet-stream';
+    const name = file.name || ('file-' + Date.now());
+    const p = await weeekApi('POST', '/files/presign', { name: name, type: type });
+    if (!p || !p.url || !p.id) throw new Error('Weeek не выдал адрес для файла');
+    await new Promise(function (resolve, reject) {
+      const fd = new FormData();
+      Object.keys(p.options || {}).forEach(function (k) { fd.append(k, p.options[k]); });
+      fd.append('content-type', type);
+      fd.append('file', file, name);
+      GM_xmlhttpRequest({
+        method: 'POST', url: p.url, data: fd, anonymous: true, timeout: 120000,
+        onload: function (r) { if (r.status >= 200 && r.status < 300) resolve(); else reject(new Error('хранилище ответило ' + r.status)); },
+        onerror: function () { reject(new Error('сеть при загрузке файла')); },
+        ontimeout: function () { reject(new Error('файл грузился слишком долго')); }
+      });
+    });
+    return weeekApi('POST', '/tm/tasks/' + taskId + '/files/register', { id: p.id, name: name, size: file.size, type: type, folderId: null });
+  }
+
   /* ==================== ТРЕКИНГ ОТКРЫТИЙ ПАНЕЛИ ====================
      Та же Google-таблица, что и у Хэлпера («Хэлпер — трекинг открытий (Ответы)»): считаем и открытия
      Возврат-мастера, отдельной строкой. Имя куратора смотрим САМИ — один раз читаем его профиль
@@ -988,7 +1042,7 @@
       cur: (r[0] || '').trim(), fio: (r[1] || '').trim(), date: (r[2] || '').trim(),
       result: (r[3] || '').trim(), sum: (r[4] || '').replace(/\s+/g, ' ').trim(),
       sameCase: !!caseKey && String(r[5] || '').indexOf(caseKey) >= 0,
-      asana: (String(r[6] || '').match(/https?:\/\/app\.asana\.com\/\S*?\/task\/(\d+)/) || [])[0] || '',
+      asana: (String(r[6] || '').match(/https?:\/\/app\.(asana\.com|weeek\.net)\/\S*?\/task\/(\d+)/) || [])[0] || '',
     }));
     const now = parseRuDate(claimDateStr) || new Date();
     // «недавний» повтор: с даты заявки той строки прошло меньше месяца (или дату не прочитать — на всякий случай предупредим)
@@ -1939,7 +1993,7 @@
     [/РГ/, 'send', 'red'],
     [/Телеграм|продакту/, 'send', 'blue'],
     [/Тип оплаты/, 'file', 'amber'],
-    [/Асаны/, 'tasks', 'violet'],
+    [/Асаны|Weeek/, 'tasks', 'violet'],
     [/Блокировка/, 'lock', 'red'],
     [/таблиц/, 'file', 'gray'],
     [/Метка/, 'tag', 'gray'],
@@ -2288,7 +2342,7 @@
     // Вкладки слева (по шагам работы): 1 Клиент · 2 Решение · 3 Согласование · 4 Асана.
     // Таблица возвратов — не вкладка, а закреплённая панель внизу (строку заводят и потом обновляют).
     // Вкладки по МЕСТУ, куда уходят данные: Данные · Расчёт · Сообщения (ТГ/РГ) · Асана · Записи (таблица, админка)
-    const TAB_DEF = [['Данные'], ['Расчёт'], ['Шаблоны'], ['Сообщения'], ['Асана'], ['Доступ']];
+    const TAB_DEF = [['Данные'], ['Расчёт'], ['Шаблоны'], ['Сообщения'], ['Weeek'], ['Доступ']];
     const tabHooks = {};   // действие при открытии вкладки (например, перерисовать «Асану»)
     const tabsWrap = el('div', 'display:flex;flex-direction:column;flex:1 1 auto;min-width:0;min-height:0;');
     const tabRail = el('div', 'flex:0 0 auto;background:#fff;border-bottom:1px solid #E5E7EB;display:flex;gap:0;padding:0 4px;');
@@ -2313,7 +2367,7 @@
         'Расчёт: калькулятор возврата',
         'Шаблоны: готовые ответы клиенту (новая и старая оферта)',
         'Сообщения: ТГ продакту и РГ',
-        'Асана: тип оплаты и заявление, ссылка на согласование, файлы, карточка возврата',
+        'Weeek: тип оплаты и заявление, ссылка на согласование, файлы, карточка возврата',
         'Доступ: блокировка курса, метка в амо, карточка OmniDesk'][i];
       b.onclick = () => selectTab(i);
       railBtns.push(b); tabRail.appendChild(b);
@@ -2568,7 +2622,7 @@
       if (clean(T.calcDays) || clean(T.calcHours)) {
         L.push('📚 Курс по таблице: ' + (clean(T.calcHours) || '?') + ' ак.ч. · ' + (clean(T.calcDays) || '?') + ' дн. — сверь в калькуляторе');
       }
-      if (T.result === 'В работе') L.push('⚠️ «В работе»: карточку Асаны можно скопировать только после решения «Возврат».');
+      if (T.result === 'В работе') L.push('⚠️ «В работе»: карточку в Weeek можно завести только после решения «Возврат».');
       scenText.textContent = L.join('\n');
       if (scen === 'before') setScenLinks([['Старая оферта', 'https://eduson.academy/offer-old-25-02-2026']]);
       else if (scen === 'le3' || scen === 'gt3' || scen === 'postUnknown') setScenLinks([['Оферта', 'https://eduson.academy/offer'], ['Политика возвратов', 'https://eduson.academy/refund']]);
@@ -3384,7 +3438,7 @@
     const guardHandoff = () => {
       if (T.result === 'В работе') {
         if (errBox) {
-          errBox.textContent = '⚠️ Результат «В работе»: карточку Асаны можно скопировать только после решения «Возврат».';
+          errBox.textContent = '⚠️ Результат «В работе»: карточку в Weeek можно завести только после решения «Возврат».';
           errBox.style.display = 'block';
         }
         return false;
@@ -3635,7 +3689,7 @@
     const TPL_COMMON = [
       { t: 'Подписать заявление Т-банка', x: 'Направляю вам заявление на подпись. Пришлите подписанное заявление в ответном сообщении, пожалуйста.' },
       { t: 'Заявление от юр. лица', x: 'Согласовали для вас возврат на сумму {СУММА} руб. Для того чтобы мы могли оформить заявку на возврат, просим вас прислать заявление от юр. лица в свободной форме с указанием реквизитов для перевода. Ожидаем от вас подписанный документ в виде скана или фото хорошего качества.' },
-      { t: 'Оплата на реквизиты компании: заявление', tip: 'Заявление можно скачать в типе оплаты, раздел «Асана»', x: 'Согласовали для вас возврат на сумму {СУММА} руб. Для того чтобы мы могли оформить заявку на возврат, просим вас прислать заполненное заявление. Ожидаем от вас подписанный документ в виде скана или фото хорошего качества.' },
+      { t: 'Оплата на реквизиты компании: заявление', tip: 'Заявление можно скачать в типе оплаты, раздел «Weeek»', x: 'Согласовали для вас возврат на сумму {СУММА} руб. Для того чтобы мы могли оформить заявку на возврат, просим вас прислать заполненное заявление. Ожидаем от вас подписанный документ в виде скана или фото хорошего качества.' },
       { t: 'Прощание с клиентом', x: LN(
         'Передали ваше обращение в работу.',
         'Возврат с нашей стороны осуществляется на те же реквизиты, с которых поступил платеж, в течение 10 рабочих дней. Дальнейшее зачисление денег на ваш счет, зависит от банка. Пожалуйста, ожидайте.',
@@ -3823,7 +3877,7 @@
       const row = _payTypeRows && _payTypeRows.find(r => payTypeLabel(r) === T.payTypeSel);
       return row ? /^да/i.test(row.zayav) : null;
     };
-    const asanaBlock = mkBlock(asanaPane, 'Карточка Асаны', true);
+    const asanaBlock = mkBlock(asanaPane, 'Карточка в Weeek', true);
     const asInfo = el('div', 'font-size:11px;line-height:1.6;color:#374151;');
     asanaBlock.appendChild(asInfo);
     // Ссылка на согласование (после ответа продакта) — попадает в описание карточки Асаны
@@ -3839,19 +3893,32 @@
     const bAsanaCopy = el('button', S.big, 'Скопировать ссылку на карточку');
     bAsanaCopy.onclick = () => {
       if (!T.asanaUrl) { statusBox.style.color = '#B45309'; statusBox.textContent = 'Карточка ещё не создана.'; return; }
-      copy(T.asanaUrl, 'Ссылка на карточку Асаны в буфере ✓');
+      copy(T.asanaUrl, 'Ссылка на карточку в буфере ✓');
     };
     asDone.appendChild(bAsanaCopy);
+    // описание Weeek принимает только из своего редактора → Мастер копирует его, куратор вставляет Ctrl+V
+    const bWkDesc = el('button', S.btnAlt, '📋 Скопировать описание ещё раз');
+    bWkDesc.onclick = () => copyMsg(asanaNotes(), 'Описание в буфере ✓ Открой карточку, щёлкни в поле описания и нажми Ctrl+V.');
+    asDone.appendChild(bWkDesc);
     asanaBlock.appendChild(asDone);
-    const bAsanaCreate = el('button', S.big, 'Создать карточку в Асане');
-    const bAsanaUpd = el('button', S.btnAlt, 'Обновить название и описание в Асане');
+    const bAsanaCreate = el('button', S.big, 'Создать карточку в Weeek');
+    const bAsanaUpd = el('button', S.btnAlt, 'Обновить название и сумму в Weeek');
     asanaBlock.appendChild(bAsanaCreate);
     asanaBlock.appendChild(bAsanaUpd);
     const fmtDate = d => String(d.getDate()).padStart(2, '0') + '.' + String(d.getMonth() + 1).padStart(2, '0') + '.' + d.getFullYear();
     const asanaDueISO = () => { const d = new Date(Date.now() + ASANA_DUE_DAYS * 86400000); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
-    const asNo = el('div', S.hint + 'margin-top:0;', 'При результате «Остаётся» или «В работе» карточка в Асане не нужна.');
+    const asNo = el('div', S.hint + 'margin-top:0;', 'При результате «Остаётся» или «В работе» карточка в Weeek не нужна.');
+    // карточка этого кейса заведена в Weeek (а не старая, из Асаны)
+    const isWeeekCard = () => /weeek\.net/.test(T.asanaUrl || '');
+    // полный возврат = согласованная сумма равна оплате (как в «Возврате в сделке амо»)
+    const isFullRefund = () => {
+      const paid = parseFloat(String(T.amount || '').replace(/[\s ₽]/g, '').replace(',', '.'));
+      const s = agreedNum();
+      return isFinite(s) && isFinite(paid) && Math.abs(s - paid) < 1;
+    };
     asanaPane.insertBefore(asNo, asanaBlock);
     let blockBlockEl = null, omniBlockEl = null;   // «Блокировка курса» и «Карточка OmniDesk» — создаются ниже
+    let attachBtnRef = null;   // кнопка «Прикрепить файл» — создаётся ниже
     const renderAsana = () => {
       const isRef = T.result === 'Возврат';   // карточка Асаны — только при возврате
       asanaBlock.style.display = isRef ? 'block' : 'none';
@@ -3862,51 +3929,84 @@
       const nz = needZayav();
       const colName = nz === null ? '— (выбери тип оплаты выше)' : (nz ? 'Заявление получено' : 'Делаем возврат (не нужно заявление)');
       asInfo.innerHTML = '';
-      [['Колонка', colName]].forEach(r => {
+      [['Колонка', colName], ['Исполнитель', 'Кирилл'], ['Срок', '+' + ASANA_DUE_DAYS + ' дней'], ['Тег', isFullRefund() ? 'Полный возврат' : '— (возврат не полный)']].forEach(r => {
         const row = el('div', 'display:flex;gap:8px;justify-content:space-between;padding:3px 0;border-bottom:1px solid #EEF0F2;');
         row.appendChild(el('span', 'color:#6B7280;flex:0 0 auto;', r[0]));
         row.appendChild(el('span', 'font-weight:700;text-align:right;min-width:0;word-break:break-word;', r[1]));
         asInfo.appendChild(row);
       });
-      const has = !!T.asanaUrl;
+      const has = !!T.asanaUrl, wk = isWeeekCard();
       asDone.style.display = has ? 'block' : 'none';
       bAsanaCreate.style.display = has ? 'none' : 'block';
-      bAsanaUpd.style.display = has ? 'block' : 'none';
+      bAsanaUpd.style.display = has && wk ? 'block' : 'none';
+      bWkDesc.style.display = has && wk ? 'block' : 'none';
+      if (attachBtnRef) attachBtnRef.style.display = !has || wk ? 'block' : 'none';   // к старой карточке из Асаны файлы отсюда не грузим
       if (has) {
-        asLink.href = T.asanaUrl; asLink.textContent = 'Карточка создана — открыть в Асане';
+        asLink.href = T.asanaUrl; asLink.textContent = wk ? 'Карточка создана — открыть в Weeek' : 'Старая карточка — открыть в Асане';
         asDate.textContent = 'Создана ' + (T.asanaDate || '') + ' · эта дата уйдёт в таблицу как «Дата отключения доступа».';
       }
-      if (!ASANA_PROJECT) { bAsanaCreate.title = 'Проект Асаны для теста не задан'; }
     };
     tabHooks[4] = renderAsana; tabHooks.asana = renderAsana;
     let asBusy = false;
     const asErr = (e) => {
       const m = String((e && e.message) || e);
-      return m === 'NOAUTH' ? 'Асана не пустила. Открой app.asana.com в соседней вкладке, войди и попробуй снова.' : m;
+      return m === 'NOAUTH' ? 'Weeek не пустил. Открой app.weeek.net в соседней вкладке, войди и попробуй снова.' : m;
+    };
+    // сумма и тег — отдельными запросами (так их сохраняет и сам Weeek); ошибки собираем, а не обрываем
+    const weeekSetFields = async (id) => {
+      const miss = [];
+      const sum = agreedNum();
+      if (isFinite(sum)) {
+        try { await weeekApi('PUT', '/tm/tasks/' + id + '/custom-fields/' + WEEEK_SUM_FIELD, { value: String(sum) }); }
+        catch (e) { miss.push('сумму'); }
+      }
+      if (isFullRefund()) {
+        try { await weeekApi('POST', '/tm/tasks/' + id + '/tags', { tags: [WEEEK_TAG_FULL] }); }
+        catch (e) { miss.push('тег «Полный возврат»'); }
+      }
+      return miss;
     };
     bAsanaCreate.onclick = async () => {
       if (asBusy) return;
-      if (!ASANA_PROJECT) { statusBox.style.color = '#B45309'; statusBox.textContent = 'Проект Асаны для теста ещё не задан — пока копируй «Заголовок» и «Описание» ниже.'; return; }
       if (!guardHandoff()) return;
       const nz = needZayav();
-      if (nz === null) { statusBox.style.color = '#B45309'; statusBox.textContent = 'Выбери тип оплаты выше: от него зависит колонка Асаны.'; return; }
+      if (nz === null) { statusBox.style.color = '#B45309'; statusBox.textContent = 'Выбери тип оплаты выше: от него зависит колонка в Weeek.'; return; }
       const title = asanaTitle();
       if (title.indexOf(MB1) >= 0) { statusBox.style.color = '#B45309'; statusBox.textContent = 'В названии осталось «впиши сам» (банк?) — выбери конкретный тип оплаты выше.'; return; }
+      const want = nz ? 'Заявление получено' : 'Делаем возврат';
+      copyMsg(asanaNotes(), 'Описание в буфере');   // сразу, пока клик «свежий» — иначе браузер может не дать скопировать
       asBusy = true; bAsanaCreate.disabled = true; statusBox.style.color = '#374151';
-      statusBox.textContent = 'Создаю карточку в Асане…';
+      statusBox.textContent = 'Создаю карточку в Weeek…';
       try {
-        const secs = await asanaApi('GET', '/projects/' + ASANA_PROJECT + '/sections?opt_fields=name');
-        const want = nz ? 'Заявление получено' : 'Делаем возврат';
-        const sec = (secs || []).find(s => String(s.name).indexOf(want) === 0);
-        if (!sec) throw new Error('в проекте нет колонки «' + want + '…»');
-        const t = await asanaApi('POST', '/tasks?opt_fields=name,created_at', { data: { name: title, notes: asanaNotes(), projects: [ASANA_PROJECT], memberships: [{ project: ASANA_PROJECT, section: sec.gid }], due_on: asanaDueISO() } });
-        if (!t || !t.gid) throw new Error('Асана не вернула номер карточки');
-        T.asanaGid = String(t.gid);
-        T.asanaUrl = 'https://app.asana.com/1/' + ASANA_WS + '/project/' + ASANA_PROJECT + '/task/' + t.gid;
-        T.asanaDate = fmtDate(t.created_at ? new Date(t.created_at) : new Date());
+        const r = await weeekApi('POST', '/tm/tasks', {
+          workspace_id: WEEEK_WS, title: title, type: 'action',
+          assignees: [WEEEK_ASSIGNEE],
+          locations: [{ projectId: WEEEK_PROJECT, boardColumnId: WEEEK_COLS[want] }],
+          dueDateTime: asanaDueISO() + 'T00:00:00Z', dueHasTime: false,
+        });
+        const t = r && r.task;
+        if (!t || !t.id) throw new Error('Weeek не вернул номер карточки');
+        T.asanaGid = String(t.id);
+        T.asanaUrl = weeekTaskUrl(t.id);
+        T.asanaDate = fmtDate(t.createdAt ? new Date(t.createdAt) : new Date());
         saveCase(); renderAsana();
-        statusBox.style.color = '#15803D';
-        statusBox.textContent = '✓ Карточка создана в колонке «' + sec.name + '». Ссылку на неё и дату отключения доступа допиши в строку таблицы руками.';
+        const miss = [];
+        // если Weeek при создании не принял исполнителя или срок — ставим их отдельно, как сам сайт
+        if (!(t.assignees || []).includes(WEEEK_ASSIGNEE)) {
+          try { await weeekApi('POST', '/tm/tasks/' + t.id + '/assignee', { userId: WEEEK_ASSIGNEE }); }
+          catch (e) { miss.push('исполнителя Кирилла'); }
+        }
+        if (!t.dueDateTime) {
+          try { await weeekApi('POST', '/tm/tasks/' + t.id + '/date', { startDateTime: null, startHasTime: false, dueDateTime: asanaDueISO() + 'T00:00:00Z', dueHasTime: false }); }
+          catch (e) { miss.push('срок'); }
+        }
+        miss.push(...await weeekSetFields(t.id));
+        try { GM_openInTab(T.asanaUrl, { active: true }); } catch (e) { window.open(T.asanaUrl, '_blank'); }
+        statusBox.style.color = miss.length ? '#B45309' : '#15803D';
+        statusBox.textContent = '✓ Карточка создана в колонке «' + want + '» и открыта в соседней вкладке. ' +
+          'Описание уже в буфере: щёлкни в поле описания карточки и нажми Ctrl+V.' +
+          (miss.length ? ' ⚠️ Не получилось поставить: ' + miss.join(', ') + ' — допиши в карточке руками.' : '') +
+          ' Ссылку на неё и дату отключения доступа допиши в строку таблицы руками.';
         if (asQueue.some(x => x.state === 'queued')) uploadQueue();   // файлы, выбранные до создания карточки
       } catch (e) {
         statusBox.style.color = '#B45309';
@@ -3915,14 +4015,18 @@
       asBusy = false; bAsanaCreate.disabled = false;
     };
     bAsanaUpd.onclick = async () => {
-      if (asBusy || !T.asanaGid) return;
+      if (asBusy || !T.asanaGid || !isWeeekCard()) return;
       const title = asanaTitle();
       if (title.indexOf(MB1) >= 0) { statusBox.style.color = '#B45309'; statusBox.textContent = 'В названии осталось «впиши сам» — выбери тип оплаты выше.'; return; }
+      copyMsg(asanaNotes(), 'Описание в буфере');
       asBusy = true; bAsanaUpd.disabled = true; statusBox.style.color = '#374151';
-      statusBox.textContent = 'Обновляю карточку в Асане…';
+      statusBox.textContent = 'Обновляю карточку в Weeek…';
       try {
-        await asanaApi('PUT', '/tasks/' + T.asanaGid, { data: { name: title, notes: asanaNotes() } });
-        statusBox.style.color = '#15803D'; statusBox.textContent = '✓ Название и описание карточки обновлены.';
+        await weeekApi('POST', '/tm/tasks/' + T.asanaGid + '/title', { title: title });
+        const miss = await weeekSetFields(T.asanaGid);
+        statusBox.style.color = miss.length ? '#B45309' : '#15803D';
+        statusBox.textContent = '✓ Название обновлено' + (miss.length ? ', но не получилось поставить: ' + miss.join(', ') + '.' : ' и сумма тоже.') +
+          ' Новое описание в буфере — если оно поменялось, замени его в карточке (Ctrl+A в описании, потом Ctrl+V).';
       } catch (e) {
         statusBox.style.color = '#B45309'; statusBox.textContent = '⚠️ Не получилось обновить карточку: ' + asErr(e);
       }
@@ -3932,9 +4036,9 @@
     // запасной вариант — как раньше, копированием
     const rowA = el('div', S.row);
     const bAsanaT = el('button', S.btnAlt + 'flex:1;margin-top:0;', '📋 Заголовок');
-    bAsanaT.onclick = () => { if (!guardHandoff()) return; copyMsg(asanaTitle(), 'Заголовок Асаны в буфере ✓ Жирным — что дописать.'); };
+    bAsanaT.onclick = () => { if (!guardHandoff()) return; copyMsg(asanaTitle(), 'Заголовок карточки в буфере ✓ Жирным — что дописать.'); };
     const bAsanaB = el('button', S.btnAlt + 'flex:1;margin-top:0;', '📋 Описание');
-    bAsanaB.onclick = () => { if (!guardHandoff()) return; copyMsg(asanaBody(), 'Описание карточки Асаны в буфере ✓ Жирным — что дописать (ссылка на согласование).'); };
+    bAsanaB.onclick = () => { if (!guardHandoff()) return; copyMsg(asanaBody(), 'Описание карточки в буфере ✓ Жирным — что дописать (ссылка на согласование).'); };
     rowA.appendChild(bAsanaT); rowA.appendChild(bAsanaB);
     const asFallback = el('div', 'margin-top:6px;');
     asFallback.appendChild(rowA);
@@ -3943,6 +4047,7 @@
     const asQueue = [];   // {file, state: 'queued' | 'up' | 'done' | 'err', msg}
     const asFileInp = el('input', 'display:none'); asFileInp.type = 'file'; asFileInp.multiple = true;
     const bAttach = el('button', S.big, 'Прикрепить файл к карточке');
+    attachBtnRef = bAttach;
     const asFileList = el('div', 'font-size:11.5px;color:#374151;margin-top:4px;line-height:1.5;');
     const renderFiles = () => {
       asFileList.innerHTML = '';
@@ -3963,11 +4068,11 @@
     };
     // загрузить всё, что ждёт (нужна уже созданная карточка)
     const uploadQueue = async () => {
-      if (!T.asanaGid) return;
+      if (!T.asanaGid || !isWeeekCard()) return;
       for (const it of asQueue) {
         if (it.state !== 'queued' && it.state !== 'err') continue;
         it.state = 'up'; renderFiles();
-        try { await asanaUpload(T.asanaGid, it.file); it.state = 'done'; }
+        try { await weeekUpload(T.asanaGid, it.file); it.state = 'done'; }
         catch (e) { it.state = 'err'; it.msg = asErr(e); }
         renderFiles();
       }
@@ -4313,7 +4418,7 @@
     { const h5 = tabHooks[5]; tabHooks[5] = () => { if (h5) h5(); rfFill(); }; }   // открыли «Доступ» — подтянуть свежую согласованную сумму
     // ---- Заметка в обращении: ссылки на строку таблицы и карточку Асаны (ТОЛЬКО скрытая заметка, клиенту ничего не уходит) ----
     const noteBlockEl = mkBlock(recPane, 'Заметка в обращении', true);
-    noteBlockEl.appendChild(el('div', S.hint + 'margin-top:0;', 'Добавляет в СКРЫТУЮ заметку обращения ссылки на строку таблицы и карточку Асаны. Клиенту ничего не уходит: если поле не в режиме заметки, мастер откажется и ничего не напишет.'));
+    noteBlockEl.appendChild(el('div', S.hint + 'margin-top:0;', 'Добавляет в СКРЫТУЮ заметку обращения ссылки на строку таблицы и карточку в Weeek. Клиенту ничего не уходит: если поле не в режиме заметки, мастер откажется и ничего не напишет.'));
     const notePrev = el('div', 'margin-top:6px;font-size:11.5px;color:#374151;white-space:pre-wrap;word-break:break-all;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:8px;padding:6px 8px;', '');
     const bNote = el('button', S.big, 'Добавить ссылки в заметку');
     noteBlockEl.appendChild(notePrev); noteBlockEl.appendChild(bNote);
@@ -4322,10 +4427,10 @@
     const noteText = () => {
       const L = []; const n = parseInt(String(T.sentRow || ''), 10);
       if (n) L.push('Строка в таблице возвратов: ' + SHEET_URL + '&range=' + n + ':' + n);
-      if (T.asanaUrl) L.push('Карточка в Асане: ' + T.asanaUrl);
+      if (T.asanaUrl) L.push((/weeek\.net/.test(T.asanaUrl) ? 'Карточка в Weeek: ' : 'Карточка в Асане: ') + T.asanaUrl);
       return L.join('\n');
     };
-    const renderNote = () => { notePrev.textContent = noteText() || 'Пока нечего добавлять: нет ни строки в таблице, ни карточки Асаны.'; };
+    const renderNote = () => { notePrev.textContent = noteText() || 'Пока нечего добавлять: нет ни строки в таблице, ни карточки в Weeek.'; };
     // Проверка: поле действительно в режиме СКРЫТОЙ ЗАМЕТКИ. Нужны ВСЕ признаки сразу:
     //  • подсказка «скрытую заметку» (в textarea или в самом редакторе Redactor — у куратора в рабочем статусе она там),
     //  • фон блока заметки (chat_orange2_bg_ / chat_orange2_bg / bg-add-note),
@@ -4355,7 +4460,7 @@
     // до вставки, после вставки и перед нажатием, затем возвращает режим как был. → {ok, why}
     // Текст заметки: ссылки вставляем КЛИКАБЕЛЬНЫМИ (<a href>), с короткой подписью вместо длинного адреса.
     const noteEsc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-    const noteLinkTxt = u => /docs\.google\.com/.test(u) ? 'строка ' + ((u.match(/range=(\d+)/) || [])[1] || 'в таблице') : (/asana\.com/.test(u) ? 'открыть карточку' : u);
+    const noteLinkTxt = u => /docs\.google\.com/.test(u) ? 'строка ' + ((u.match(/range=(\d+)/) || [])[1] || 'в таблице') : (/asana\.com|weeek\.net/.test(u) ? 'открыть карточку' : u);
     const noteVisible = text => String(text).replace(/https?:\/\/[^\s<]+/g, u => noteLinkTxt(u));
     const noteHtml = text => noteEsc(text).replace(/https?:\/\/[^\s<]+/g, u => {
       const raw = u.replace(/&amp;/g, '&');
@@ -4472,7 +4577,7 @@
     const _manualNoteDisabled = async () => {
       if (noteBusy) return;
       const text = noteText();
-      if (!text) { statusBox.style.color = '#B45309'; statusBox.textContent = 'Пока нечего добавлять: сначала запиши строку в таблицу и/или создай карточку Асаны.'; return; }
+      if (!text) { statusBox.style.color = '#B45309'; statusBox.textContent = 'Пока нечего добавлять: сначала запиши строку в таблицу и/или создай карточку в Weeek.'; return; }
       if (noteDone[text] && !window.confirm('Эти же ссылки уже добавлялись в заметку. Добавить ещё раз?')) return;
       if (!window.confirm('Добавить в СКРЫТУЮ заметку обращения:\n\n' + text + '\n\nКлиент её не увидит. Добавить?')) return;
       noteBusy = true; bNote.disabled = true; statusBox.style.color = '#374151'; statusBox.textContent = 'Добавляю заметку…';
