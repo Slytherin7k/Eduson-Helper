@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.51.0
+// @version      1.52.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Weeek справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Weeek по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -57,8 +57,8 @@
   const WEEEK_COLS = { 'Делаем возврат': 607, 'Заявление получено': 608 };
   const WEEEK_ASSIGNEE = 'a2f8b98c-8b55-4f7c-bdab-c13f33fa4301';   // Кирилл — ему летит уведомление
   const WEEEK_SUM_FIELD = 'a3210f8d-9744-4c78-bb89-2d27bcce9eed';  // поле «Сумма возврата»
-  const WEEEK_TAG_FULL = 247;   // тег «Полный возврат» (248 — «Частичный», его не ставим)
-  const WEEEK_PRIORITY = 1;     // приоритет «средний» (как в эталонной карточке; 2 — высокий, 0 — низкий)
+  const WEEEK_TAG_FULL = 247, WEEEK_TAG_PART = 248;   // теги «Полный возврат» / «Частичный возврат»
+  const WEEEK_PRIORITY = 1;     // приоритет по умолчанию — «средний» (как в эталонной карточке; 0 низкий, 2 высокий, 3 заморож.)
   const weeekTaskUrl = id => 'https://app.weeek.net/ws/' + WEEEK_WS + '/task/' + id;
 
   /* ============ ЗАПИСЬ В ТАБЛИЦУ ИЗ МАСТЕРА (без копирования) ============
@@ -2266,6 +2266,7 @@
       calcCpl: pick('calcCpl', ''), calcCplTouched: !!cs.calcCplTouched,   // CPL: сам по месяцу покупки, пока куратор не поправил
       calcPay: pick('calcPay', ''), calcPayTouched: !!cs.calcPayTouched, calcPaid: pick('calcPaid', ''), calcRate: pick('calcRate', ''),   // окончательный расчёт
       payTypeSel: pick('payTypeSel', ''),
+      wkPrio: pick('wkPrio', ''), wkTag: pick('wkTag', ''),   // приоритет и тег карточки Weeek — выбирает куратор ('' = по умолчанию)
       scenOverride: '',   // сценарий при каждом открытии — «авто»; ручной выбор не запоминаем
     };
     // калькулятор: если по кейсу уже сохранены ак.ч./дни — считаем, что куратор их проверил,
@@ -2279,7 +2280,7 @@
       clearTimeout(saveT);
       saveT = setTimeout(() => {
         const keep = {};
-        ['curator', 'status', 'claimDate', 'progress', 'reason', 'clientComment', 'result', 'agreedSum', 'rowNumber', 'sentRow', 'approveLink', 'asanaUrl', 'asanaGid', 'asanaDate', 'rgTag', 'dealId', 'calcHours', 'calcDays', 'calcCpl', 'calcCplTouched', 'calcPay', 'calcPayTouched', 'calcPaid', 'calcRate', 'payTypeSel']
+        ['curator', 'status', 'claimDate', 'progress', 'reason', 'clientComment', 'result', 'agreedSum', 'rowNumber', 'sentRow', 'approveLink', 'asanaUrl', 'asanaGid', 'asanaDate', 'rgTag', 'dealId', 'calcHours', 'calcDays', 'calcCpl', 'calcCplTouched', 'calcPay', 'calcPayTouched', 'calcPaid', 'calcRate', 'payTypeSel', 'wkPrio', 'wkTag']
           .forEach(k => { keep[k] = T[k]; });
         try { GM_setValue(CASE_KEY, JSON.stringify(keep)); } catch (e) { /* ignore */ }
       }, 300);
@@ -3988,6 +3989,24 @@
     const asanaBlock = mkBlock(asanaPane, 'Карточка в Weeek', true);
     const asInfo = el('div', 'font-size:11px;line-height:1.6;color:#374151;');
     asanaBlock.appendChild(asInfo);
+    // Приоритет и тег карточки — выбирает куратор. По умолчанию: «средний» и «Полный возврат», если сумма = оплате.
+    const WK_PRIOS = [['none', 'Без приоритета'], ['0', 'низкий'], ['1', 'средний'], ['2', 'высокий'], ['3', 'замороженный']];
+    const WK_TAGS = [['none', 'Без тега'], ['full', 'Полный возврат'], ['part', 'Частичный возврат']];
+    const wkPrioVal = () => T.wkPrio || String(WEEEK_PRIORITY);
+    const wkTagVal = () => T.wkTag || (isFullRefund() ? 'full' : 'none');
+    const wkPick = el('div', 'display:flex;gap:6px;margin-top:8px;');
+    const wkSel = (lab, opts, key) => {
+      const w = el('div', 'flex:1 1 0;min-width:0;');
+      w.appendChild(el('div', 'font-size:10.5px;color:#6B7280;margin-bottom:2px;', lab));
+      const s = el('select', S.input);
+      opts.forEach(o => { const op = document.createElement('option'); op.value = o[0]; op.textContent = o[1]; s.appendChild(op); });
+      s.addEventListener('change', () => { T[key] = s.value; saveCase(); });
+      w.appendChild(s); wkPick.appendChild(w);
+      return s;
+    };
+    const wkPrioSel = wkSel('Приоритет', WK_PRIOS, 'wkPrio');
+    const wkTagSel = wkSel('Тег', WK_TAGS, 'wkTag');
+    asanaBlock.appendChild(wkPick);
     // Ссылка на согласование (после ответа продакта) — попадает в описание карточки Асаны
     const apLink = el('div', 'margin-top:8px;');
     asanaBlock.appendChild(apLink);
@@ -4038,7 +4057,7 @@
       const nz = needZayav();
       const colName = nz === null ? '— (выбери тип оплаты выше)' : (nz ? 'Заявление получено' : 'Делаем возврат (не нужно заявление)');
       asInfo.innerHTML = '';
-      [['Колонка', colName], ['Исполнитель', 'Кирилл'], ['Срок', '+' + ASANA_DUE_DAYS + ' дней'], ['Приоритет', 'средний'], ['Тег', isFullRefund() ? 'Полный возврат' : '— (возврат не полный)']].forEach(r => {
+      [['Колонка', colName]].forEach(r => {
         const row = el('div', 'display:flex;gap:8px;justify-content:space-between;padding:3px 0;border-bottom:1px solid #EEF0F2;');
         row.appendChild(el('span', 'color:#6B7280;flex:0 0 auto;', r[0]));
         row.appendChild(el('span', 'font-weight:700;text-align:right;min-width:0;word-break:break-word;', r[1]));
@@ -4050,6 +4069,8 @@
       bAsanaUpd.style.display = has && wk ? 'block' : 'none';
       bWkDesc.style.display = has && wk && wkDescFailed ? 'block' : 'none';
       if (attachBtnRef) attachBtnRef.style.display = !has || wk ? 'block' : 'none';   // к старой карточке из Асаны файлы отсюда не грузим
+      wkPrioSel.value = wkPrioVal(); wkTagSel.value = wkTagVal();
+      wkPick.style.display = !has || wk ? 'flex' : 'none';
       if (has) {
         asLink.href = T.asanaUrl; asLink.textContent = wk ? 'Карточка создана — открыть в Weeek' : 'Старая карточка — открыть в Асане';
         asDate.textContent = 'Создана ' + (T.asanaDate || '') + ' · эта дата уйдёт в таблицу как «Дата отключения доступа».';
@@ -4069,10 +4090,13 @@
         try { await weeekApi('PUT', '/tm/tasks/' + id + '/custom-fields/' + WEEEK_SUM_FIELD, { value: String(sum) }); }
         catch (e) { miss.push('сумму'); }
       }
-      if (isFullRefund()) {
-        try { await weeekApi('POST', '/tm/tasks/' + id + '/tags', { tags: [WEEEK_TAG_FULL] }); }
-        catch (e) { miss.push('тег «Полный возврат»'); }
-      }
+      // тег и приоритет — как выбрал куратор (список тегов карточки задаём целиком)
+      const tag = wkTagVal();
+      try { await weeekApi('POST', '/tm/tasks/' + id + '/tags', { tags: tag === 'full' ? [WEEEK_TAG_FULL] : tag === 'part' ? [WEEEK_TAG_PART] : [] }); }
+      catch (e) { miss.push('тег'); }
+      const pr = wkPrioVal();
+      try { await weeekApi('POST', '/tm/tasks/' + id + '/priority', { priority: pr === 'none' ? null : Number(pr) }); }
+      catch (e) { miss.push('приоритет'); }
       // описание — через «живой» документ Weeek, без открытия карточки (заменяет всё, что было в описании)
       try { await weeekWriteDesc(id, asanaNotes().split('\n'), weeekDescToken); wkDescFailed = false; }
       catch (e) { wkDescFailed = true; miss.push('описание (' + asErr(e) + ')'); }
@@ -4111,15 +4135,10 @@
           try { await weeekApi('POST', '/tm/tasks/' + t.id + '/date', { startDateTime: null, startHasTime: false, dueDateTime: asanaDueISO() + 'T00:00:00Z', dueHasTime: false }); }
           catch (e) { miss.push('срок'); }
         }
-        if (t.priority !== WEEEK_PRIORITY) {
-          try { await weeekApi('POST', '/tm/tasks/' + t.id + '/priority', { priority: WEEEK_PRIORITY }); }
-          catch (e) { miss.push('приоритет'); }
-        }
         miss.push(...await weeekSetFields(t.id));
         renderAsana();
         statusBox.style.color = miss.length ? '#B45309' : '#15803D';
-        statusBox.textContent = '✓ Карточка создана в колонке «' + want + '»: Кирилл, срок, приоритет, сумма' +
-          (isFullRefund() ? ', тег' : '') + ' и описание.' +
+        statusBox.textContent = '✓ Карточка создана в колонке «' + want + '».' +
           (miss.length ? ' ⚠️ Не получилось поставить: ' + miss.join(', ') + ' — допиши в карточке руками.' : '') +
           ' Ссылку на неё и дату отключения доступа допиши в строку таблицы руками.';
         if (asQueue.some(x => x.state === 'queued')) uploadQueue();   // файлы, выбранные до создания карточки
@@ -4133,7 +4152,7 @@
       if (asBusy || !T.asanaGid || !isWeeekCard()) return;
       const title = asanaTitle();
       if (title.indexOf(MB1) >= 0) { statusBox.style.color = '#B45309'; statusBox.textContent = 'В названии осталось «впиши сам» — выбери тип оплаты выше.'; return; }
-      if (!window.confirm('Описание карточки в Weeek заменится тем, что сейчас в Мастере (если в нём что-то дописывали руками — это пропадёт). Обновить?')) return;
+      if (!window.confirm('Название, сумма, приоритет, тег и описание карточки в Weeek заменятся тем, что сейчас в Мастере (что дописывали в описании руками — пропадёт). Обновить?')) return;
       asBusy = true; bAsanaUpd.disabled = true; statusBox.style.color = '#374151';
       statusBox.textContent = 'Обновляю карточку в Weeek…';
       try {
@@ -4141,7 +4160,7 @@
         const miss = await weeekSetFields(T.asanaGid);
         renderAsana();
         statusBox.style.color = miss.length ? '#B45309' : '#15803D';
-        statusBox.textContent = '✓ Название обновлено' + (miss.length ? ', но не получилось поставить: ' + miss.join(', ') + '.' : ', сумма и описание тоже.');
+        statusBox.textContent = '✓ Карточка обновлена' + (miss.length ? ', но не получилось поставить: ' + miss.join(', ') + '.' : ': название, сумма, приоритет, тег и описание.');
       } catch (e) {
         statusBox.style.color = '#B45309'; statusBox.textContent = '⚠️ Не получилось обновить карточку: ' + asErr(e);
       }
