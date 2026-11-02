@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.50.0
+// @version      1.51.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Weeek справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Weeek по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -58,6 +58,7 @@
   const WEEEK_ASSIGNEE = 'a2f8b98c-8b55-4f7c-bdab-c13f33fa4301';   // Кирилл — ему летит уведомление
   const WEEEK_SUM_FIELD = 'a3210f8d-9744-4c78-bb89-2d27bcce9eed';  // поле «Сумма возврата»
   const WEEEK_TAG_FULL = 247;   // тег «Полный возврат» (248 — «Частичный», его не ставим)
+  const WEEEK_PRIORITY = 1;     // приоритет «средний» (как в эталонной карточке; 2 — высокий, 0 — низкий)
   const weeekTaskUrl = id => 'https://app.weeek.net/ws/' + WEEEK_WS + '/task/' + id;
 
   /* ============ ЗАПИСЬ В ТАБЛИЦУ ИЗ МАСТЕРА (без копирования) ============
@@ -681,6 +682,113 @@
       });
     });
     return weeekApi('POST', '/tm/tasks/' + taskId + '/files/register', { id: p.id, name: name, size: file.size, type: type, folderId: null });
+  }
+
+  // Описание карточки Weeek. Через обычный API его не записать: редактор Weeek хранит текст в «живом» документе
+  // (Yjs) и правит его через сокет collabws.weeek.net. Мастер подключается туда же, как сам редактор,
+  // и одним изменением: стирает всё, что было в описании, и пишет строки заново (каждая — абзац, ссылки кликабельные).
+  // Карточку при этом открывать не нужно. getToken(taskId) → одноразовый ключ доступа к описанию (из API Weeek).
+  function weeekWriteDesc(taskId, lines, getToken) {
+    const enc = () => {
+      const a = [];
+      return {
+        u(n) { while (n > 127) { a.push(0x80 | (n & 127)); n = Math.floor(n / 128); } a.push(n); },
+        s(str) { const b = new TextEncoder().encode(str); this.u(b.length); for (const x of b) a.push(x); },
+        b(bytes) { this.u(bytes.length); for (const x of bytes) a.push(x); },
+        byte(x) { a.push(x); },
+        out() { return new Uint8Array(a); }
+      };
+    };
+    const dec = buf => {
+      let p = 0; const d = new Uint8Array(buf);
+      return {
+        u() { let n = 0, m = 1; for (;;) { const x = d[p++]; if (x === undefined) throw new Error('обрыв данных'); n += (x & 127) * m; m *= 128; if (x < 128) return n; } },
+        s() { const l = this.u(); const r = new TextDecoder().decode(d.slice(p, p + l)); p += l; return r; },
+        b() { const l = this.u(); const r = d.slice(p, p + l); p += l; return r; }
+      };
+    };
+    // изменение документа (формат обновлений Yjs v1): удалить всё, что сервер уже знает (по его «вектору состояния»),
+    // и вставить в корень «prosemirror» абзацы paragraph → текст; ссылка = метка link вокруг адреса
+    const build = (sv) => {
+      const client = (crypto.getRandomValues(new Uint32Array(1))[0] >>> 1) || 1;
+      let clock = 0; const structs = [];
+      const item = o => { const id = [client, clock]; clock += o.len; structs.push(o); return id; };
+      let prevPara = null;
+      lines.forEach(line => {
+        const para = item({ len: 1, origin: prevPara, rootKey: prevPara ? null : 'prosemirror', content: { ref: 7, type: 3, name: 'paragraph' } });
+        prevPara = para;
+        const tid = item({ len: 1, origin: null, parent: para, content: { ref: 7, type: 6 } });
+        let last = null;
+        const push = o => { const id = item(Object.assign({ origin: last, parent: last ? null : tid }, o)); last = [id[0], id[1] + o.len - 1]; };
+        String(line).split(/(https?:\/\/\S+)/).forEach(part => {
+          if (!part) return;
+          if (/^https?:\/\//.test(part)) {
+            push({ len: 1, content: { ref: 6, key: 'link', val: { href: part, constructed: false } } });
+            push({ len: part.length, content: { ref: 4, str: part } });
+            push({ len: 1, content: { ref: 6, key: 'link', val: null } });
+          } else push({ len: part.length, content: { ref: 4, str: part } });
+        });
+      });
+      const e = enc();
+      e.u(1); e.u(structs.length); e.u(client); e.u(0);
+      structs.forEach(st => {
+        const c = st.content;
+        e.byte((st.origin ? 0x80 : 0) | c.ref);
+        if (st.origin) { e.u(st.origin[0]); e.u(st.origin[1]); }
+        else if (st.rootKey) { e.u(1); e.s(st.rootKey); }
+        else { e.u(0); e.u(st.parent[0]); e.u(st.parent[1]); }
+        if (c.ref === 7) { e.u(c.type); if (c.type === 3) e.s(c.name); }
+        else if (c.ref === 4) e.s(c.str);
+        else if (c.ref === 6) { e.s(c.key); e.s(JSON.stringify(c.val)); }
+      });
+      const old = sv.filter(x => x[1] > 0);
+      e.u(old.length);
+      old.forEach(x => { e.u(x[0]); e.u(1); e.u(0); e.u(x[1]); });
+      return e.out();
+    };
+    return Promise.resolve(getToken(taskId)).then(token => new Promise((resolve, reject) => {
+      if (!token) { reject(new Error('Weeek не дал ключ к описанию')); return; }
+      const name = 'editor-' + WEEEK_WS + '-task-' + taskId;
+      let ws;
+      try { ws = new WebSocket('wss://collabws.weeek.net/editor/' + WEEEK_WS + '/task/' + taskId); }
+      catch (e) { reject(new Error('браузер не дал подключиться к Weeek')); return; }
+      ws.binaryType = 'arraybuffer';
+      let sv = null, sent = false, done = false;
+      const finish = (err) => { if (done) return; done = true; clearTimeout(timer); try { ws.close(); } catch (e) { /* ignore */ } if (err) reject(new Error(err)); else resolve(); };
+      const timer = setTimeout(() => finish(sent ? 'Weeek не подтвердил запись описания' : 'Weeek не ответил'), 15000);
+      const send = fn => { const m = enc(); m.s(name); fn(m); ws.send(m.out()); };
+      ws.onopen = () => send(m => { m.u(2); m.u(0); m.s(token); });   // вход по ключу
+      ws.onmessage = ev => {
+        try {
+          const d = dec(ev.data); d.s(); const type = d.u();
+          if (type === 2) {   // ответ на вход
+            const st = d.u();
+            if (st !== 2) { finish('Weeek не пустил к описанию'); return; }
+            send(m => { m.u(0); m.u(0); m.b(new Uint8Array([0])); });   // «покажи, что у тебя есть»
+          } else if (type === 0) {
+            const st = d.u(); const payload = d.b();
+            if (st === 0) {   // вектор состояния сервера: сколько записей от каждого автора
+              const v = dec(payload); const n = v.u(); sv = [];
+              for (let i = 0; i < n; i++) { const c = v.u(); sv.push([c, v.u()]); }
+            } else if (st === 1 && !sent) {
+              sent = true;
+              const upd = build(sv || []);
+              send(m => { m.u(0); m.u(2); m.b(upd); });
+            }
+          } else if (type === 8 && sent) {   // сервер подтвердил, что принял изменение
+            setTimeout(() => finish(null), 500);
+          }
+        } catch (e) { finish('не поняла ответ Weeek'); }
+      };
+      ws.onerror = () => finish('сеть (сокет Weeek)');
+      ws.onclose = () => { if (!done) finish(sent ? 'сокет закрылся до подтверждения' : 'сокет Weeek закрылся'); };
+    }));
+  }
+
+  // одноразовый ключ к описанию карточки (его же берёт редактор Weeek при открытии карточки)
+  function weeekDescToken(taskId) {
+    const sock = (crypto.randomUUID && crypto.randomUUID()) || String(Date.now()) + Math.random();
+    return weeekApi('POST', '/tm/tasks/' + taskId + '/content/token', { socketId: sock }).then(j => j && j.token);
   }
 
   /* ==================== ТРЕКИНГ ОТКРЫТИЙ ПАНЕЛИ ====================
@@ -3896,13 +4004,14 @@
       copy(T.asanaUrl, 'Ссылка на карточку в буфере ✓');
     };
     asDone.appendChild(bAsanaCopy);
-    // описание Weeek принимает только из своего редактора → Мастер копирует его, куратор вставляет Ctrl+V
-    const bWkDesc = el('button', S.btnAlt, '📋 Скопировать описание ещё раз');
+    // запасной путь, если описание не записалось само: скопировать и вставить в карточку Ctrl+V (кнопка видна только после сбоя)
+    let wkDescFailed = false;
+    const bWkDesc = el('button', S.btnAlt, '📋 Скопировать описание');
     bWkDesc.onclick = () => copyMsg(asanaNotes(), 'Описание в буфере ✓ Открой карточку, щёлкни в поле описания и нажми Ctrl+V.');
     asDone.appendChild(bWkDesc);
     asanaBlock.appendChild(asDone);
     const bAsanaCreate = el('button', S.big, 'Создать карточку в Weeek');
-    const bAsanaUpd = el('button', S.btnAlt, 'Обновить название и сумму в Weeek');
+    const bAsanaUpd = el('button', S.btnAlt, 'Обновить название, сумму и описание в Weeek');
     asanaBlock.appendChild(bAsanaCreate);
     asanaBlock.appendChild(bAsanaUpd);
     const fmtDate = d => String(d.getDate()).padStart(2, '0') + '.' + String(d.getMonth() + 1).padStart(2, '0') + '.' + d.getFullYear();
@@ -3929,7 +4038,7 @@
       const nz = needZayav();
       const colName = nz === null ? '— (выбери тип оплаты выше)' : (nz ? 'Заявление получено' : 'Делаем возврат (не нужно заявление)');
       asInfo.innerHTML = '';
-      [['Колонка', colName], ['Исполнитель', 'Кирилл'], ['Срок', '+' + ASANA_DUE_DAYS + ' дней'], ['Тег', isFullRefund() ? 'Полный возврат' : '— (возврат не полный)']].forEach(r => {
+      [['Колонка', colName], ['Исполнитель', 'Кирилл'], ['Срок', '+' + ASANA_DUE_DAYS + ' дней'], ['Приоритет', 'средний'], ['Тег', isFullRefund() ? 'Полный возврат' : '— (возврат не полный)']].forEach(r => {
         const row = el('div', 'display:flex;gap:8px;justify-content:space-between;padding:3px 0;border-bottom:1px solid #EEF0F2;');
         row.appendChild(el('span', 'color:#6B7280;flex:0 0 auto;', r[0]));
         row.appendChild(el('span', 'font-weight:700;text-align:right;min-width:0;word-break:break-word;', r[1]));
@@ -3939,7 +4048,7 @@
       asDone.style.display = has ? 'block' : 'none';
       bAsanaCreate.style.display = has ? 'none' : 'block';
       bAsanaUpd.style.display = has && wk ? 'block' : 'none';
-      bWkDesc.style.display = has && wk ? 'block' : 'none';
+      bWkDesc.style.display = has && wk && wkDescFailed ? 'block' : 'none';
       if (attachBtnRef) attachBtnRef.style.display = !has || wk ? 'block' : 'none';   // к старой карточке из Асаны файлы отсюда не грузим
       if (has) {
         asLink.href = T.asanaUrl; asLink.textContent = wk ? 'Карточка создана — открыть в Weeek' : 'Старая карточка — открыть в Асане';
@@ -3964,6 +4073,9 @@
         try { await weeekApi('POST', '/tm/tasks/' + id + '/tags', { tags: [WEEEK_TAG_FULL] }); }
         catch (e) { miss.push('тег «Полный возврат»'); }
       }
+      // описание — через «живой» документ Weeek, без открытия карточки (заменяет всё, что было в описании)
+      try { await weeekWriteDesc(id, asanaNotes().split('\n'), weeekDescToken); wkDescFailed = false; }
+      catch (e) { wkDescFailed = true; miss.push('описание (' + asErr(e) + ')'); }
       return miss;
     };
     bAsanaCreate.onclick = async () => {
@@ -3974,7 +4086,6 @@
       const title = asanaTitle();
       if (title.indexOf(MB1) >= 0) { statusBox.style.color = '#B45309'; statusBox.textContent = 'В названии осталось «впиши сам» (банк?) — выбери конкретный тип оплаты выше.'; return; }
       const want = nz ? 'Заявление получено' : 'Делаем возврат';
-      copyMsg(asanaNotes(), 'Описание в буфере');   // сразу, пока клик «свежий» — иначе браузер может не дать скопировать
       asBusy = true; bAsanaCreate.disabled = true; statusBox.style.color = '#374151';
       statusBox.textContent = 'Создаю карточку в Weeek…';
       try {
@@ -4000,11 +4111,15 @@
           try { await weeekApi('POST', '/tm/tasks/' + t.id + '/date', { startDateTime: null, startHasTime: false, dueDateTime: asanaDueISO() + 'T00:00:00Z', dueHasTime: false }); }
           catch (e) { miss.push('срок'); }
         }
+        if (t.priority !== WEEEK_PRIORITY) {
+          try { await weeekApi('POST', '/tm/tasks/' + t.id + '/priority', { priority: WEEEK_PRIORITY }); }
+          catch (e) { miss.push('приоритет'); }
+        }
         miss.push(...await weeekSetFields(t.id));
-        try { GM_openInTab(T.asanaUrl, { active: true }); } catch (e) { window.open(T.asanaUrl, '_blank'); }
+        renderAsana();
         statusBox.style.color = miss.length ? '#B45309' : '#15803D';
-        statusBox.textContent = '✓ Карточка создана в колонке «' + want + '» и открыта в соседней вкладке. ' +
-          'Описание уже в буфере: щёлкни в поле описания карточки и нажми Ctrl+V.' +
+        statusBox.textContent = '✓ Карточка создана в колонке «' + want + '»: Кирилл, срок, приоритет, сумма' +
+          (isFullRefund() ? ', тег' : '') + ' и описание.' +
           (miss.length ? ' ⚠️ Не получилось поставить: ' + miss.join(', ') + ' — допиши в карточке руками.' : '') +
           ' Ссылку на неё и дату отключения доступа допиши в строку таблицы руками.';
         if (asQueue.some(x => x.state === 'queued')) uploadQueue();   // файлы, выбранные до создания карточки
@@ -4018,15 +4133,15 @@
       if (asBusy || !T.asanaGid || !isWeeekCard()) return;
       const title = asanaTitle();
       if (title.indexOf(MB1) >= 0) { statusBox.style.color = '#B45309'; statusBox.textContent = 'В названии осталось «впиши сам» — выбери тип оплаты выше.'; return; }
-      copyMsg(asanaNotes(), 'Описание в буфере');
+      if (!window.confirm('Описание карточки в Weeek заменится тем, что сейчас в Мастере (если в нём что-то дописывали руками — это пропадёт). Обновить?')) return;
       asBusy = true; bAsanaUpd.disabled = true; statusBox.style.color = '#374151';
       statusBox.textContent = 'Обновляю карточку в Weeek…';
       try {
         await weeekApi('POST', '/tm/tasks/' + T.asanaGid + '/title', { title: title });
         const miss = await weeekSetFields(T.asanaGid);
+        renderAsana();
         statusBox.style.color = miss.length ? '#B45309' : '#15803D';
-        statusBox.textContent = '✓ Название обновлено' + (miss.length ? ', но не получилось поставить: ' + miss.join(', ') + '.' : ' и сумма тоже.') +
-          ' Новое описание в буфере — если оно поменялось, замени его в карточке (Ctrl+A в описании, потом Ctrl+V).';
+        statusBox.textContent = '✓ Название обновлено' + (miss.length ? ', но не получилось поставить: ' + miss.join(', ') + '.' : ', сумма и описание тоже.');
       } catch (e) {
         statusBox.style.color = '#B45309'; statusBox.textContent = '⚠️ Не получилось обновить карточку: ' + asErr(e);
       }
