@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Eduson Helper — помощник куратора
 // @namespace    eduson-helper
-// @version      1.62.0
+// @version      1.62.1
 // @description  Помощник куратора в OmniDesk: магнит заполняет карточку клиента из amoCRM (ФИО, email, телефон, курс, поддержка, админка), кнопка-ключ — логин-линки, кнопка-чат — готовые пинги в Телеграм и поиск по справочнику тегов Эдюсон
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -3943,7 +3943,7 @@
     'Денис Клементович': { tag: '@Klem_Den_lucky', dept: 'РОП IT и Аналитика',
       mops: [['Соколовский Александр', '@A_Sokolovskii'], ['Виноградов Виктор', '@Vic_Vinogradov'], ['Рябова Эльвира', '@rbv_elya'], ['Шум Карина', '@karinashum'], ['Качегова Даяна', '@sukskil'], ['Яловегин Николай', '@love_tea_oolong'], ['Ильницкий Илларион', '@illarion_ilnitskiy'], ['Гончарова Ирина', '@irinagoncharova63'], ['Денежкин Никита', '@n_denezhkin'], ['Журавлева Евгения', '@svobodacoach'], 'Зинкевич Елизавета'] },
     'Владимир Толстов': { tag: '@Vladimir_Tolstov_m', dept: 'РОП Маркетинг',
-      mops: [['Прохорова Василиса', '@Vasilisa_Prokhorova'], ['Романова Людмила', '@romanovalyud'], ['Гусев Кирилл', '@digital_0000'], ['Квон Екатерина', '@Katerinakvon'], ['Сартакова Евгения', '@evgeniya_eduson'], ['Умнова Виктория', '@Umvikayar'], 'Максимов Владислав', 'Папко Екатерина'] },
+      mops: [['Прохорова Василиса', '@Vasilisa_Prokhorova'], ['Романова Людмила', '@romanovalyud'], ['Гусев Кирилл', '@digital_0000'], ['Квон Екатерина', '@Katerinakvon'], 'Сартакова Евгения', ['Умнова Виктория', '@Umvikayar'], 'Максимов Владислав', 'Папко Екатерина'] },
     'Давид Багатурия': { tag: '@D_Bagaturia', dept: '',
       mops: [['Белеева Мария', '@maria_beleeva'], ['Фролова Екатерина', '@frol_katrin'], ['Лем Станислав', '@stan_lem'], ['Степанов Петр', '@PeterStepanov'], ['Михайлова Карина', '@karina_michailova'], ['Брудковски Александра', '@brudkovski'], ['Гагилев Дмитрий', '@Gagilev'], 'Вендин Максим', 'Золотарев Игорь'] }
   };
