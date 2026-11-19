@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.56.0
+// @version      1.57.0
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Weeek справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Weeek по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -57,6 +57,19 @@
   const WEEEK_COLS = { 'Делаем возврат': 607, 'Заявление получено': 608 };
   const WEEEK_ASSIGNEE = 'a2f8b98c-8b55-4f7c-bdab-c13f33fa4301';   // Кирилл — ему летит уведомление
   const WEEEK_SUM_FIELD = 'a3210f8d-9744-4c78-bb89-2d27bcce9eed';  // поле «Сумма возврата»
+  // поля карточки, добавленные на доску в ноябре 2026 (раньше это было в тексте описания)
+  const WEEEK_AMO_FIELD = 'a3215605-c8e8-4382-b05b-1fed59b5cdf6';      // «Ссылка на AMO» (ссылка)
+  const WEEEK_APPROVE_FIELD = 'a321561c-edae-49df-8702-b6d459d7bbe4';  // «Согласование возврата (ссылка)»
+  const WEEEK_PAYDATE_FIELD = 'a3417f57-8d79-49bf-8ac1-7d756d864348';  // «Дата оплаты» (дата)
+  const WEEEK_CLAIMDATE_FIELD = 'a341801b-cbf2-4b11-ade5-04b4c5a70f81'; // «Дата обращения за возвратом» (дата)
+  // «Возвращено» (a3272173-…) заполняет казначей — не трогаем.
+  // дата «дд.мм.гггг» → как хранит Weeek: полночь по Москве в UTC (05.11 → 2026-11-04T21:00:00Z)
+  const weeekDate = s => {
+    const m = String(s || '').trim().match(/^(\d{1,2})[.\/](\d{1,2})[.\/](\d{2,4})$/);
+    if (!m) return null;
+    let y = +m[3]; if (y < 100) y += 2000;
+    return new Date(Date.UTC(y, +m[2] - 1, +m[1]) - 3 * 3600000).toISOString().replace('.000Z', 'Z');
+  };
   const WEEEK_TAG_FULL = 247, WEEEK_TAG_PART = 248;   // теги «Полный возврат» / «Частичный возврат»
   const WEEEK_PRIORITY = 1;     // приоритет по умолчанию — «средний» (как в эталонной карточке; 0 низкий, 2 высокий, 3 заморож.)
   const weeekTaskUrl = id => 'https://app.weeek.net/ws/' + WEEEK_WS + '/task/' + id;
@@ -4053,20 +4066,11 @@
     const asanaTitle = () => payForTitle() + '/' + clean(T.name) + '/' + stripMark(clean(T.course)) + '/' + agreedTxt();
     const asanaBody = () => [
       'Куратор: ' + clean(T.curator),
-      'Ссылка на амо: ' + clean(T.amoLink),
-      'Сколько возвращаем: ' + agreed(),
-      'Дата оплаты: ' + clean(T.purchaseDate || T.accessDate),
-      'Дата обращения за возвратом: ' + clean(T.claimDate),
-      'Согласование возврата (ссылка): ' + B('вставь ссылку на согласование в ТГ'),
     ].join('\n');
-    // Описание для создания карточки прямо из мастера: без «впиши сам»-меток; ссылка на согласование — из вкладки «Согласов.»
+    // Описание для карточки Weeek: ссылка на амо, сумма, даты и согласование теперь в отдельных полях карточки,
+    // поэтому в тексте остаётся только куратор.
     const asanaNotes = () => [
       'Куратор: ' + clean(T.curator),
-      'Ссылка на амо: ' + clean(T.amoLink),
-      'Сколько возвращаем: ' + agreed(),
-      'Дата оплаты: ' + clean(T.purchaseDate || T.accessDate),
-      'Дата обращения за возвратом: ' + clean(T.claimDate),
-      'Согласование возврата (ссылка): ' + clean(T.approveLink),
     ].join('\n');
     // Нужно ли заявление (определяет колонку Асаны): true / false / null — тип оплаты не выбран или не найден в таблице.
     const needZayav = () => {
@@ -4118,7 +4122,7 @@
     asDone.appendChild(bWkDesc);
     asanaBlock.appendChild(asDone);
     const bAsanaCreate = el('button', S.big, 'Создать карточку в Weeek');
-    const bAsanaUpd = el('button', S.btnAlt, 'Обновить название, сумму и описание в Weeek');
+    const bAsanaUpd = el('button', S.btnAlt, 'Обновить карточку в Weeek');
     asanaBlock.appendChild(bAsanaCreate);
     asanaBlock.appendChild(bAsanaUpd);
     const fmtDate = d => String(d.getDate()).padStart(2, '0') + '.' + String(d.getMonth() + 1).padStart(2, '0') + '.' + d.getFullYear();
@@ -4177,6 +4181,20 @@
       if (isFinite(sum)) {
         try { await weeekApi('PUT', '/tm/tasks/' + id + '/custom-fields/' + WEEEK_SUM_FIELD, { value: String(sum) }); }
         catch (e) { miss.push('сумму'); }
+      }
+      // ссылки и даты — в свои поля карточки (пустые пропускаем, чтобы не стереть то, что вписали руками)
+      const amo = clean(T.amoLink), ap = clean(T.approveLink);
+      const pay = weeekDate(T.purchaseDate || T.accessDate), claim = weeekDate(T.claimDate);
+      const cf = [
+        [WEEEK_AMO_FIELD, /^https?:\/\//.test(amo) ? amo : null, 'ссылку на амо'],
+        [WEEEK_APPROVE_FIELD, /^https?:\/\//.test(ap) ? ap : null, 'ссылку на согласование'],
+        [WEEEK_PAYDATE_FIELD, pay, 'дату оплаты'],
+        [WEEEK_CLAIMDATE_FIELD, claim, 'дату обращения'],
+      ];
+      for (const [fid, val, what] of cf) {
+        if (!val) continue;
+        try { await weeekApi('PUT', '/tm/tasks/' + id + '/custom-fields/' + fid, { value: val }); }
+        catch (e) { miss.push(what); }
       }
       // тег и приоритет — как выбрал куратор (список тегов карточки задаём целиком)
       const tag = wkTagVal();
@@ -4240,7 +4258,7 @@
       if (asBusy || !T.asanaGid || !isWeeekCard()) return;
       const title = asanaTitle();
       if (title.indexOf(MB1) >= 0) { statusBox.style.color = '#B45309'; statusBox.textContent = 'В названии осталось «впиши сам» — выбери тип оплаты выше.'; return; }
-      if (!window.confirm('Название, сумма, приоритет, тег и описание карточки в Weeek заменятся тем, что сейчас в Мастере (что дописывали в описании руками — пропадёт). Обновить?')) return;
+      if (!window.confirm('Название, сумма, ссылки, даты, приоритет, тег и описание карточки в Weeek заменятся тем, что сейчас в Мастере (что дописывали в описании руками — пропадёт). Обновить?')) return;
       asBusy = true; bAsanaUpd.disabled = true; statusBox.style.color = '#374151';
       statusBox.textContent = 'Обновляю карточку в Weeek…';
       try {
@@ -4248,7 +4266,7 @@
         const miss = await weeekSetFields(T.asanaGid);
         renderAsana();
         statusBox.style.color = miss.length ? '#B45309' : '#15803D';
-        statusBox.textContent = '✓ Карточка обновлена' + (miss.length ? ', но не получилось поставить: ' + miss.join(', ') + '.' : ': название, сумма, приоритет, тег и описание.');
+        statusBox.textContent = '✓ Карточка обновлена' + (miss.length ? ', но не получилось поставить: ' + miss.join(', ') + '.' : ': название, поля (сумма, ссылки, даты), приоритет, тег и описание.');
       } catch (e) {
         statusBox.style.color = '#B45309'; statusBox.textContent = '⚠️ Не получилось обновить карточку: ' + asErr(e);
       }
@@ -4260,7 +4278,7 @@
     const bAsanaT = el('button', S.btnAlt + 'flex:1;margin-top:0;', '📋 Заголовок');
     bAsanaT.onclick = () => { if (!guardHandoff()) return; copyMsg(asanaTitle(), 'Заголовок карточки в буфере ✓ Жирным — что дописать.'); };
     const bAsanaB = el('button', S.btnAlt + 'flex:1;margin-top:0;', '📋 Описание');
-    bAsanaB.onclick = () => { if (!guardHandoff()) return; copyMsg(asanaBody(), 'Описание карточки в буфере ✓ Жирным — что дописать (ссылка на согласование).'); };
+    bAsanaB.onclick = () => { if (!guardHandoff()) return; copyMsg(asanaBody(), 'Описание карточки в буфере ✓ Ссылки, сумму и даты впиши в поля карточки.'); };
     rowA.appendChild(bAsanaT); rowA.appendChild(bAsanaB);
     const asFallback = el('div', 'margin-top:6px;');
     asFallback.appendChild(rowA);
