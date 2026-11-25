@@ -1,7 +1,7 @@
-﻿// ==UserScript==
+// ==UserScript==
 // @name         Eduson Refund Master (Возврат-мастер)
 // @namespace    eduson-refund-master
-// @version      1.57.0
+// @version      1.57.1
 // @description  Помощник по возвратам: собирает данные из amoCRM (ФИО клиента — из карточки OmniDesk, при неполном имени добирает из админки Эдюсон); широкая панель в две колонки (анкета + данные амо + строка таблицы слева; после переговоров + ТГ + Weeek справа); строка таблицы одной вставкой A→X; сообщения ТГ/РГ/Weeek по сценарию кейса.
 // @author       Astanina Natalia
 // @homepageURL  https://github.com/Slytherin7k/Eduson-Helper
@@ -60,7 +60,7 @@
   // поля карточки, добавленные на доску в ноябре 2026 (раньше это было в тексте описания)
   const WEEEK_AMO_FIELD = 'a3215605-c8e8-4382-b05b-1fed59b5cdf6';      // «Ссылка на AMO» (ссылка)
   const WEEEK_APPROVE_FIELD = 'a321561c-edae-49df-8702-b6d459d7bbe4';  // «Согласование возврата (ссылка)»
-  const WEEEK_PAYDATE_FIELD = 'a3417f57-8d79-49bf-8ac1-7d756d864348';  // «Дата оплаты» (дата)
+  const WEEEK_PAYDATE_FIELD = 'a343a73b-ca00-4074-a4d8-eb0d3ebf1f97';  // «Дата оплаты» (дата+время, доска 90 / проект 47)
   const WEEEK_CLAIMDATE_FIELD = 'a341801b-cbf2-4b11-ade5-04b4c5a70f81'; // «Дата обращения за возвратом» (дата)
   // «Возвращено» (a3272173-…) заполняет казначей — не трогаем.
   // дата «дд.мм.гггг» → как хранит Weeek: полночь по Москве в UTC (05.11 → 2026-11-04T21:00:00Z)
@@ -4180,7 +4180,7 @@
       const sum = agreedNum();
       if (isFinite(sum)) {
         try { await weeekApi('PUT', '/tm/tasks/' + id + '/custom-fields/' + WEEEK_SUM_FIELD, { value: String(sum) }); }
-        catch (e) { miss.push('сумму'); }
+        catch (e) { miss.push('сумму (' + asErr(e) + ')'); }
       }
       // ссылки и даты — в свои поля карточки (пустые пропускаем, чтобы не стереть то, что вписали руками)
       const amo = clean(T.amoLink), ap = clean(T.approveLink);
@@ -4194,7 +4194,7 @@
       for (const [fid, val, what] of cf) {
         if (!val) continue;
         try { await weeekApi('PUT', '/tm/tasks/' + id + '/custom-fields/' + fid, { value: val }); }
-        catch (e) { miss.push(what); }
+        catch (e) { miss.push(what + ' (' + asErr(e) + ')'); }   // 404 = поле не найдено (не тот id поля)
       }
       // тег и приоритет — как выбрал куратор (список тегов карточки задаём целиком)
       const tag = wkTagVal();
